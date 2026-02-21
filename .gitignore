@@ -17,3 +17,6 @@ terraform/.terraform.lock.hcl
 
 # TLS certificates
 certs/
+
+# Kong gateway config — contains real API keys, managed via deck sync only
+deck/kong.yaml
