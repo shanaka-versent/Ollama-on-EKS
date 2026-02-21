@@ -271,39 +271,6 @@ claude --model qwen3-coder:30b
 source claude-switch.sh status
 ```
 
-### Scale to Zero (Stop GPU Billing)
-
-When you're done for the day — stop the GPU node to avoid ~$5.67/hr charges:
-
-```bash
-# Stop the pod
-kubectl scale deployment ollama -n ollama --replicas=0
-
-# Scale down the GPU node group
-aws eks update-nodegroup-config \
-  --cluster-name $(terraform -chdir=terraform output -raw eks_cluster_name) \
-  --nodegroup-name $(terraform -chdir=terraform output -raw gpu_node_group_name) \
-  --scaling-config minSize=0,maxSize=2,desiredSize=0 \
-  --region $(terraform -chdir=terraform output -raw region)
-```
-
-### Resume Next Session
-
-The EBS volume with your downloaded models is preserved — no re-download needed:
-
-```bash
-# Scale up the GPU node group
-aws eks update-nodegroup-config \
-  --cluster-name $(terraform -chdir=terraform output -raw eks_cluster_name) \
-  --nodegroup-name $(terraform -chdir=terraform output -raw gpu_node_group_name) \
-  --scaling-config minSize=0,maxSize=2,desiredSize=1 \
-  --region $(terraform -chdir=terraform output -raw region)
-
-# Start the pod
-kubectl scale deployment ollama -n ollama --replicas=1
-kubectl wait --for=condition=ready pod -l app=ollama -n ollama --timeout=300s
-```
-
 ---
 
 ## Cost Management
@@ -348,7 +315,40 @@ ollama_cpu_request     = 2
 | Kong Konnect Cloud GW | Varies | Varies | Varies |
 | **Total** | **~$4,173+** | **~$998+** | **~$395+** |
 
-> EKS control plane and EBS run 24/7 regardless of GPU scaling. Scale down the GPU node group when not in use to stop ~$5.67/hr GPU billing (see [Day-to-Day Usage](#day-to-day-usage)).
+> EKS control plane and EBS run 24/7 regardless of GPU scaling. Scale down the GPU node group when not in use to stop ~$5.67/hr GPU billing.
+
+### Scale to Zero (Stop GPU Billing)
+
+When you're done for the day — stop the GPU node to avoid ~$5.67/hr charges:
+
+```bash
+# Stop the pod
+kubectl scale deployment ollama -n ollama --replicas=0
+
+# Scale down the GPU node group
+aws eks update-nodegroup-config \
+  --cluster-name $(terraform -chdir=terraform output -raw eks_cluster_name) \
+  --nodegroup-name $(terraform -chdir=terraform output -raw gpu_node_group_name) \
+  --scaling-config minSize=0,maxSize=2,desiredSize=0 \
+  --region $(terraform -chdir=terraform output -raw region)
+```
+
+### Resume Next Session
+
+The EBS volume with your downloaded models is preserved — no re-download needed:
+
+```bash
+# Scale up the GPU node group
+aws eks update-nodegroup-config \
+  --cluster-name $(terraform -chdir=terraform output -raw eks_cluster_name) \
+  --nodegroup-name $(terraform -chdir=terraform output -raw gpu_node_group_name) \
+  --scaling-config minSize=0,maxSize=2,desiredSize=1 \
+  --region $(terraform -chdir=terraform output -raw region)
+
+# Start the pod
+kubectl scale deployment ollama -n ollama --replicas=1
+kubectl wait --for=condition=ready pod -l app=ollama -n ollama --timeout=300s
+```
 
 ---
 
