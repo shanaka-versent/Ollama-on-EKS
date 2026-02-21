@@ -8,7 +8,7 @@ Deploy a fully private Ollama LLM server on AWS EKS with GPU acceleration, expos
 
 ![Architecture Diagram](docs/architecture.png)
 
-> To regenerate: `python generate-diagram.py` (requires `pip install diagrams` + `brew install graphviz`)
+> To regenerate: `python3 generate-diagram.py` (requires `pip install diagrams` + `brew install graphviz`)
 
 **Traffic flow:**
 ```
@@ -26,6 +26,7 @@ Client → Kong Cloud AI GW (Kong's AWS) --[Transit GW]--> Internal NLB --> Isti
 | Internal NLB | Your AWS account (EKS) | Load balancer — only reachable via Transit Gateway |
 | Istio Ambient Mesh | Your AWS account (EKS) | L4 mTLS, Gateway API routing |
 | Ollama server | Your AWS account (EKS) | Model server — loads model, runs GPU inference |
+| EBS gp3 (200GB) | Your AWS account (AZ-local) | Block storage — attaches to EC2 GPU node via Nitro NVMe hypervisor (not PrivateLink) |
 | qwen3-coder:32b | Your AWS account (EKS) | The actual LLM brain doing the reasoning |
 
 ---
@@ -99,28 +100,48 @@ That's it. The script handles the full lifecycle end-to-end:
 
 > Already deployed? Re-run just the post-setup: `./scripts/01-setup.sh`
 
-### Step 3: Connect Claude Code
+### Step 3: Verify and Connect
 
-**With Kong (team access — recommended):**
+**Check the model has finished loading** (qwen3-coder:32b is ~20GB — may take 10–30 min):
+
 ```bash
-# Get Kong proxy URL from Konnect UI:
+kubectl logs -n ollama -l app=model-loader -f
+# Wait for: pull completed
+
+kubectl get applications -n argocd
+# All should show: Synced / Healthy
+```
+
+**Connect Claude Code — with Kong (team access, recommended):**
+
+```bash
+# Get your proxy URL from Konnect UI:
 # https://cloud.konghq.com → Gateway Manager → Data Plane Nodes
 source claude-switch.sh ollama \
   --endpoint https://<KONG_PROXY_URL> \
   --apikey <your-api-key>
-```
 
-**Without Kong (local port-forward):**
-```bash
-source claude-switch.sh local
-```
-
-```bash
 claude --model qwen3-coder:32b
 ```
 
-> **Monitor ArgoCD:** `kubectl get applications -n argocd -w`
-> The model loader job (Wave 4) pulls `qwen3-coder:32b` (~20GB) in the background.
+**Connect Claude Code — without Kong (local port-forward, single user):**
+
+```bash
+source claude-switch.sh local
+claude --model qwen3-coder:32b
+```
+
+### Step 4: Scale to Zero When Done (stop GPU billing)
+
+```bash
+kubectl scale deployment ollama -n ollama --replicas=0
+```
+
+The EBS volume (with all downloaded models) is preserved — next time just scale back up:
+
+```bash
+kubectl scale deployment ollama -n ollama --replicas=1
+```
 
 ---
 
@@ -138,7 +159,7 @@ Kong is the external-facing entry point that sits on top of your 4-layer private
 | `ai-proxy` Plugin | Translates OpenAI format → Ollama API transparently |
 | `key-auth` Plugin | API key auth per team member (consumer-level) |
 
-Scripts that configure Kong: `03-setup-cloud-gateway.sh`, `04-post-setup.sh`
+Scripts that configure Kong: `scripts/03-setup-cloud-gateway.sh`, `scripts/04-post-setup.sh`
 
 ---
 
@@ -190,13 +211,14 @@ ArgoCD auto-deploys these from Git after `terraform apply`:
 | 3 | Ollama Deployment (4 GPUs, 96Gi), Service (ClusterIP :11434), NetworkPolicy | `k8s/ollama/` |
 | 4 | Model Loader Job — pulls `qwen3-coder:32b` to EBS volume | `k8s/model-loader/` |
 
-### Post-Terraform (one-time scripts)
+### Post-Terraform (automated by `deploy.sh`)
 
 | Script | What It Does |
 |--------|-------------|
-| `02-generate-certs.sh` | Creates TLS secret; ArgoCD self-heals and Wave 5 (Gateway) becomes healthy |
-| `03-setup-cloud-gateway.sh` | Creates Kong Konnect control plane + cloud gateway network + TGW attachment |
-| `04-post-setup.sh` | Discovers NLB hostname, updates `deck/kong.yaml`, syncs AI Gateway config |
+| `scripts/01-setup.sh` | Master orchestrator — kubectl config, ArgoCD wait, TLS certs, Ollama wait, Kong setup |
+| `scripts/02-generate-certs.sh` | Creates TLS secret; ArgoCD self-heals and Wave 5 (Gateway) becomes healthy |
+| `scripts/03-setup-cloud-gateway.sh` | Creates Kong Konnect control plane + cloud gateway network + TGW attachment |
+| `scripts/04-post-setup.sh` | Discovers NLB hostname, updates `deck/kong.yaml`, syncs AI Gateway config |
 
 ---
 
@@ -254,60 +276,29 @@ The `claude-switch.sh` script lets you switch between three modes:
 
 ### Mode 1: Remote (Anthropic API) — Default
 
-Use Claude from Anthropic's servers:
-
 ```bash
 source claude-switch.sh remote
-claude --your-args-here
+claude
 ```
-
-**Prerequisites:**
-- `ANTHROPIC_API_KEY` environment variable set (your API key from [console.anthropic.com](https://console.anthropic.com))
 
 ### Mode 2: Local (EKS via Port-Forward)
 
-Use your private Ollama on EKS (requires kubectl access):
-
 ```bash
-# Enable local mode (starts port-forward tunnel automatically)
 source claude-switch.sh local
-
-# Run Claude Code
 claude --model qwen3-coder:32b
 ```
 
-**Prerequisites:**
-- kubectl configured and authenticated to your EKS cluster
-- Ollama pod running in `ollama` namespace
-
-**How it works:**
-- Starts `kubectl port-forward -n ollama svc/ollama 11434:11434` in background
-- Sets `ANTHROPIC_BASE_URL=http://localhost:11434`
-- Your terminal needs to stay running the port-forward
+Starts `kubectl port-forward -n ollama svc/ollama 11434:11434` automatically in the background.
 
 ### Mode 3: Kong Cloud AI Gateway (Team Access) — Recommended
 
-Use Kong's managed gateway (no kubectl needed, share with team):
-
 ```bash
-# Enable Kong mode with your Kong proxy URL and API key
 source claude-switch.sh ollama \
   --endpoint https://<KONG_PROXY_URL> \
   --apikey <your-api-key>
 
-# Run Claude Code
 claude --model qwen3-coder:32b
 ```
-
-**Prerequisites:**
-- Kong proxy URL (from Konnect UI: Gateway Manager → Data Plane Nodes)
-- API key (from `deck/kong.yaml` or set by admin)
-
-**How it works:**
-- Sets `ANTHROPIC_BASE_URL=https://<KONG_PROXY_URL>`
-- All requests go through Kong's managed gateway
-- Private connectivity via Transit Gateway to your EKS
-- Team members can use the same endpoint + different API keys
 
 ### Check Current Mode
 
@@ -315,43 +306,14 @@ claude --model qwen3-coder:32b
 source claude-switch.sh status
 ```
 
-**Output examples:**
-
-```
-Mode:   REMOTE (Anthropic API)
-Key:    set (env var)
-Run:    claude
-
----
-
-Mode:   LOCAL (Ollama on EKS via port-forward)
-URL:    http://localhost:11434
-Tunnel: CONNECTED
-Run:    claude --model qwen3-coder:32b
-
----
-
-Mode:     OLLAMA via Kong Cloud AI Gateway
-Endpoint: https://abc123xyz.kong-cloud.com
-API Key:  your-key...
-Status:   CONNECTED
-Run:      claude --model qwen3-coder:32b
-```
-
-### Switching Between Modes
+### Switch Between Modes
 
 ```bash
-# Go back to remote
-source claude-switch.sh remote
-
-# Switch to local
-source claude-switch.sh local
-
-# Switch to Kong gateway
-source claude-switch.sh ollama --endpoint https://... --apikey ...
-
-# Check current setup
-source claude-switch.sh status
+source claude-switch.sh remote          # back to Anthropic API
+source claude-switch.sh local           # port-forward
+source claude-switch.sh ollama \        # Kong gateway
+  --endpoint https://... --apikey ...
+source claude-switch.sh status          # show current setup
 ```
 
 ---
@@ -399,22 +361,21 @@ ollama_model           = "qwen3-coder:7b"
 kubectl scale deployment ollama -n ollama --replicas=0
 
 aws eks update-nodegroup-config \
-  --cluster-name $(terraform output -raw eks_cluster_name) \
-  --nodegroup-name $(terraform output -raw gpu_node_group_name) \
+  --cluster-name $(terraform -chdir=terraform output -raw eks_cluster_name) \
+  --nodegroup-name $(terraform -chdir=terraform output -raw gpu_node_group_name) \
   --scaling-config minSize=0,maxSize=2,desiredSize=0 \
-  --region us-west-2
+  --region $(terraform -chdir=terraform output -raw region)
 ```
 
 ### Resume next day
 
 ```bash
 aws eks update-nodegroup-config \
-  --cluster-name $(terraform output -raw eks_cluster_name) \
-  --nodegroup-name $(terraform output -raw gpu_node_group_name) \
+  --cluster-name $(terraform -chdir=terraform output -raw eks_cluster_name) \
+  --nodegroup-name $(terraform -chdir=terraform output -raw gpu_node_group_name) \
   --scaling-config minSize=0,maxSize=2,desiredSize=1 \
-  --region us-west-2
+  --region $(terraform -chdir=terraform output -raw region)
 
-kubectl get nodes -w
 kubectl scale deployment ollama -n ollama --replicas=1
 kubectl wait --for=condition=ready pod -l app=ollama -n ollama --timeout=300s
 # Models persist on EBS — no re-download needed!
@@ -434,7 +395,7 @@ kubectl wait --for=condition=ready pod -l app=ollama -n ollama --timeout=300s
 | **NetworkPolicy** | Ingress: `istio-ingress` + `ollama` namespaces only. Egress: DNS + HTTPS |
 | **AWS VPC** | Private subnets for nodes, NAT Gateway for outbound only |
 | **Node Isolation** | System nodes tainted `CriticalAddonsOnly`, GPU nodes tainted `nvidia.com/gpu` |
-| **EBS Storage** | gp3 volume with `Retain` reclaim policy |
+| **EBS Storage** | gp3 volume attaches to EC2 GPU node via Nitro NVMe (hypervisor-level, not network) |
 | **IRSA** | EBS CSI + LB Controller use scoped IAM roles via OIDC |
 
 ---
@@ -443,6 +404,11 @@ kubectl wait --for=condition=ready pod -l app=ollama -n ollama --timeout=300s
 
 ```
 .
+├── deploy.sh                     # Entry point — full stack deploy (terraform + post-setup)
+├── destroy.sh                    # Entry point — complete teardown
+├── claude-switch.sh              # Claude Code mode switcher (remote / local / kong)
+├── .env.example                  # Kong Konnect credentials template
+├── generate-diagram.py           # Regenerates docs/architecture.png
 ├── terraform/
 │   ├── main.tf                   # Root module — orchestrates all layers
 │   ├── variables.tf              # All input variables
@@ -474,22 +440,17 @@ kubectl wait --for=condition=ready pod -l app=ollama -n ollama --timeout=300s
 │   ├── namespaces.yaml           # ollama + istio-ingress namespaces (ambient mode)
 │   ├── gateway.yaml              # Istio Gateway (internal NLB)
 │   ├── httproutes.yaml           # HTTPRoutes for Ollama
-│   ├── ollama/                   # Ollama Deployment, Service, NetworkPolicy, StorageClass, PVC
-│   └── model-loader/             # Job: pulls qwen3-coder:32b
+│   ├── ollama/                   # Deployment, Service, NetworkPolicy, StorageClass, PVC
+│   └── model-loader/             # Job: pulls qwen3-coder:32b to EBS volume
 ├── scripts/
-│   ├── 00-destroy-all.sh         # Complete teardown automation
+│   ├── 01-setup.sh               # Post-terraform orchestrator (called by deploy.sh)
 │   ├── 02-generate-certs.sh      # TLS certificates for Istio Gateway
 │   ├── 03-setup-cloud-gateway.sh # Kong Konnect Cloud Gateway setup
 │   └── 04-post-setup.sh          # Discover NLB + sync Kong config
 ├── deck/
 │   └── kong.yaml                 # Kong AI Gateway declarative config
-├── docs/
-│   └── architecture.png          # Architecture diagram
-├── generate-diagram.py           # Regenerates docs/architecture.png
-├── claude-switch.sh              # Claude Code mode switcher
-├── .env.example                  # Kong Konnect credentials template
-├── README.md                     # This file
-└── .gitignore
+└── docs/
+    └── architecture.png          # Architecture diagram
 ```
 
 ---
@@ -510,6 +471,7 @@ kubectl wait --for=condition=ready pod -l app=ollama -n ollama --timeout=300s
 | Port-forward drops | Connection timeout | Use Kong mode instead, or loop: `while true; do kubectl port-forward ...; sleep 2; done` |
 | Claude Code outputs raw JSON | Model too small | Use 32B+ model |
 | GPU quota exceeded | AWS `InsufficientInstanceCapacity` | Request quota increase in AWS Console |
+| Kong 409 on re-run | Control plane or network already exists | Script is idempotent — it will reuse existing resources automatically |
 
 ### Useful debugging commands
 
@@ -534,7 +496,7 @@ kubectl get gateway -n istio-ingress
 kubectl logs -n ollama deploy/ollama -f
 
 # Model loader job logs
-kubectl logs -n ollama -l app=model-loader
+kubectl logs -n ollama -l app=model-loader -f
 
 # GPU status
 kubectl exec -n ollama deploy/ollama -- nvidia-smi
@@ -553,75 +515,22 @@ deck gateway diff deck/kong.yaml \
 
 ## Tear Down
 
-### Automated Destroy (Recommended)
-
 ```bash
-./scripts/00-destroy-all.sh
+./destroy.sh
 ```
 
 This script automatically:
-1. Removes Kong Konnect control plane and cloud gateway network
-2. Deletes all ArgoCD Applications (cascades to Istio, Ollama, Gateway — ArgoCD `prune: true`)
-3. Uninstalls ArgoCD Helm releases
-4. Deletes the EBS CSI Driver addon
-5. Runs `terraform destroy` to remove all AWS resources
-6. Checks for orphaned EBS volumes
-
-**Note:** The script will prompt for confirmation before destroying anything. Use `--force` to skip confirmation:
-
-```bash
-./scripts/00-destroy-all.sh --force
-```
-
-### Manual Destroy (If Needed)
-
-If you prefer to manually destroy resources:
+1. Removes Kong Konnect control plane via API
+2. Deletes all ArgoCD Applications (cascades to Istio, Ollama, Gateway)
+3. Waits for the internal NLB to be deleted (prevents VPC destroy failure)
+4. Uninstalls ArgoCD Helm releases
+5. Deletes namespaces (`istio-system`, `istio-ingress`, `ollama`, `argocd`)
+6. Removes the EBS CSI Driver addon
+7. Runs `terraform destroy`
+8. Reports any orphaned EBS volumes (retained by policy — delete manually if not needed)
 
 ```bash
-# 1. Remove Kong Konnect resources
-#    https://cloud.konghq.com → Gateway Manager → delete control plane
-
-# 2. Remove ArgoCD Applications (cascades to Istio, Ollama, Gateway)
-kubectl delete applications --all -n argocd --timeout=120s 2>/dev/null || true
-sleep 30
-
-# 3. Uninstall ArgoCD
-helm uninstall argocd-root-app -n argocd 2>/dev/null || true
-helm uninstall argocd -n argocd 2>/dev/null || true
-
-# 4. Clean up namespaces
-kubectl delete namespace istio-ingress istio-system ollama argocd --ignore-not-found=true
-
-# 5. Remove EBS CSI Driver addon
-aws eks delete-addon \
-  --cluster-name $(terraform output -raw eks_cluster_name) \
-  --addon-name aws-ebs-csi-driver \
-  --region us-west-2
-
-# 6. Destroy Terraform resources
-cd terraform
-terraform destroy
-
-# 7. Check for orphaned volumes
-aws ec2 describe-volumes \
-  --filters "Name=tag:Project,Values=Ollama-Private-LLM" \
-  --region us-west-2
-```
-
-### Cleanup Orphaned EBS Volumes
-
-If `terraform destroy` leaves behind EBS volumes (due to `Retain` reclaim policy):
-
-```bash
-# List orphaned volumes
-aws ec2 describe-volumes \
-  --filters "Name=tag:Project,Values=Ollama-Private-LLM" \
-  --region us-west-2 \
-  --query 'Volumes[?State==`available`].[VolumeId,Size,Tags]' \
-  --output table
-
-# Delete a specific volume
-aws ec2 delete-volume --volume-id vol-xxxxx --region us-west-2
+./destroy.sh --force   # skip confirmation prompt
 ```
 
 ---
