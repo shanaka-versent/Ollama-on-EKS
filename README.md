@@ -375,21 +375,13 @@ The Kong config is split into two files to allow safe Git commits:
 
 | File | Contents | Git | Sync |
 |------|----------|-----|------|
-| `deck/kong-config.yaml` | Services, routes, plugins — no secrets | ✅ Committed | Auto via GitHub Actions on push to `main` |
-| `deck/kong-consumers.yaml` | Consumers + API keys | ❌ Gitignored | Manual `deck sync` |
+| `deck/kong-config.yaml` | Services, routes, plugins — no secrets | ✅ Committed | `./scripts/05-sync-kong-config.sh --config-only` |
+| `deck/kong-consumers.yaml` | Consumers + API keys | ❌ Gitignored | `./scripts/05-sync-kong-config.sh` |
 | `deck/kong-consumers.yaml.sample` | Consumer format template | ✅ Committed | Reference only |
 
-**GitHub Actions** (`.github/workflows/kong-sync.yml`) auto-syncs `kong-config.yaml` to Konnect on every push to `main`. Required GitHub Secrets:
-
-| Secret | Value |
-|--------|-------|
-| `KONNECT_TOKEN` | Kong Konnect personal access token |
-| `KONNECT_REGION` | e.g. `au` or `us` |
-| `KONNECT_CP_NAME` | Control plane name e.g. `kong-cloud-gateway-eks` |
+`scripts/05-sync-kong-config.sh` validates, shows a diff, prompts for confirmation, then syncs to Konnect. Reads credentials from `.env`.
 
 ### Adding Team Members
-
-Consumer credentials are managed separately (gitignored) and synced manually:
 
 **Step 1** — Set up your local consumers file (first time only):
 ```bash
@@ -410,20 +402,16 @@ Generate a strong key:
 openssl rand -hex 32
 ```
 
-**Step 3** — Sync consumers to Konnect (merges with config file):
+**Step 3** — Sync to Konnect:
 ```bash
-source .env
-deck gateway sync deck/kong-config.yaml deck/kong-consumers.yaml \
-  --konnect-addr https://${KONNECT_REGION}.api.konghq.com \
-  --konnect-token $KONNECT_TOKEN \
-  --konnect-control-plane-name kong-cloud-gateway-eks
+./scripts/05-sync-kong-config.sh
 ```
 
 **Step 4** — Share the key via a secure channel (1Password, etc.) — never email or Slack.
 
 ### Removing Team Members
 
-Delete their block from `deck/kong-consumers.yaml` and re-run the sync command above. Their key is invalidated immediately.
+Delete their block from `deck/kong-consumers.yaml` and re-run `./scripts/05-sync-kong-config.sh`. Their key is invalidated immediately.
 
 ---
 
