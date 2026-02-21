@@ -261,16 +261,43 @@ share_ram_with_kong() {
         --query "resourceShareAssociations[?associatedEntity=='${KONG_AWS_ACCOUNT_ID}'].status" \
         --output text 2>/dev/null || true)
 
-    if [[ -n "$EXISTING" && "$EXISTING" != "None" ]]; then
-        log "  RAM principal already associated (status: ${EXISTING})"
+    if [[ "$EXISTING" == "ASSOCIATED" ]]; then
+        log "  RAM principal already ASSOCIATED"
         return
+    elif [[ -n "$EXISTING" && "$EXISTING" != "None" ]]; then
+        log "  RAM principal status: ${EXISTING} — waiting for ASSOCIATED..."
+    else
+        log "  Associating Kong's AWS account with RAM share..."
+        if ! aws ram associate-resource-share \
+            --resource-share-arn "${RAM_SHARE_ARN}" \
+            --principals "${KONG_AWS_ACCOUNT_ID}" > /dev/null 2>&1; then
+            warn "  RAM associate-resource-share failed. Check AWS permissions and RAM share ARN."
+            warn "  Manual fix: aws ram associate-resource-share --resource-share-arn ${RAM_SHARE_ARN} --principals ${KONG_AWS_ACCOUNT_ID}"
+            return
+        fi
+        log "  RAM associate command sent — waiting for ASSOCIATED status..."
     fi
 
-    aws ram associate-resource-share \
-        --resource-share-arn "${RAM_SHARE_ARN}" \
-        --principals "${KONG_AWS_ACCOUNT_ID}" > /dev/null 2>&1 || true
+    # Wait up to 3 min for the association to complete
+    # External accounts need to accept the invitation; Kong's Konnect automation does this
+    local waited=0
+    while [[ $waited -lt 180 ]]; do
+        STATUS=$(aws ram get-resource-share-associations \
+            --association-type PRINCIPAL \
+            --resource-share-arns "${RAM_SHARE_ARN}" \
+            --query "resourceShareAssociations[?associatedEntity=='${KONG_AWS_ACCOUNT_ID}'].status" \
+            --output text 2>/dev/null || true)
+        if [[ "$STATUS" == "ASSOCIATED" ]]; then
+            log "  RAM share ASSOCIATED with Kong's AWS account"
+            return
+        fi
+        log "  RAM status: ${STATUS} (waited ${waited}s / 180s — Kong accepting invitation)"
+        sleep 15
+        waited=$((waited + 15))
+    done
 
-    log "  RAM share associated with Kong's AWS account"
+    warn "  RAM association did not reach ASSOCIATED within 3 min. Kong may accept later."
+    warn "  The TGW attachment will be created now; Konnect will retry once RAM is accepted."
 }
 
 # ---------------------------------------------------------------------------

@@ -2,20 +2,19 @@
 # @author Shanaka Jayasundera - shanakaj@gmail.com
 #
 # Configures Kong as an AI Gateway for Ollama LLM on EKS.
-# Uses Kong's AI Gateway plugins (ai-proxy, ai-rate-limiting-advanced)
-# for intelligent LLM traffic management.
+# Routes traffic from Kong Cloud Gateway through Transit Gateway to Ollama.
 #
 # Architecture:
 #   Client --> Kong Cloud AI GW --[Transit GW]--> Internal NLB --> Istio Gateway --> Ollama
 #
-# IMPORTANT: Replace REPLACE_WITH_NLB_HOSTNAME with the Istio Gateway NLB DNS.
+# IMPORTANT: Replace k8s-istioing-ollamaga-df71b1176c-0870f678b71f0450.elb.us-west-2.amazonaws.com with the Istio Gateway NLB DNS.
 # Run ./scripts/04-post-setup.sh to auto-discover and replace.
 #
 # Apply:
 #   deck gateway sync deck/kong.yaml \
 #     --konnect-addr https://${KONNECT_REGION}.api.konghq.com \
 #     --konnect-token $KONNECT_TOKEN \
-#     --konnect-control-plane-name ollama-ai-gateway
+#     --konnect-control-plane-name kong-cloud-gateway-eks
 
 _format_version: "3.0"
 
@@ -25,133 +24,28 @@ _format_version: "3.0"
 # All services point to the SINGLE Istio Gateway internal NLB.
 # Kong sends traffic to this NLB, Istio routes to the Ollama pod.
 #
-# Replace REPLACE_WITH_NLB_HOSTNAME with the actual NLB hostname from:
+# Replace k8s-istioing-ollamaga-df71b1176c-0870f678b71f0450.elb.us-west-2.amazonaws.com with the actual NLB hostname from:
 #   kubectl get gateway -n istio-ingress ollama-gateway \
 #     -o jsonpath='{.status.addresses[0].value}'
 
 services:
-  # --------------------------------------------------------------------------
-  # AI Chat — OpenAI-compatible chat completions via Kong AI Proxy
-  # --------------------------------------------------------------------------
-  # Clients send standard OpenAI format: POST /ai/chat {"messages": [...]}
-  # Kong ai-proxy translates to Ollama format and routes via Transit Gateway.
-  #
-  # Usage:
-  #   curl https://<KONG_PROXY_URL>/ai/chat \
-  #     -H "Content-Type: application/json" \
-  #     -H "apikey: <your-key>" \
-  #     -d '{"messages": [{"role": "user", "content": "Hello"}], "model": "qwen3-coder:30b"}'
-  - name: ollama-ai-chat
-    url: http://REPLACE_WITH_NLB_HOSTNAME:80
-    protocol: http
-    port: 80
-    routes:
-      - name: ai-chat-route
-        paths:
-          - /ai/chat
-        methods:
-          - POST
-          - OPTIONS
-        strip_path: true
-        protocols:
-          - https
-          - http
-    plugins:
-      - name: ai-proxy
-        config:
-          route_type: llm/v1/chat
-          model:
-            provider: ollama
-            name: qwen3-coder:30b
-            options:
-              upstream_url: http://REPLACE_WITH_NLB_HOSTNAME:80
-      - name: ai-rate-limiting-advanced
-        config:
-          limit:
-            - 100
-          window_size:
-            - 60
-          window_type: sliding
-          strategy: local
-          sync_rate: -1
-          llm_providers:
-            - name: ollama
-              limit:
-                - 10000
-              window_size:
-                - 60
-      - name: cors
-        config:
-          origins:
-            - "*"
-          methods:
-            - POST
-            - OPTIONS
-          headers:
-            - Content-Type
-            - Authorization
-            - apikey
-          max_age: 3600
-
-  # --------------------------------------------------------------------------
-  # AI Completions — OpenAI-compatible text completions
-  # --------------------------------------------------------------------------
-  - name: ollama-ai-completions
-    url: http://REPLACE_WITH_NLB_HOSTNAME:80
-    protocol: http
-    port: 80
-    routes:
-      - name: ai-completions-route
-        paths:
-          - /ai/completions
-        methods:
-          - POST
-          - OPTIONS
-        strip_path: true
-        protocols:
-          - https
-          - http
-    plugins:
-      - name: ai-proxy
-        config:
-          route_type: llm/v1/completions
-          model:
-            provider: ollama
-            name: qwen3-coder:30b
-            options:
-              upstream_url: http://REPLACE_WITH_NLB_HOSTNAME:80
-      - name: ai-rate-limiting-advanced
-        config:
-          limit:
-            - 100
-          window_size:
-            - 60
-          window_type: sliding
-          strategy: local
-          sync_rate: -1
-      - name: cors
-        config:
-          origins:
-            - "*"
-          methods:
-            - POST
-            - OPTIONS
-          headers:
-            - Content-Type
-            - Authorization
-            - apikey
-          max_age: 3600
-
   # --------------------------------------------------------------------------
   # Ollama Native API — Direct pass-through for Claude Code & Ollama CLI
   # --------------------------------------------------------------------------
   # Proxies all Ollama-native endpoints: /api/tags, /api/chat, /api/generate,
   # /v1/chat/completions (Ollama's built-in OpenAI compat), etc.
   #
-  # Usage with Claude Code:
-  #   source claude-switch.sh ollama --endpoint https://<KONG_PROXY_URL>
+  # Claude Code usage:
+  #   source claude-switch.sh ollama --endpoint https://<KONG_PROXY_URL> --apikey <key>
+  #   claude --model qwen3-coder:30b
+  #
+  # Direct curl usage:
+  #   curl https://<KONG_PROXY_URL>/api/tags -H "apikey: <key>"
+  #   curl https://<KONG_PROXY_URL>/v1/chat/completions \
+  #     -H "apikey: <key>" -H "Content-Type: application/json" \
+  #     -d '{"model":"qwen3-coder:30b","messages":[{"role":"user","content":"Hello"}]}'
   - name: ollama-direct
-    url: http://REPLACE_WITH_NLB_HOSTNAME:80
+    url: http://k8s-istioing-ollamaga-df71b1176c-0870f678b71f0450.elb.us-west-2.amazonaws.com:80
     protocol: http
     port: 80
     routes:
@@ -178,10 +72,10 @@ services:
               - "X-Request-Source: cloud-ai-gateway"
 
   # --------------------------------------------------------------------------
-  # Health Check — Kong Cloud Gateway uses this to verify NLB is alive
+  # Health Check — verifies NLB connectivity from Kong Cloud Gateway
   # --------------------------------------------------------------------------
   - name: gateway-health
-    url: http://REPLACE_WITH_NLB_HOSTNAME:80
+    url: http://k8s-istioing-ollamaga-df71b1176c-0870f678b71f0450.elb.us-west-2.amazonaws.com:80
     protocol: http
     port: 80
     routes:
@@ -199,7 +93,7 @@ services:
 # Add team members as consumers with API keys for access control.
 #
 # To add a new team member:
-#   1. Add a consumer block below
+#   1. Add a consumer block below with a strong key
 #   2. Sync: deck gateway sync deck/kong.yaml ...
 #   3. Share the API key with the team member
 #
@@ -230,17 +124,9 @@ plugins:
       key_in_query: true
       hide_credentials: true
 
-  # Request size limit — protect against oversized prompts
+  # Request size limit — protect against oversized prompts (10MB)
   - name: request-size-limiting
     config:
       allowed_payload_size: 10
       size_unit: megabytes
       require_content_length: false
-
-  # Prometheus metrics — observability
-  - name: prometheus
-    config:
-      per_consumer: true
-      status_code_metrics: true
-      latency_metrics: true
-      upstream_health_metrics: true
