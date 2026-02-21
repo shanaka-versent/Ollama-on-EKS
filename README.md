@@ -345,7 +345,7 @@ kubectl wait --for=condition=ready pod -l app=ollama -n ollama --timeout=300s
 | Plugin | Purpose |
 |--------|---------|
 | `key-auth` | API key auth — accepts `apikey`, `x-api-key`, or `Authorization: Bearer` headers |
-| `rate-limiting` | 60 requests/min per consumer (configurable in `deck/kong.yaml`) |
+| `rate-limiting` | 60 requests/min per consumer (configurable in `deck/kong-config.yaml`) |
 | `request-size-limiting` | Rejects payloads over 10MB |
 
 > **Plugin availability note:** Kong Konnect Cloud Gateway (Dedicated tier) does not support `ai-proxy` with `ollama` provider, `ai-rate-limiting-advanced`, or `prometheus`. The config uses standard plugins that work across all tiers.
@@ -367,29 +367,63 @@ Kong accepts API keys in three formats:
 -H "Authorization: Bearer <key>"      # Claude Code (ANTHROPIC_AUTH_TOKEN)
 ```
 
-Because Kong reads the full `Authorization` header value when matching credentials, consumer entries in `deck/kong.yaml` must store `Bearer <key>` as a separate credential — not just the bare key. That's why each consumer has two entries (see Step 5 above).
+Because Kong reads the full `Authorization` header value when matching credentials, each consumer needs two credential entries — the bare key and `Bearer <key>` — as shown in `deck/kong-consumers.yaml.sample`.
+
+### Configuration Files
+
+The Kong config is split into two files to allow safe Git commits:
+
+| File | Contents | Git | Sync |
+|------|----------|-----|------|
+| `deck/kong-config.yaml` | Services, routes, plugins — no secrets | ✅ Committed | Auto via GitHub Actions on push to `main` |
+| `deck/kong-consumers.yaml` | Consumers + API keys | ❌ Gitignored | Manual `deck sync` |
+| `deck/kong-consumers.yaml.sample` | Consumer format template | ✅ Committed | Reference only |
+
+**GitHub Actions** (`.github/workflows/kong-sync.yml`) auto-syncs `kong-config.yaml` to Konnect on every push to `main`. Required GitHub Secrets:
+
+| Secret | Value |
+|--------|-------|
+| `KONNECT_TOKEN` | Kong Konnect personal access token |
+| `KONNECT_REGION` | e.g. `au` or `us` |
+| `KONNECT_CP_NAME` | Control plane name e.g. `kong-cloud-gateway-eks` |
 
 ### Adding Team Members
 
-Edit `deck/kong.yaml` and add a consumer block:
+Consumer credentials are managed separately (gitignored) and synced manually:
 
+**Step 1** — Set up your local consumers file (first time only):
+```bash
+cp deck/kong-consumers.yaml.sample deck/kong-consumers.yaml
+```
+
+**Step 2** — Add the new team member to `deck/kong-consumers.yaml`:
 ```yaml
 consumers:
   - username: alice
     keyauth_credentials:
-      - key: alice-secure-key-here
-      - key: "Bearer alice-secure-key-here"
+      - key: GENERATED_KEY_HERE
+      - key: "Bearer GENERATED_KEY_HERE"
 ```
 
-Then sync:
+Generate a strong key:
+```bash
+openssl rand -hex 32
+```
 
+**Step 3** — Sync consumers to Konnect (merges with config file):
 ```bash
 source .env
-deck gateway sync deck/kong.yaml \
+deck gateway sync deck/kong-config.yaml deck/kong-consumers.yaml \
   --konnect-addr https://${KONNECT_REGION}.api.konghq.com \
   --konnect-token $KONNECT_TOKEN \
   --konnect-control-plane-name kong-cloud-gateway-eks
 ```
+
+**Step 4** — Share the key via a secure channel (1Password, etc.) — never email or Slack.
+
+### Removing Team Members
+
+Delete their block from `deck/kong-consumers.yaml` and re-run the sync command above. Their key is invalidated immediately.
 
 ---
 

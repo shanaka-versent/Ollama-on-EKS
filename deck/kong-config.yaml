@@ -1,0 +1,117 @@
+# Kong Konnect Cloud AI Gateway — Infrastructure Configuration (decK)
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# Contains: services, routes, global plugins — NO secrets.
+# Safe to commit to Git. Auto-synced to Konnect via GitHub Actions on push to main.
+#
+# Architecture:
+#   Client --> Kong Cloud AI GW --[Transit GW]--> Internal NLB --> Istio Gateway --> Ollama
+#
+# This file is one half of a two-file split:
+#   deck/kong-config.yaml     ← this file (committed, auto-synced)
+#   deck/kong-consumers.yaml  ← gitignored (contains API keys, synced manually)
+#
+# To sync both files together manually:
+#   source .env
+#   deck gateway sync deck/kong-config.yaml deck/kong-consumers.yaml \
+#     --konnect-addr https://${KONNECT_REGION}.api.konghq.com \
+#     --konnect-token $KONNECT_TOKEN \
+#     --konnect-control-plane-name kong-cloud-gateway-eks
+#
+# To sync config only (no consumer changes):
+#   deck gateway sync deck/kong-config.yaml \
+#     --konnect-addr https://${KONNECT_REGION}.api.konghq.com \
+#     --konnect-token $KONNECT_TOKEN \
+#     --konnect-control-plane-name kong-cloud-gateway-eks
+
+_format_version: "3.0"
+
+# ==============================================================================
+# SERVICES & ROUTES
+# ==============================================================================
+# All services point to the Istio Gateway internal NLB.
+# The NLB hostname is injected by ./scripts/04-post-setup.sh at deploy time.
+# After running 04-post-setup.sh, commit the updated NLB hostname here.
+
+services:
+  # --------------------------------------------------------------------------
+  # Ollama Native API — Direct pass-through for Claude Code & Ollama CLI
+  # --------------------------------------------------------------------------
+  # Proxies all Ollama-native endpoints: /api/tags, /api/chat, /api/generate,
+  # /v1/chat/completions (Ollama's built-in OpenAI compat), etc.
+  #
+  # Claude Code usage:
+  #   source claude-switch.sh ollama --endpoint https://<KONG_PROXY_URL> --apikey <key>
+  #   claude --model qwen3-coder:30b
+  #
+  # Direct curl usage:
+  #   curl https://<KONG_PROXY_URL>/api/tags -H "apikey: <key>"
+  - name: ollama-direct
+    url: http://<YOUR_NLB_DNS>:80
+    protocol: http
+    port: 80
+    routes:
+      - name: ollama-api-route
+        paths:
+          - /api
+          - /v1
+        strip_path: false
+        protocols:
+          - https
+          - http
+    plugins:
+      - name: rate-limiting
+        config:
+          minute: 60
+          policy: local
+          fault_tolerant: true
+          hide_client_headers: false
+
+  # --------------------------------------------------------------------------
+  # Health Check — verifies NLB connectivity from Kong Cloud Gateway
+  # --------------------------------------------------------------------------
+  - name: gateway-health
+    url: http://<YOUR_NLB_DNS>:80
+    protocol: http
+    port: 80
+    routes:
+      - name: health-route
+        paths:
+          - /healthz
+        strip_path: false
+        protocols:
+          - https
+          - http
+
+# ==============================================================================
+# GLOBAL PLUGINS
+# ==============================================================================
+# These plugins apply to ALL routes.
+
+plugins:
+  # API Key Authentication — all routes require an API key.
+  # Accepts the key in multiple formats:
+  #   apikey: <key>                    ← curl / direct API clients
+  #   x-api-key: <key>                 ← OpenAI-compat clients
+  #   Authorization: Bearer <key>      ← Claude Code (ANTHROPIC_AUTH_TOKEN)
+  #
+  # When key_names includes "authorization", Kong reads the full header value.
+  # So for "Authorization: Bearer mykey", the credential stored in Kong must be
+  # "Bearer mykey" (with the "Bearer " prefix) — hence the two entries per consumer
+  # in kong-consumers.yaml.
+  - name: key-auth
+    config:
+      key_names:
+        - apikey
+        - x-api-key
+        - authorization
+      key_in_header: true
+      key_in_query: true
+      hide_credentials: true
+
+  # Request size limit — protect against oversized prompts (10MB)
+  - name: request-size-limiting
+    config:
+      allowed_payload_size: 10
+      size_unit: megabytes
+      require_content_length: false

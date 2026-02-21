@@ -19,4 +19,7 @@ terraform/.terraform.lock.hcl
 certs/
 
 # Kong gateway config — contains real API keys, managed via deck sync only
+# deck/kong-config.yaml  ← committed (no secrets, auto-synced via GitHub Actions)
+# deck/kong-consumers.yaml.sample ← committed (template only, placeholder keys)
 deck/kong.yaml
+deck/kong-consumers.yaml

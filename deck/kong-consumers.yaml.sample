@@ -1,0 +1,62 @@
+# Kong Konnect — Consumer Credentials Template
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# This is the SAMPLE file showing the format for consumer credentials.
+# The actual file (deck/kong-consumers.yaml) is gitignored — it contains real API keys.
+#
+# Setup for a new team member:
+#   1. Copy this file:
+#        cp deck/kong-consumers.yaml.sample deck/kong-consumers.yaml
+#
+#   2. Add the new consumer block (see format below)
+#
+#   3. Generate a strong API key:
+#        openssl rand -hex 32
+#
+#   4. Sync to Konnect (merges with kong-config.yaml):
+#        source .env
+#        deck gateway sync deck/kong-config.yaml deck/kong-consumers.yaml \
+#          --konnect-addr https://${KONNECT_REGION}.api.konghq.com \
+#          --konnect-token $KONNECT_TOKEN \
+#          --konnect-control-plane-name kong-cloud-gateway-eks
+#
+#   5. Share the API key with the team member via a secure channel (1Password, etc.)
+#
+# Removing a team member:
+#   1. Delete their consumer block from deck/kong-consumers.yaml
+#   2. Run deck sync (same command as step 4 above)
+#   3. Their key is immediately invalidated — no grace period
+#
+# IMPORTANT:
+#   - Each consumer needs TWO credential entries per key:
+#       bare key        → for apikey / x-api-key headers
+#       "Bearer <key>"  → for Authorization: Bearer header (used by Claude Code)
+#   - NEVER commit deck/kong-consumers.yaml to Git
+#   - Store the actual file in a secure location (1Password, AWS Secrets Manager, etc.)
+
+_format_version: "3.0"
+
+consumers:
+  # --------------------------------------------------------------------------
+  # Example: Admin user
+  # --------------------------------------------------------------------------
+  - username: shanaka
+    keyauth_credentials:
+      - key: REPLACE_WITH_REAL_KEY_openssl_rand_hex_32
+      - key: "Bearer REPLACE_WITH_REAL_KEY_openssl_rand_hex_32"
+
+  # --------------------------------------------------------------------------
+  # Example: Developer team member
+  # --------------------------------------------------------------------------
+  - username: jane-doe
+    keyauth_credentials:
+      - key: REPLACE_WITH_REAL_KEY_openssl_rand_hex_32
+      - key: "Bearer REPLACE_WITH_REAL_KEY_openssl_rand_hex_32"
+
+  # --------------------------------------------------------------------------
+  # Add more team members following the same pattern:
+  # --------------------------------------------------------------------------
+  # - username: firstname-lastname
+  #   keyauth_credentials:
+  #     - key: REPLACE_WITH_REAL_KEY_openssl_rand_hex_32
+  #     - key: "Bearer REPLACE_WITH_REAL_KEY_openssl_rand_hex_32"
