@@ -310,14 +310,20 @@ kubectl wait --for=condition=ready pod -l app=ollama -n ollama --timeout=300s
 
 ### GPU Instance Options
 
-Edit `terraform/terraform.tfvars` to change the GPU instance. Update `OLLAMA_CONTEXT_LENGTH` in `k8s/ollama/deployment.yaml` if you change VRAM significantly.
+> **Instance type is chosen at setup time** — you must decide which model you intend to run *before* running `terraform apply`, because the GPU node group is provisioned for a specific instance. Changing instance type requires `terraform apply` to replace the node group.
 
-| Instance | GPUs | VRAM | Best For | Cost/hr |
-|----------|------|------|----------|---------|
-| `g5.xlarge` | 1x A10G | 24GB | 7B models | ~$1.01 |
-| `g5.2xlarge` | 1x A10G | 24GB | 7B–14B models | ~$1.21 |
-| `g5.12xlarge` | 4x A10G | 96GB | 30B–70B models | ~$5.67 |
-| `p4d.24xlarge` | 8x A100 | 320GB | 70B+ models | ~$32.77 |
+The model you load into Ollama must fit within the VRAM of the chosen instance. A model that exceeds available VRAM will fail to load or run extremely slowly on CPU fallback.
+
+> **Costs shown are approximate (~) and subject to change.** Always check current [AWS EC2 pricing](https://aws.amazon.com/ec2/pricing/on-demand/) for your region before making decisions.
+
+| Instance | GPUs | VRAM | Recommended Models | Cost/hr |
+|----------|------|------|--------------------|---------|
+| `g5.xlarge` | 1x A10G | 24GB | `qwen2.5-coder:7b`, `codellama:7b` | ~$1.01 |
+| `g5.2xlarge` | 1x A10G | 24GB | `qwen2.5-coder:14b`, `llama3.1:8b` | ~$1.21 |
+| `g5.12xlarge` | 4x A10G | 96GB | `qwen3-coder:32b`, `llama3.1:70b` | ~$5.67 |
+| `p4d.24xlarge` | 8x A100 | 320GB | `llama3.1:405b`, largest models | ~$32.77 |
+
+**Rule of thumb:** model size in GB ≈ parameter count × 0.5 (for 4-bit quantised). A 32B model needs ~18–20GB VRAM minimum; 70B needs ~40GB. Always leave headroom for KV cache.
 
 When changing instance type, update these variables together:
 
@@ -332,15 +338,17 @@ ollama_cpu_request     = 2
 
 ### Monthly Cost Estimates
 
+> All figures are approximate (~) based on us-east-1 On-Demand pricing and subject to AWS pricing changes. Spot instances vary with market demand.
+
 | Component | 24/7 | 8 hrs/day weekdays | 8 hrs/day Spot |
 |-----------|------|--------------------|----------------|
 | EKS Control Plane | ~$73 | ~$73 | ~$73 |
-| g5.12xlarge | ~$4,082 | ~$907 | ~$304 |
+| g5.12xlarge (4x A10G / 96GB VRAM) | ~$4,082 | ~$907 | ~$304 |
 | EBS 200GB gp3 | ~$18 | ~$18 | ~$18 |
 | Kong Konnect Cloud GW | Varies | Varies | Varies |
 | **Total** | **~$4,173+** | **~$998+** | **~$395+** |
 
-> EKS control plane and EBS run 24/7 regardless of GPU scaling.
+> EKS control plane and EBS run 24/7 regardless of GPU scaling. Scale down the GPU node group when not in use to stop ~$5.67/hr GPU billing (see [Day-to-Day Usage](#day-to-day-usage)).
 
 ---
 
