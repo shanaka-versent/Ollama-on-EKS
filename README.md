@@ -474,8 +474,8 @@ kubectl wait --for=condition=ready pod -l app=ollama -n ollama --timeout=300s
 │       ├── vpc/                  # Layer 1: VPC, subnets, NAT
 │       ├── iam/                  # Layer 2: IAM roles
 │       ├── eks/                  # Layer 2: EKS cluster + node groups
-│       ├── argocd/               # Layer 3: ArgoCD GitOps bootstrap
-│       └── lb-controller/        # Layer 4: AWS LB Controller
+│       ├── argocd/               # Layer 2: ArgoCD GitOps bootstrap
+│       └── lb-controller/        # Layer 2: AWS LB Controller
 ├── argocd/
 │   └── apps/                     # ArgoCD Application manifests (sync waves -2 to 6)
 │       ├── 00-gateway-api-crds.yaml
