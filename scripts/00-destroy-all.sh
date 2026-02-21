@@ -90,6 +90,7 @@ fi
 
 EKS_CLUSTER_NAME=$(terraform -chdir="$TERRAFORM_DIR" output -raw eks_cluster_name 2>/dev/null || echo "")
 AWS_REGION=$(terraform -chdir="$TERRAFORM_DIR" output -raw region 2>/dev/null || echo "us-west-2")
+VPC_ID=$(terraform -chdir="$TERRAFORM_DIR" output -raw vpc_id 2>/dev/null || echo "")
 
 if [[ -z "$EKS_CLUSTER_NAME" ]]; then
     error "Could not read eks_cluster_name from Terraform. Is the cluster deployed?"
@@ -158,7 +159,34 @@ else
     if kubectl get applications -n argocd &>/dev/null 2>&1; then
         log "  Deleting all ArgoCD Applications..."
         kubectl delete applications --all -n argocd --timeout=120s 2>/dev/null || true
-        sleep 10
+    fi
+
+    # Wait for NLB to be deleted before terraform destroy.
+    # The LB Controller deletes the NLB when the Gateway resource is removed.
+    # If terraform destroy runs while the NLB still exists, it cannot delete the
+    # VPC (NLB ENIs still occupy the subnets) and the destroy fails.
+    if [[ -n "$VPC_ID" ]]; then
+        log "  Waiting for NLB to be deleted by LB Controller (up to 5 min)..."
+        max_wait=300
+        interval=15
+        waited=0
+        while [[ $waited -lt $max_wait ]]; do
+            NLB_COUNT=$(aws elbv2 describe-load-balancers \
+                --region "$AWS_REGION" \
+                --query "LoadBalancers[?VpcId=='${VPC_ID}'].LoadBalancerArn" \
+                --output text 2>/dev/null | wc -w | tr -d ' ' || echo "0")
+            if [[ "$NLB_COUNT" -eq 0 ]]; then
+                log "  No NLBs remaining in VPC"
+                break
+            fi
+            echo "  [${waited}s] Waiting for ${NLB_COUNT} NLB(s) to be deleted..."
+            sleep "$interval"
+            waited=$((waited + interval))
+        done
+        if [[ "$waited" -ge "$max_wait" ]]; then
+            warn "  NLB still present after ${max_wait}s — terraform destroy may fail."
+            warn "  Check: aws elbv2 describe-load-balancers --region $AWS_REGION"
+        fi
     fi
 
     # Uninstall ArgoCD Helm releases
