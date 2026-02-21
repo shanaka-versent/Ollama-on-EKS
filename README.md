@@ -75,63 +75,163 @@ For `g5.12xlarge` you need at least 48 vCPUs. Request a quota increase if needed
 
 ## Quick Start
 
-### Step 1: Configure Credentials
+The deployment has three phases. Each phase has a clear verification step before moving to the next.
+
+---
+
+### Phase 1: Deploy Infrastructure (~20–30 min)
+
+**Step 1: Configure credentials**
 
 ```bash
 cp .env.example .env
-# Edit .env — set KONNECT_REGION and KONNECT_TOKEN (required for Kong team access)
-# Leave blank to skip Kong and use local port-forward mode only
+# Edit .env — set KONNECT_REGION and KONNECT_TOKEN
 ```
 
-### Step 2: Deploy Everything
+**Step 2: Deploy AWS infrastructure + Kubernetes workloads**
 
 ```bash
 ./deploy.sh
 ```
 
-That's it. The script handles the full lifecycle end-to-end:
-- `terraform init + apply` — VPC, EKS, IAM, ArgoCD bootstrap (~20 min)
-- ArgoCD auto-syncs Istio, Ollama, and Gateway from Git (waves -2 to 6)
+This runs `terraform apply` (VPC, EKS, IAM, ArgoCD) then `scripts/01-setup.sh` which:
 - Configures `kubectl` from Terraform outputs
-- Waits for ArgoCD Wave 1 (namespaces)
+- Waits for ArgoCD namespaces (Wave 1)
 - Generates TLS certificates (unblocks Wave 5 — Istio Gateway)
 - Waits for Ollama to be ready
-- Sets up Kong Konnect Cloud AI Gateway *(if `.env` credentials are set)*
+- Creates the Kong Konnect control plane + cloud gateway network + Transit Gateway attachment request
 
-> Already deployed? Re-run just the post-setup: `./scripts/01-setup.sh`
-
-### Step 3: Verify and Connect
-
-**Check the model has finished loading** (qwen3-coder:32b is ~20GB — may take 10–30 min):
+**Verify Phase 1 is complete before continuing:**
 
 ```bash
-kubectl logs -n ollama -l app=model-loader -f
-# Wait for: pull completed
-
+# 1. All ArgoCD apps should be Synced / Healthy
 kubectl get applications -n argocd
-# All should show: Synced / Healthy
+
+# 2. Model loader should show "pull completed" (qwen3-coder:32b is ~20GB, takes 10–30 min)
+kubectl logs -n ollama -l app=model-loader -f
+
+# 3. Ollama pod should be Running
+kubectl get pods -n ollama
 ```
 
-**Connect Claude Code — with Kong (team access, recommended):**
+---
+
+### Phase 2: Complete Kong Transit Gateway Setup (~30–60 min)
+
+The cloud gateway network takes ~30 min to provision. Once ready, Kong initiates a
+Transit Gateway attachment to your VPC — **you must accept this in your AWS account**.
+
+**Step 3: Accept the Transit Gateway attachment in AWS**
 
 ```bash
-# Get your proxy URL from Konnect UI:
-# https://cloud.konghq.com → Gateway Manager → Data Plane Nodes
+# Check for a pending attachment from Kong's account
+aws ec2 describe-transit-gateway-attachments \
+  --region us-west-2 \
+  --filters "Name=transit-gateway-id,Values=$(terraform -chdir=terraform output -raw transit_gateway_id)" \
+            "Name=state,Values=pendingAcceptance" \
+  --query 'TransitGatewayAttachments[*].{ID:TransitGatewayAttachmentId,State:State,Account:CreatorAccountId}' \
+  --output table
+```
+
+If an attachment appears, accept it:
+
+```bash
+aws ec2 accept-transit-gateway-vpc-attachment \
+  --transit-gateway-attachment-id <tgw-attach-id-from-above> \
+  --region us-west-2
+```
+
+> **Note:** If no attachment is pending yet, the network is still provisioning. Wait and re-run the check every few minutes.
+
+**Step 4: Poll until the attachment is ready**
+
+```bash
+source .env
+NETWORK_ID=$(curl -s "https://global.api.konghq.com/v2/cloud-gateways/networks" \
+  -H "Authorization: Bearer $KONNECT_TOKEN" | \
+  jq -r '.data[] | select(.name == "ollama-eks-network") | .id')
+
+TGW_ATT_ID=$(curl -s \
+  "https://global.api.konghq.com/v2/cloud-gateways/networks/${NETWORK_ID}/transit-gateways" \
+  -H "Authorization: Bearer $KONNECT_TOKEN" | jq -r '.data[0].id')
+
+while true; do
+  STATE=$(curl -s \
+    "https://global.api.konghq.com/v2/cloud-gateways/networks/${NETWORK_ID}/transit-gateways/${TGW_ATT_ID}" \
+    -H "Authorization: Bearer $KONNECT_TOKEN" | jq -r '.state')
+  echo "$(date '+%H:%M:%S') TGW attachment: $STATE"
+  [[ "$STATE" == "ready" ]] && echo "Ready — proceed to Phase 3" && break
+  sleep 30
+done
+```
+
+**Step 5: Discover NLB and sync Kong config**
+
+```bash
+./scripts/04-post-setup.sh
+```
+
+---
+
+### Phase 3: Connect (~5 min)
+
+**Step 6: Get your Kong proxy URL**
+
+The proxy URL for dedicated cloud gateways is shown in the Konnect UI:
+
+> **[cloud.konghq.com](https://cloud.konghq.com) → Gateway Manager → `kong-cloud-gateway-eks` → Overview**
+
+Look for the **Proxy URL** field. It will look like: `https://xxxx.us-west-2.gw.konghq.com`
+
+**Step 7: Update API keys and sync**
+
+Edit `deck/kong.yaml` — replace the placeholder keys with real values:
+
+```yaml
+consumers:
+  - username: team-admin
+    keyauth_credentials:
+      - key: your-secure-admin-key-here   # ← change this
+  - username: team-dev
+    keyauth_credentials:
+      - key: your-secure-dev-key-here     # ← change this
+```
+
+Sync to Konnect:
+
+```bash
+source .env
+deck gateway sync deck/kong.yaml \
+  --konnect-addr https://${KONNECT_REGION}.api.konghq.com \
+  --konnect-token $KONNECT_TOKEN \
+  --konnect-control-plane-name kong-cloud-gateway-eks
+```
+
+**Step 8: Connect Claude Code**
+
+```bash
 source claude-switch.sh ollama \
   --endpoint https://<KONG_PROXY_URL> \
   --apikey <your-api-key>
 
+# Verify connectivity
+curl -s "https://<KONG_PROXY_URL>/api/tags" \
+  -H "apikey: <your-api-key>" | jq '.models[].name'
+# Should return: qwen3-coder:32b
+
 claude --model qwen3-coder:32b
 ```
 
-**Connect Claude Code — without Kong (local port-forward, single user):**
+**Connect without Kong (local port-forward, single user only):**
 
 ```bash
 source claude-switch.sh local
 claude --model qwen3-coder:32b
 ```
 
-### Step 4: Scale to Zero When Done (stop GPU billing)
+---
+
+### Scale to Zero When Done (stop GPU billing)
 
 ```bash
 kubectl scale deployment ollama -n ollama --replicas=0
@@ -465,7 +565,8 @@ kubectl wait --for=condition=ready pod -l app=ollama -n ollama --timeout=300s
 | Kong returns 401 | Missing or wrong API key | Check `apikey` header matches `deck/kong.yaml` consumer |
 | Kong returns 429 | Rate limit exceeded | Wait or increase `minute` limit in `deck/kong.yaml` |
 | NLB not provisioning | `kubectl get gateway -n istio-ingress` | Check LB Controller: `kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller` |
-| TGW attachment pending | Check Konnect UI → Cloud Gateways | Network provisioning takes ~30 min |
+| TGW attachment `initializing` | Poll with loop in Phase 2 Step 4 | Network provisioning ~30 min; then accept the attachment in AWS (Step 3) |
+| TGW attachment stuck `pendingAcceptance` | `aws ec2 describe-transit-gateway-attachments --region us-west-2 --filters Name=state,Values=pendingAcceptance` | Run `aws ec2 accept-transit-gateway-vpc-attachment --transit-gateway-attachment-id <id> --region us-west-2` |
 | Istio pods not ready | `kubectl get pods -n istio-system` | Check ArgoCD app: `kubectl get application -n argocd` — ArgoCD self-heals automatically |
 | ArgoCD app stuck | `kubectl get applications -n argocd` | Check sync status: `kubectl describe application <name> -n argocd` |
 | Port-forward drops | Connection timeout | Use Kong mode instead, or loop: `while true; do kubectl port-forward ...; sleep 2; done` |
@@ -540,59 +641,50 @@ deck gateway diff deck/kong.yaml \
   --konnect-control-plane-name kong-cloud-gateway-eks
 ```
 
-**Kong Konnect — get the full connect command**
+**Kong Konnect — get the proxy URL and connect**
 
-Step 1 — Get your Kong proxy URL:
+The proxy URL for a Dedicated Cloud Gateway is shown in the Konnect UI — it is **not** returned by the configurations API (that field is only populated for serverless gateways).
+
+Step 1 — Get your proxy URL from the UI:
+> **[cloud.konghq.com](https://cloud.konghq.com) → Gateway Manager → `kong-cloud-gateway-eks` → Overview → Proxy URL**
+
+Step 2 — Verify TGW attachment is ready (required before traffic flows):
 ```bash
 source .env
-
-# Get the control plane ID
-CP_ID=$(curl -s "https://${KONNECT_REGION}.api.konghq.com/v2/control-planes" \
+NETWORK_ID=$(curl -s "https://global.api.konghq.com/v2/cloud-gateways/networks" \
   -H "Authorization: Bearer $KONNECT_TOKEN" | \
-  jq -r '.data[] | select(.name == "kong-cloud-gateway-eks") | .id')
+  jq -r '.data[] | select(.name == "ollama-eks-network") | .id')
 
-# Get the proxy URL (printed after network reaches "ready")
-KONG_PROXY_URL=$(curl -s \
-  "https://global.api.konghq.com/v2/cloud-gateways/configurations?control_plane_id=${CP_ID}" \
-  -H "Authorization: Bearer $KONNECT_TOKEN" | \
-  jq -r '.data[].dataplane_groups[].dns' | head -1)
-
-echo "Kong proxy URL: https://${KONG_PROXY_URL}"
+curl -s "https://global.api.konghq.com/v2/cloud-gateways/networks/${NETWORK_ID}/transit-gateways" \
+  -H "Authorization: Bearer $KONNECT_TOKEN" | jq '.data[] | {name, state}'
+# state should be: "ready"
 ```
 
-Step 2 — API keys are defined in `deck/kong.yaml` under `consumers:`:
-```yaml
-consumers:
-  - username: team-admin
-    keyauth_credentials:
-      - key: change-me-admin-key-do-not-use-in-production   # ← change this
-  - username: team-dev
-    keyauth_credentials:
-      - key: change-me-dev-key-do-not-use-in-production     # ← change this
-```
-
-Update the keys, then sync to Konnect:
+Step 3 — Update API keys in `deck/kong.yaml` and sync:
 ```bash
+# Edit deck/kong.yaml — replace placeholder keys under consumers:
+#   key: change-me-admin-key-do-not-use-in-production  ← replace this
+
 deck gateway sync deck/kong.yaml \
   --konnect-addr https://${KONNECT_REGION}.api.konghq.com \
   --konnect-token $KONNECT_TOKEN \
   --konnect-control-plane-name kong-cloud-gateway-eks
 ```
 
-Step 3 — Connect Claude Code (replace with your values from Steps 1 & 2):
+Step 4 — Connect:
 ```bash
+KONG_PROXY_URL="<paste-url-from-konnect-ui>"
+
 source claude-switch.sh ollama \
-  --endpoint https://${KONG_PROXY_URL} \
-  --apikey <your-api-key-from-deck/kong.yaml>
+  --endpoint "https://${KONG_PROXY_URL}" \
+  --apikey <your-api-key>
 
-claude --model qwen3-coder:32b
-```
-
-Test connectivity before launching Claude Code:
-```bash
+# Verify connectivity
 curl -s "https://${KONG_PROXY_URL}/api/tags" \
   -H "apikey: <your-api-key>" | jq '.models[].name'
-# Should list: qwen3-coder:32b
+# Should return: qwen3-coder:32b
+
+claude --model qwen3-coder:32b
 ```
 
 ---
