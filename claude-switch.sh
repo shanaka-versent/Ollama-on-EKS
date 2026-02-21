@@ -168,8 +168,8 @@ set_ollama() {
 
   export KONG_PROXY_URL="$endpoint"
   export ANTHROPIC_BASE_URL="$endpoint"
-  export ANTHROPIC_API_KEY="$apikey"   # Sent as x-api-key header → matches Kong key-auth
-  unset ANTHROPIC_AUTH_TOKEN
+  export ANTHROPIC_AUTH_TOKEN="$apikey"  # Sent as: Authorization: Bearer <apikey>
+  export ANTHROPIC_API_KEY="$apikey"     # Fallback: x-api-key header
   export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 
   echo ""

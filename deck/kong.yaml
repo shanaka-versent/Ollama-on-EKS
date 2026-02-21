@@ -103,10 +103,12 @@ services:
 consumers:
   - username: team-admin
     keyauth_credentials:
-      - key: change-me-admin-key-do-not-use-in-production
+      - key: change-me-admin-key-do-not-use-in-production        # for apikey / x-api-key headers
+      - key: "Bearer change-me-admin-key-do-not-use-in-production"  # for Authorization: Bearer header (Claude Code)
   - username: team-dev
     keyauth_credentials:
       - key: change-me-dev-key-do-not-use-in-production
+      - key: "Bearer change-me-dev-key-do-not-use-in-production"
 
 # ==============================================================================
 # GLOBAL PLUGINS
@@ -115,11 +117,22 @@ consumers:
 
 plugins:
   # API Key Authentication — all routes require an API key
+  # Accepts the key in multiple formats:
+  #   apikey: <key>                    ← curl / direct API clients
+  #   x-api-key: <key>                 ← OpenAI-compat clients
+  #   Authorization: Bearer <key>      ← Claude Code (ANTHROPIC_AUTH_TOKEN)
+  #
+  # NOTE: When key_names includes "authorization", Kong reads the full header
+  # value. So for "Authorization: Bearer mykey", the credential stored in Kong
+  # must be "Bearer mykey" (with the "Bearer " prefix).
+  # claude-switch.sh sets ANTHROPIC_AUTH_TOKEN=<key> so Claude Code sends
+  # "Authorization: Bearer <key>" → credential in Kong is "Bearer <key>".
   - name: key-auth
     config:
       key_names:
         - apikey
         - x-api-key
+        - authorization
       key_in_header: true
       key_in_query: true
       hide_credentials: true
