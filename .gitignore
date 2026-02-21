@@ -1,0 +1,13 @@
+# OS
+.DS_Store
+
+# Claude Code settings
+.claude/
+CLAUDE.md
+
+# Terraform (duplicated here for root-level git init)
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/*.tfplan
+terraform/.terraform.lock.hcl
