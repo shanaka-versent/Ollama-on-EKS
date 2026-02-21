@@ -6,96 +6,9 @@ Deploy a fully private Ollama LLM server on AWS EKS with GPU acceleration, expos
 
 ## Architecture
 
-```mermaid
-flowchart TB
-    %% ─────────────────────────────────────────────────────────────────
-    %% Team Members
-    %% ─────────────────────────────────────────────────────────────────
-    subgraph TEAM["👥  Team — Any Device · Any Location"]
-        CC["Claude Code\nANTHROPIC_BASE_URL=kong-proxy-url\nclaude --model qwen3-coder:32b"]
-        API["OpenAI-compatible Client\ncurl  ·  Python SDK  ·  VS Code"]
-    end
+![Architecture Diagram](../docs/architecture.png)
 
-    %% ─────────────────────────────────────────────────────────────────
-    %% Kong Inc's AWS Account
-    %% ─────────────────────────────────────────────────────────────────
-    subgraph KONG_ACCT["☁️  KONG INC — Managed AWS Account  |  You never operate this infrastructure"]
-        PROXY["Kong Cloud AI Gateway\n──────────────────────────────────\nai-proxy  ·  key-auth per consumer\nai-rate-limiting  ·  prometheus\ncors  ·  request-size-limiting"]
-    end
-
-    %% ─────────────────────────────────────────────────────────────────
-    %% Your AWS Account
-    %% ─────────────────────────────────────────────────────────────────
-    subgraph YOUR_ACCT["🟠  YOUR AWS ACCOUNT — us-west-2  |  You own · You control · Your prompts never leave this boundary"]
-
-        TGW["Transit Gateway\n─────────────────────────\nRAM Share → Kong account\nPrivate bridge  ·  never internet"]
-
-        subgraph VPC["  VPC  10.0.0.0/16  ·  Private Subnets  ·  NAT Gateway  "]
-
-            subgraph INGRESS_L["  istio-ingress namespace  "]
-                NLB["Internal NLB\nnot internet-facing\nAWS LB Controller"]
-                ISTIO["Istio Gateway\nGateway API  ·  Ambient mTLS\nTLS terminate  +  HTTPRoute"]
-            end
-
-            subgraph EKS_L["  EKS Cluster  ·  Kubernetes 1.31  "]
-                SYS["System Nodes\n2× t3.medium\nCriticalAddonsOnly taint"]
-                GPU["GPU Node\ng5.12xlarge\n4× NVIDIA A10G  ·  96 GB VRAM"]
-            end
-
-            subgraph OLLAMA_L["  🔒 ollama namespace  ·  NetworkPolicy: istio-ingress only  "]
-                SVC["ClusterIP  :11434\nnever internet-exposed"]
-                POD["Ollama Pod\n4× NVIDIA A10G GPUs\n96 GB VRAM"]
-                MODEL["qwen3-coder:32b\n32B parameter model"]
-                EBS["200 GB EBS gp3\nRetain policy"]
-            end
-
-        end
-    end
-
-    %% ─────────────────────────────────────────────────────────────────
-    %% Traffic flow — numbered steps
-    %% ─────────────────────────────────────────────────────────────────
-    CC   -- "① HTTPS" --> PROXY
-    API  -- "① HTTPS" --> PROXY
-    PROXY -- "② Private peering\nKong CIDR: 192.168.0.0/16\nnever over internet" --> TGW
-    TGW   -- "③ VPC attachment\n10.0.0.0/16" --> NLB
-    NLB   -- "④" --> ISTIO
-    ISTIO -- "⑤ HTTPRoute → :11434" --> SVC
-    SVC   -- "⑥" --> POD
-    POD   --- MODEL
-    POD   --- EBS
-    POD   -.- GPU
-    ISTIO -.- SYS
-
-    %% ─────────────────────────────────────────────────────────────────
-    %% Account boundary styles
-    %% ─────────────────────────────────────────────────────────────────
-    style TEAM      fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#1e3a5f
-    style KONG_ACCT fill:#dcfce7,stroke:#16a34a,stroke-width:4px,color:#14532d
-    style YOUR_ACCT fill:#fef9c3,stroke:#d97706,stroke-width:4px,color:#78350f
-
-    style VPC       fill:#eff6ff,stroke:#60a5fa,stroke-width:2px
-    style INGRESS_L fill:#e0e7ff,stroke:#6366f1,stroke-width:2px
-    style EKS_L     fill:#e0f2fe,stroke:#0284c7,stroke-width:2px
-    style OLLAMA_L  fill:#fce7f3,stroke:#db2777,stroke-width:2px
-
-    %% ─────────────────────────────────────────────────────────────────
-    %% Node styles
-    %% ─────────────────────────────────────────────────────────────────
-    classDef kongNode    fill:#16a34a,stroke:#14532d,color:#fff,font-weight:bold
-    classDef tgwNode     fill:#d97706,stroke:#92400e,color:#fff,font-weight:bold
-    classDef ingressNode fill:#6366f1,stroke:#4338ca,color:#fff
-    classDef gpuNode     fill:#0284c7,stroke:#075985,color:#fff,font-weight:bold
-    classDef ollamaNode  fill:#db2777,stroke:#9d174d,color:#fff
-    classDef teamNode    fill:#2563eb,stroke:#1d4ed8,color:#fff
-
-    class PROXY kongNode
-    class TGW tgwNode
-    class NLB,ISTIO ingressNode
-    class GPU,POD gpuNode
-    class SVC,MODEL,EBS ollamaNode
-    class CC,API teamNode
-```
+> To regenerate: `python generate-diagram.py` (requires `pip install diagrams` + `brew install graphviz`)
 
 **Traffic flow:**
 ```
