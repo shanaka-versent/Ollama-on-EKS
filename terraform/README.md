@@ -8,69 +8,80 @@ Deploy a fully private Ollama LLM server on AWS EKS with GPU acceleration, expos
 
 ```mermaid
 graph TB
-    subgraph Users["Team Members"]
-        CC["Claude Code<br/><i>claude --model qwen3-coder:32b</i>"]
-        API["OpenAI-compatible Clients<br/><i>curl /ai/chat</i>"]
+    subgraph TEAM["👥  Team Members"]
+        CC["🖥️ Claude Code\nclaude --model qwen3-coder:32b"]
+        API["📡 OpenAI-compatible Clients\ncurl /ai/chat"]
     end
 
-    subgraph Kong["Kong's AWS Account<br/>(Managed by Konnect)"]
-        PROXY["Kong Cloud AI Gateway<br/>━━━━━━━━━━━━━━━━━━<br/>ai-proxy · key-auth<br/>ai-rate-limiting · prometheus"]
+    subgraph KONG_ACCOUNT["━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n 🟢  KONG INC — AWS Account  |  Managed by Konnect  \n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"]
+        PROXY["Kong Cloud AI Gateway\n─────────────────────────────\nai-proxy  |  key-auth\nai-rate-limiting  |  prometheus\ncors  |  request-size-limiting"]
     end
 
-    subgraph TGW_BLOCK["AWS Transit Gateway<br/>(Your AWS Account)"]
-        TGW["Transit Gateway<br/><i>Private cross-account bridge</i>"]
-    end
+    subgraph YOUR_ACCOUNT["━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n 🟠  YOUR AWS ACCOUNT  |  us-west-2  \n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"]
 
-    subgraph YOUR_AWS["Your AWS Account — EKS Cluster"]
-        subgraph L4["Layer 4: Ingress"]
-            NLB["Internal NLB<br/><i>AWS LB Controller</i><br/><i>Not internet-facing</i>"]
-            ISTIO["Istio Gateway<br/><i>Gateway API + Ambient mTLS</i>"]
-            ROUTE["HTTPRoute<br/><i>Path-based routing</i>"]
-        end
+        TGW["🔀 Transit Gateway\nRAM Share ➜ Kong's AWS Account\nPrivate cross-account bridge"]
 
-        subgraph L3["Layer 3: Ollama Deployment"]
-            SVC["ClusterIP Service<br/><i>:11434</i>"]
-            OLLAMA["Ollama Pod<br/><i>4x NVIDIA A10G GPUs</i><br/><i>96GB VRAM</i>"]
-            MODEL["qwen3-coder:32b<br/><i>LLM Model</i>"]
-            PVC["200GB EBS gp3<br/><i>Model Storage</i>"]
-        end
+        subgraph VPC_BOX["VPC  10.0.0.0/16  —  Private Subnets + NAT Gateway"]
 
-        subgraph L2["Layer 2: EKS Cluster"]
-            EKS["EKS Control Plane<br/><i>Kubernetes 1.31</i>"]
-            SYS["System Nodes<br/><i>2x t3.medium</i>"]
-            GPU["GPU Node<br/><i>g5.12xlarge</i>"]
-        end
+            subgraph INGRESS_BOX["Ingress Layer  (istio-ingress namespace)"]
+                NLB["⚖️ Internal NLB\nNot internet-facing\nAWS LB Controller"]
+                ISTIO_GW["🕸️ Istio Gateway\nGateway API\nAmbient mTLS"]
+                HTTPROUTE["📋 HTTPRoute\nollama-route → :11434"]
+            end
 
-        subgraph L1["Layer 1: VPC"]
-            VPC["VPC 10.0.0.0/16<br/><i>Private Subnets + NAT</i>"]
+            subgraph EKS_BOX["EKS Cluster  —  Kubernetes 1.31"]
+                SYS["🖥️ System Nodes\n2x t3.medium\nCriticalAddonsOnly"]
+                GPU_NODE["⚡ GPU Node\ng5.12xlarge\n4x NVIDIA A10G  |  96GB VRAM"]
+            end
+
+            subgraph OLLAMA_BOX["ollama namespace  —  NetworkPolicy: istio-ingress only"]
+                SVC["🔌 ClusterIP Service\nport 11434"]
+                POD["🤖 Ollama Pod\n4x NVIDIA A10G GPUs\n96 GB VRAM"]
+                MODEL["🧠 qwen3-coder:32b\nLLM Model"]
+                EBS["💾 200GB EBS gp3\nModel Storage\nRetain policy"]
+            end
+
         end
     end
 
-    CC -->|HTTPS| PROXY
-    API -->|HTTPS| PROXY
-    PROXY -->|"Private link<br/>192.168.0.0/16"| TGW
-    TGW -->|"VPC Attachment<br/>10.0.0.0/16"| NLB
-    NLB --> ISTIO
-    ISTIO --> ROUTE
-    ROUTE --> SVC
-    SVC --> OLLAMA
-    OLLAMA --> MODEL
-    OLLAMA --> PVC
-    OLLAMA -.-> GPU
-    ISTIO -.-> SYS
-    EKS -.-> SYS
-    EKS -.-> GPU
-    VPC -.-> NLB
+    CC -->|"HTTPS"| PROXY
+    API -->|"HTTPS"| PROXY
+    PROXY -->|"Private peering\nKong CIDR: 192.168.0.0/16\nNever over internet"| TGW
+    TGW -->|"VPC Attachment\nEKS CIDR: 10.0.0.0/16"| NLB
+    NLB --> ISTIO_GW
+    ISTIO_GW --> HTTPROUTE
+    HTTPROUTE --> SVC
+    SVC --> POD
+    POD --- MODEL
+    POD --- EBS
+    POD -.->|"GPU scheduling"| GPU_NODE
+    SYS -.->|"system pods"| ISTIO_GW
 
-    classDef kong fill:#1a9c6c,stroke:#fff,color:#fff
-    classDef aws fill:#232f3e,stroke:#ff9900,color:#fff
-    classDef gpu fill:#76b900,stroke:#fff,color:#fff
-    classDef user fill:#4a90d9,stroke:#fff,color:#fff
+    %% Account boundary styles
+    style KONG_ACCOUNT fill:#e8f5f0,stroke:#1a9c6c,stroke-width:4px,color:#0a4d30
+    style YOUR_ACCOUNT fill:#fff8e7,stroke:#ff9900,stroke-width:4px,color:#7a4500
 
-    class PROXY kong
-    class NLB,ISTIO,ROUTE,EKS,SYS,VPC aws
-    class GPU,OLLAMA,MODEL gpu
-    class CC,API user
+    %% Container styles
+    style VPC_BOX fill:#f0f4ff,stroke:#5c7cfa,stroke-width:2px,color:#1a1a2e
+    style INGRESS_BOX fill:#e8eaf6,stroke:#3f51b5,stroke-width:2px,color:#1a1a2e
+    style EKS_BOX fill:#e3f2fd,stroke:#1565c0,stroke-width:2px,color:#1a1a2e
+    style OLLAMA_BOX fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#1a1a2e
+    style TEAM fill:#e3f2fd,stroke:#1565c0,stroke-width:2px,color:#1a1a2e
+
+    %% Node styles
+    classDef kongNode fill:#1a9c6c,stroke:#0d5c40,color:#fff,font-weight:bold
+    classDef tgwNode fill:#ff9900,stroke:#cc7a00,color:#fff,font-weight:bold
+    classDef ingressNode fill:#3f51b5,stroke:#1a237e,color:#fff
+    classDef gpuNode fill:#76b900,stroke:#4a7400,color:#fff,font-weight:bold
+    classDef ollamaNode fill:#7b1fa2,stroke:#4a0072,color:#fff
+    classDef userNode fill:#1565c0,stroke:#0d47a1,color:#fff
+
+    class PROXY kongNode
+    class TGW tgwNode
+    class NLB,ISTIO_GW,HTTPROUTE,SVC ingressNode
+    class GPU_NODE,POD,MODEL gpuNode
+    class EBS,SYS ollamaNode
+    class CC,API userNode
 ```
 
 **Traffic flow:**
