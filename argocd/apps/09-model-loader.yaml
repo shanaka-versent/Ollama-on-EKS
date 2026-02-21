@@ -1,5 +1,5 @@
 # Wave 4: Model Loader Job
-# Runs a one-time Job that waits for Ollama to be ready, then pulls qwen3-coder:32b.
+# Runs a one-time Job that waits for Ollama to be ready, then pulls qwen3-coder:30b.
 # The model is stored on the 200Gi EBS gp3 PVC and persists across pod restarts.
 # Model pull takes ~10-20 min depending on network speed (32B model = ~20GB).
 # Requires: Ollama deployment running (wave 3)

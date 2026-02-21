@@ -40,7 +40,7 @@ services:
   #   curl https://<KONG_PROXY_URL>/ai/chat \
   #     -H "Content-Type: application/json" \
   #     -H "apikey: <your-key>" \
-  #     -d '{"messages": [{"role": "user", "content": "Hello"}], "model": "qwen3-coder:32b"}'
+  #     -d '{"messages": [{"role": "user", "content": "Hello"}], "model": "qwen3-coder:30b"}'
   - name: ollama-ai-chat
     url: http://REPLACE_WITH_NLB_HOSTNAME:80
     protocol: http
@@ -62,7 +62,7 @@ services:
           route_type: llm/v1/chat
           model:
             provider: ollama
-            name: qwen3-coder:32b
+            name: qwen3-coder:30b
             options:
               upstream_url: http://REPLACE_WITH_NLB_HOSTNAME:80
       - name: ai-rate-limiting-advanced
@@ -117,7 +117,7 @@ services:
           route_type: llm/v1/completions
           model:
             provider: ollama
-            name: qwen3-coder:32b
+            name: qwen3-coder:30b
             options:
               upstream_url: http://REPLACE_WITH_NLB_HOSTNAME:80
       - name: ai-rate-limiting-advanced

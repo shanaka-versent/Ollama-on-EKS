@@ -27,7 +27,7 @@ Client → Kong Cloud AI GW (Kong's AWS) --[Transit GW]--> Internal NLB --> Isti
 | Istio Ambient Mesh | Your AWS account (EKS) | L4 mTLS, Gateway API routing |
 | Ollama server | Your AWS account (EKS) | Model server — loads model, runs GPU inference |
 | EBS gp3 (200GB) | Your AWS account (AZ-local) | Block storage — attaches to EC2 GPU node via Nitro NVMe hypervisor (not PrivateLink) |
-| qwen2.5-coder:32b | Your AWS account (EKS) | The actual LLM brain doing the reasoning |
+| qwen3-coder:30b | Your AWS account (EKS) | The actual LLM brain doing the reasoning |
 
 ---
 
@@ -107,7 +107,7 @@ This runs `terraform apply` (VPC, EKS, IAM, ArgoCD) then `scripts/01-setup.sh` w
 # 1. All ArgoCD apps should be Synced / Healthy
 kubectl get applications -n argocd
 
-# 2. Model loader should show "pull completed" (qwen2.5-coder:32b is ~20GB, takes 10–30 min)
+# 2. Model loader should show "pull completed" (qwen3-coder:30b is ~20GB, takes 10–30 min)
 kubectl logs -n ollama -l app=ollama-model-loader -f
 
 # 3. Ollama pod should be Running
@@ -196,16 +196,16 @@ source claude-switch.sh ollama \
 # Verify connectivity
 curl -s "https://<KONG_PROXY_URL>/api/tags" \
   -H "apikey: <your-api-key>" | jq '.models[].name'
-# Should return: qwen2.5-coder:32b
+# Should return: qwen3-coder:30b
 
-claude --model qwen2.5-coder:32b
+claude --model qwen3-coder:30b
 ```
 
 **Connect without Kong (local port-forward, single user only):**
 
 ```bash
 source claude-switch.sh local
-claude --model qwen2.5-coder:32b
+claude --model qwen3-coder:30b
 ```
 
 ---
@@ -288,7 +288,7 @@ ArgoCD auto-deploys these from Git after `terraform apply`:
 | Wave | What Gets Deployed | Source |
 |------|--------------------|--------|
 | 3 | Ollama Deployment (4 GPUs, 96Gi), Service (ClusterIP :11434), NetworkPolicy | `k8s/ollama/` |
-| 4 | Model Loader Job — pulls `qwen2.5-coder:32b` to EBS volume | `k8s/model-loader/` |
+| 4 | Model Loader Job — pulls `qwen3-coder:30b` to EBS volume | `k8s/model-loader/` |
 
 ### Post-Terraform (automated by `deploy.sh`)
 
@@ -364,7 +364,7 @@ claude
 
 ```bash
 source claude-switch.sh local
-claude --model qwen2.5-coder:32b
+claude --model qwen3-coder:30b
 ```
 
 Starts `kubectl port-forward -n ollama svc/ollama 11434:11434` automatically in the background.
@@ -376,7 +376,7 @@ source claude-switch.sh ollama \
   --endpoint https://<KONG_PROXY_URL> \
   --apikey <your-api-key>
 
-claude --model qwen2.5-coder:32b
+claude --model qwen3-coder:30b
 ```
 
 ### Check Current Mode
@@ -520,7 +520,7 @@ kubectl wait --for=condition=ready pod -l app=ollama -n ollama --timeout=300s
 │   ├── gateway.yaml              # Istio Gateway (internal NLB)
 │   ├── httproutes.yaml           # HTTPRoutes for Ollama
 │   ├── ollama/                   # Deployment, Service, NetworkPolicy, StorageClass, PVC
-│   └── model-loader/             # Job: pulls qwen2.5-coder:32b to EBS volume
+│   └── model-loader/             # Job: pulls qwen3-coder:30b to EBS volume
 ├── scripts/
 │   ├── 01-setup.sh               # Post-terraform orchestrator (called by deploy.sh)
 │   ├── 02-generate-certs.sh      # TLS certificates for Istio Gateway
@@ -634,7 +634,7 @@ spec:
   containers:
     - name: curl
       image: curlimages/curl:latest
-      command: ["/bin/sh", "-c", "timeout 5 curl -X POST http://ollama.ollama.svc.cluster.local:11434/api/pull -H 'Content-Type: application/json' -d '{\"name\":\"qwen2.5-coder:32b\"}' --no-buffer 2>&1 | head -2"]
+      command: ["/bin/sh", "-c", "timeout 5 curl -X POST http://ollama.ollama.svc.cluster.local:11434/api/pull -H 'Content-Type: application/json' -d '{\"name\":\"qwen3-coder:30b\"}' --no-buffer 2>&1 | head -2"]
 EOF
 
 # Storage used by model cache
@@ -781,19 +781,19 @@ deck gateway sync deck/kong.yaml \
 
 # Verify Ollama responds through Kong
 curl -s "https://${KONG_PROXY_URL}/api/tags" -H "apikey: <your-api-key>" | jq '.models[].name'
-# Expected output: "qwen2.5-coder:32b"
+# Expected output: "qwen3-coder:30b"
 
 # Test OpenAI-compatible chat via Kong ai-proxy
 curl -s "https://${KONG_PROXY_URL}/ai/chat" \
   -H "apikey: <your-api-key>" \
   -H "Content-Type: application/json" \
-  -d '{"model":"qwen2.5-coder:32b","messages":[{"role":"user","content":"Hello"}]}'
+  -d '{"model":"qwen3-coder:30b","messages":[{"role":"user","content":"Hello"}]}'
 
 # Connect Claude Code through Kong
 source claude-switch.sh ollama \
   --endpoint "https://${KONG_PROXY_URL}" \
   --apikey <your-api-key>
-claude --model qwen2.5-coder:32b
+claude --model qwen3-coder:30b
 ```
 
 </details>

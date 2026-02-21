@@ -146,7 +146,7 @@ wait_for_ollama() {
 
         if [[ "$READY" -ge 1 ]]; then
             log "Ollama is running (${READY} replica ready)"
-            log "Model loader job (Wave 4) will pull qwen3-coder:32b in the background."
+            log "Model loader job (Wave 4) will pull qwen3-coder:30b in the background."
             return
         fi
 
@@ -210,7 +210,7 @@ show_summary() {
 
     echo ""
     echo "  Run Claude Code:"
-    echo "    claude --model qwen3-coder:32b"
+    echo "    claude --model qwen3-coder:30b"
     echo ""
     echo "  Monitor ArgoCD (model pull may take 10-30 min depending on speed):"
     echo "    kubectl get applications -n argocd"

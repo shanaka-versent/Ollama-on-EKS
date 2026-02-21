@@ -37,7 +37,7 @@ status() {
       echo "Status: NOT REACHABLE — check Kong proxy URL and API key"
     fi
     echo ""
-    echo "Run:   claude --model qwen3-coder:32b"
+    echo "Run:   claude --model qwen3-coder:30b"
   elif [ "$ANTHROPIC_BASE_URL" = "http://localhost:11434" ]; then
     echo "Mode:   LOCAL (Ollama on EKS via port-forward)"
     echo "URL:    $ANTHROPIC_BASE_URL"
@@ -47,7 +47,7 @@ status() {
       echo "Tunnel: NOT CONNECTED — run: kubectl port-forward -n ollama svc/ollama 11434:11434"
     fi
     echo ""
-    echo "Run:   claude --model qwen3-coder:32b"
+    echo "Run:   claude --model qwen3-coder:30b"
   else
     if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
       echo "Mode:  REMOTE (Anthropic API)"
@@ -117,7 +117,7 @@ set_local() {
   echo ""
   echo "Switched to LOCAL (Ollama on EKS via port-forward)"
   echo ""
-  echo "Run:   claude --model qwen3-coder:32b"
+  echo "Run:   claude --model qwen3-coder:30b"
 }
 
 set_ollama() {
@@ -187,7 +187,7 @@ set_ollama() {
   fi
 
   echo ""
-  echo "Run:   claude --model qwen3-coder:32b"
+  echo "Run:   claude --model qwen3-coder:30b"
 }
 
 case "${1:-}" in

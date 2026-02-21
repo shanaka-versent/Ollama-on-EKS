@@ -26,7 +26,7 @@ Client → Kong Cloud AI GW (Kong's AWS) --[Transit GW]--> Internal NLB --> Isti
 | Internal NLB | Your AWS account (EKS) | Load balancer — only reachable via Transit Gateway |
 | Istio Ambient Mesh | Your AWS account (EKS) | L4 mTLS, Gateway API routing |
 | Ollama server | Your AWS account (EKS) | Model server — loads model, runs GPU inference |
-| qwen3-coder:32b | Your AWS account (EKS) | The actual LLM brain doing the reasoning |
+| qwen3-coder:30b | Your AWS account (EKS) | The actual LLM brain doing the reasoning |
 
 ---
 
@@ -110,14 +110,14 @@ source claude-switch.sh ollama \
   --endpoint https://<KONG_PROXY_URL> \
   --apikey <your-api-key>
 
-claude --model qwen3-coder:32b
+claude --model qwen3-coder:30b
 ```
 
 **Local port-forward (single user):**
 
 ```bash
 source claude-switch.sh local
-claude --model qwen3-coder:32b
+claude --model qwen3-coder:30b
 ```
 
 ---
@@ -186,7 +186,7 @@ ArgoCD auto-deploys these from Git after `terraform apply`:
 | Wave | What Gets Deployed | Source |
 |------|--------------------|--------|
 | 3 | Ollama Deployment (4 GPUs, 96Gi), Service (ClusterIP :11434), NetworkPolicy | `k8s/ollama/` |
-| 4 | Model Loader Job — pulls `qwen3-coder:32b` to EBS volume | `k8s/model-loader/` |
+| 4 | Model Loader Job — pulls `qwen3-coder:30b` to EBS volume | `k8s/model-loader/` |
 
 ### Post-Terraform (one-time scripts)
 
@@ -386,7 +386,7 @@ kubectl wait --for=condition=ready pod -l app=ollama -n ollama --timeout=300s
 │   ├── gateway.yaml              # Istio Gateway (internal NLB)
 │   ├── httproutes.yaml           # HTTPRoutes for Ollama
 │   ├── ollama/                   # Ollama Deployment, Service, NetworkPolicy, StorageClass, PVC
-│   └── model-loader/             # Job: pulls qwen3-coder:32b
+│   └── model-loader/             # Job: pulls qwen3-coder:30b
 ├── scripts/
 │   ├── 00-destroy-all.sh         # Complete teardown automation
 │   ├── 02-generate-certs.sh      # TLS certificates for Istio Gateway

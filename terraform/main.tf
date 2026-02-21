@@ -23,7 +23,7 @@
 #       Wave 1:      Namespaces (ollama, istio-ingress) with ambient mesh label
 #       Wave 2:      StorageClass + PVC (200Gi EBS gp3)
 #       Wave 3:      Ollama Deployment + Service + NetworkPolicy
-#       Wave 4:      Model Loader Job (pulls qwen3-coder:32b)
+#       Wave 4:      Model Loader Job (pulls qwen3-coder:30b)
 #       Wave 5:      Istio Gateway (creates internal NLB)
 #       Wave 6:      HTTPRoutes (routing to Ollama :11434)
 #
