@@ -129,3 +129,25 @@ kubectl create secret tls "${SECRET_NAME}" \
 echo ""
 log "TLS secret created. Istio Gateway HTTPS listener (port 443) is ready."
 echo ""
+
+# ---------------------------------------------------------------------------
+# Step 4: Patch gateway Deployment toleration
+# ---------------------------------------------------------------------------
+# All cluster nodes carry taints (CriticalAddonsOnly or nvidia.com/gpu).
+# Istio auto-generates the gateway Deployment without tolerations, causing the
+# pod to be stuck Pending. Patch it here after the Gateway is deployed.
+# Istio preserves user-added pod spec fields (tolerations) across reconciliations.
+log "Patching Istio gateway Deployment with CriticalAddonsOnly toleration..."
+retry=0
+while [[ $retry -lt 10 ]]; do
+    if kubectl get deployment ollama-gateway-istio -n "${NAMESPACE}" &>/dev/null 2>&1; then
+        kubectl patch deployment ollama-gateway-istio -n "${NAMESPACE}" --type='json' \
+            -p='[{"op":"add","path":"/spec/template/spec/tolerations","value":[{"key":"CriticalAddonsOnly","operator":"Exists","effect":"NoSchedule"}]}]' \
+            2>/dev/null && break
+    fi
+    log "  Gateway Deployment not ready yet, retrying in 15s... ($((retry+1))/10)"
+    sleep 15
+    retry=$((retry + 1))
+done
+log "  Gateway Deployment patched — pod will schedule on system nodes."
+echo ""
