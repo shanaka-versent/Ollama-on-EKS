@@ -424,6 +424,49 @@ scripts/04-post-setup.sh  (manual after TGW is ready)
   └── deck gateway sync → push kong.yaml to Konnect
 ```
 
+### Sync Wave Ordering
+
+```mermaid
+%%{init: {'theme': 'neutral', 'themeVariables': {'primaryColor': '#ECECFF', 'primaryBorderColor': '#9370DB', 'lineColor': '#666', 'secondaryColor': '#ffffde'}}}%%
+gantt
+    title ArgoCD Sync Wave Deployment Order
+    dateFormat X
+    axisFormat Wave %s
+
+    section Infrastructure
+    Gateway API CRDs (wave -2)                :a1, 0, 1
+    Istio Base CRDs (wave -1)                 :a2, 1, 2
+    istiod + CNI + ztunnel + NVIDIA (wave 0)  :a3, 2, 3
+
+    section Namespaces & Storage
+    Namespaces ollama + istio-ingress (wave 1) :b1, 3, 4
+    StorageClass gp3 + PVC 200Gi (wave 2)     :b2, 4, 5
+
+    section Applications
+    Ollama Deployment + Service (wave 3)       :c1, 5, 6
+    Model Loader Job qwen3-coder:30b (wave 4)  :c2, 6, 7
+
+    section Gateway & Routing
+    Istio Gateway internal NLB (wave 5)        :d1, 7, 8
+    HTTPRoutes to Ollama 11434 (wave 6)        :d2, 8, 9
+```
+
+| Wave | Application | What Gets Deployed |
+|------|-------------|-------------------|
+| -2 | `gateway-api-crds` | `Gateway`, `HTTPRoute`, `GRPCRoute` CRDs v1.2.0 — prune disabled |
+| -1 | `istio-base` | Istio CRDs and cluster-wide resources |
+| 0 | `istiod`, `istio-cni`, `ztunnel`, `nvidia-device-plugin` | Ambient mesh control plane + data plane DaemonSets + GPU plugin |
+| 1 | `namespaces` | `ollama`, `istio-ingress` namespaces labelled `istio.io/dataplane-mode: ambient` |
+| 2 | `ollama-storage` | StorageClass `gp3` (Retain, WaitForFirstConsumer) + PVC 200Gi |
+| 3 | `ollama` | Deployment (4 GPUs, `strategy: Recreate`), Service (ClusterIP :11434), NetworkPolicy |
+| 4 | `model-loader` | Job: pulls `qwen3-coder:30b` (~18GB) to EBS PVC |
+| 5 | `gateway` | Istio Gateway → AWS LB Controller provisions internal NLB ⚠️ requires TLS cert from `02-generate-certs.sh` |
+| 6 | `httproutes` | HTTPRoute: `/*` → `ollama.ollama.svc.cluster.local:11434` |
+
+> **Key insight:** Negative waves establish CRD foundations before control plane components, which must be healthy before workload and gateway waves execute.
+
+---
+
 ### ArgoCD GitOps Flow
 
 End-to-end sequence from `terraform apply` through all sync waves to a running Ollama endpoint:
