@@ -537,7 +537,62 @@ done
 deck gateway diff deck/kong.yaml \
   --konnect-addr https://${KONNECT_REGION}.api.konghq.com \
   --konnect-token $KONNECT_TOKEN \
-  --konnect-control-plane-name ollama-ai-gateway
+  --konnect-control-plane-name kong-cloud-gateway-eks
+```
+
+**Kong Konnect — get the full connect command**
+
+Step 1 — Get your Kong proxy URL:
+```bash
+source .env
+
+# Get the control plane ID
+CP_ID=$(curl -s "https://${KONNECT_REGION}.api.konghq.com/v2/control-planes" \
+  -H "Authorization: Bearer $KONNECT_TOKEN" | \
+  jq -r '.data[] | select(.name == "kong-cloud-gateway-eks") | .id')
+
+# Get the proxy URL (printed after network reaches "ready")
+KONG_PROXY_URL=$(curl -s \
+  "https://global.api.konghq.com/v2/cloud-gateways/configurations?control_plane_id=${CP_ID}" \
+  -H "Authorization: Bearer $KONNECT_TOKEN" | \
+  jq -r '.data[].dataplane_groups[].dns' | head -1)
+
+echo "Kong proxy URL: https://${KONG_PROXY_URL}"
+```
+
+Step 2 — API keys are defined in `deck/kong.yaml` under `consumers:`:
+```yaml
+consumers:
+  - username: team-admin
+    keyauth_credentials:
+      - key: change-me-admin-key-do-not-use-in-production   # ← change this
+  - username: team-dev
+    keyauth_credentials:
+      - key: change-me-dev-key-do-not-use-in-production     # ← change this
+```
+
+Update the keys, then sync to Konnect:
+```bash
+deck gateway sync deck/kong.yaml \
+  --konnect-addr https://${KONNECT_REGION}.api.konghq.com \
+  --konnect-token $KONNECT_TOKEN \
+  --konnect-control-plane-name kong-cloud-gateway-eks
+```
+
+Step 3 — Connect Claude Code (replace with your values from Steps 1 & 2):
+```bash
+source claude-switch.sh ollama \
+  --endpoint https://${KONG_PROXY_URL} \
+  --apikey <your-api-key-from-deck/kong.yaml>
+
+claude --model qwen3-coder:32b
+```
+
+Test connectivity before launching Claude Code:
+```bash
+curl -s "https://${KONG_PROXY_URL}/api/tags" \
+  -H "apikey: <your-api-key>" | jq '.models[].name'
+# Should list: qwen3-coder:32b
 ```
 
 ---
