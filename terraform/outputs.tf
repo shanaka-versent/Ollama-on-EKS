@@ -34,6 +34,11 @@ output "eks_cluster_endpoint" {
   value       = module.eks.cluster_endpoint
 }
 
+output "region" {
+  description = "AWS region"
+  value       = var.region
+}
+
 output "eks_get_credentials_command" {
   description = "Command to get EKS credentials"
   value       = "aws eks update-kubeconfig --region ${var.region} --name ${module.eks.cluster_name}"

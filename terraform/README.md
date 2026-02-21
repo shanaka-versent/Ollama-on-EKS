@@ -74,71 +74,58 @@ For `g5.12xlarge` you need at least 48 vCPUs. Request a quota increase if needed
 
 ## Quick Start
 
-### Step 1: Deploy Infrastructure
+### Step 1: Configure Credentials
+
+```bash
+cp .env.example .env
+# Edit .env — set KONNECT_REGION and KONNECT_TOKEN (optional, for Kong team access)
+```
+
+### Step 2: Deploy Infrastructure
 
 ```bash
 cd terraform
 terraform init
-terraform plan
 terraform apply    # ~20 min for EKS + GPU node
 ```
 
-### Step 2: Configure kubectl
+ArgoCD bootstraps automatically. It then syncs all Kubernetes workloads (Istio, Ollama, Gateway) from Git in wave order — no manual steps needed.
+
+### Step 3: Run Post-Setup (one command does everything)
 
 ```bash
-$(terraform output -raw eks_get_credentials_command)
-kubectl get nodes  # Verify cluster is running
+./scripts/01-setup.sh
 ```
 
-### Step 3: Monitor ArgoCD Auto-Deployment
+This script:
+1. Configures `kubectl` from Terraform outputs
+2. Waits for ArgoCD Wave 1 (namespaces) to be ready
+3. Generates TLS certificates for the Istio Gateway
+4. Waits for Ollama deployment (Wave 3)
+5. Sets up Kong Konnect Cloud AI Gateway (if `KONNECT_TOKEN` is set in `.env`)
 
-ArgoCD automatically installs Istio, deploys Ollama, and configures the Gateway — no manual steps needed.
+> **Without Kong:** Script completes in ~15–20 min. Use port-forward for single-user access.
+> **With Kong:** Network provisioning adds ~30 min. Script polls automatically.
 
-```bash
-# Watch all applications sync in wave order
-kubectl get applications -n argocd -w
+### Step 4: Connect Claude Code
 
-# Access ArgoCD UI (optional)
-$(terraform output -raw argocd_ui_command)
-# Password: $(terraform output -raw argocd_admin_password_command)
-```
+**Kong team access (multi-user):**
 
-Wave order: CRDs → Istio → Namespaces → StorageClass/PVC → Ollama → Model Pull → Gateway → HTTPRoutes
-
-### Step 4: Generate TLS Certificates
-
-Required for the HTTPS listener on the Istio Gateway. ArgoCD self-heals and picks this up automatically.
-
-```bash
-./scripts/02-generate-certs.sh
-```
-
-### Step 5: Set Up Kong Konnect Cloud AI Gateway
-
-```bash
-./scripts/03-setup-cloud-gateway.sh
-```
-
-This creates the Konnect control plane, cloud gateway network, and Transit Gateway attachment. Network provisioning takes ~30 minutes.
-
-### Step 6: Post-Setup (Discover NLB + Sync Kong Config)
-
-```bash
-./scripts/04-post-setup.sh
-```
-
-This discovers the Istio Gateway NLB hostname, updates `deck/kong.yaml`, and syncs the AI Gateway configuration to Konnect.
-
-### Step 7: Connect Claude Code
-
-Get your Kong proxy URL from Konnect UI:
+Get your Kong proxy URL from:
 **https://cloud.konghq.com → Gateway Manager → Data Plane Nodes**
 
 ```bash
 source claude-switch.sh ollama \
   --endpoint https://<KONG_PROXY_URL> \
-  --apikey change-me-admin-key-do-not-use-in-production
+  --apikey <your-api-key>
 
+claude --model qwen3-coder:32b
+```
+
+**Local port-forward (single user):**
+
+```bash
+source claude-switch.sh local
 claude --model qwen3-coder:32b
 ```
 
