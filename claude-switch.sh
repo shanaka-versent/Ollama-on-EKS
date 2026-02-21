@@ -29,9 +29,9 @@ status() {
   if [[ -n "${KONG_PROXY_URL:-}" ]]; then
     echo "Mode:     OLLAMA via Kong Cloud AI Gateway"
     echo "Endpoint: $ANTHROPIC_BASE_URL"
-    echo "API Key:  ${ANTHROPIC_AUTH_TOKEN:0:8}..."
+    echo "API Key:  ${ANTHROPIC_API_KEY:0:8}..."
     echo ""
-    if curl -s --connect-timeout 5 "${KONG_PROXY_URL}/api/tags" -H "apikey: ${ANTHROPIC_AUTH_TOKEN}" > /dev/null 2>&1; then
+    if curl -s --connect-timeout 5 "${KONG_PROXY_URL}/api/tags" -H "apikey: ${ANTHROPIC_API_KEY}" > /dev/null 2>&1; then
       echo "Status: CONNECTED"
     else
       echo "Status: NOT REACHABLE — check Kong proxy URL and API key"
@@ -168,8 +168,8 @@ set_ollama() {
 
   export KONG_PROXY_URL="$endpoint"
   export ANTHROPIC_BASE_URL="$endpoint"
-  export ANTHROPIC_AUTH_TOKEN="$apikey"
-  export ANTHROPIC_API_KEY=""
+  export ANTHROPIC_API_KEY="$apikey"   # Sent as x-api-key header → matches Kong key-auth
+  unset ANTHROPIC_AUTH_TOKEN
   export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 
   echo ""
