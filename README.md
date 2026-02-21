@@ -34,7 +34,7 @@ How a prompt travels from Claude Code (or any OpenAI-compatible client) through 
 ```mermaid
 %%{init: {'theme': 'neutral', 'themeVariables': {'primaryColor': '#ECECFF', 'primaryBorderColor': '#9370DB', 'lineColor': '#666', 'secondaryColor': '#ffffde'}}}%%
 sequenceDiagram
-    actor Dev as Developer (Mac)
+    participant Dev as Developer (Mac)
     participant CC as Claude Code<br/>/ Copilot
     participant Kong as Kong Cloud AI GW<br/>(Kong's AWS — managed)
     participant TGW as Transit Gateway<br/>(cross-account)
@@ -474,7 +474,7 @@ End-to-end sequence from `terraform apply` through all sync waves to a running O
 ```mermaid
 %%{init: {'theme': 'neutral', 'themeVariables': {'primaryColor': '#ECECFF', 'primaryBorderColor': '#9370DB', 'lineColor': '#666', 'secondaryColor': '#ffffde'}}}%%
 sequenceDiagram
-    actor Dev as Developer
+    participant Dev as Developer
     participant TF as Terraform
     participant ARGO as ArgoCD Controller<br/>(argocd ns)
     participant GIT as GitHub Repo<br/>(argocd/apps/)
