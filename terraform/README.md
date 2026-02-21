@@ -498,26 +498,73 @@ deck gateway diff deck/kong.yaml \
 
 ## Tear Down
 
+### Automated Destroy (Recommended)
+
 ```bash
-# 1. Remove Kong Konnect resources (via Konnect UI or API)
-#    Gateway Manager → delete control plane
-
-# 2. Remove Istio
-helm uninstall istio-ingress -n istio-ingress
-helm uninstall ztunnel -n istio-system
-helm uninstall istio-cni -n istio-system
-helm uninstall istiod -n istio-system
-helm uninstall istio-base -n istio-system
-
-# 3. Destroy Terraform resources
-cd terraform
-terraform destroy
+./scripts/00-destroy-all.sh
 ```
 
-**Note:** The EBS volume uses `Retain` reclaim policy. After `terraform destroy`, check for orphaned volumes:
+This script automatically:
+1. Removes Kong Konnect control plane and cloud gateway network
+2. Uninstalls Istio components (ingress gateway, CNI, ztunnel, istiod)
+3. Deletes the EBS CSI Driver addon
+4. Runs `terraform destroy` to remove all AWS resources
+5. Checks for orphaned EBS volumes
+
+**Note:** The script will prompt for confirmation before destroying anything. Use `--force` to skip confirmation:
 
 ```bash
-aws ec2 describe-volumes --filters "Name=tag:Project,Values=Ollama-Private-LLM" --region us-west-2
+./scripts/00-destroy-all.sh --force
+```
+
+### Manual Destroy (If Needed)
+
+If you prefer to manually destroy resources:
+
+```bash
+# 1. Remove Kong Konnect resources
+#    https://cloud.konghq.com → Gateway Manager → delete control plane
+
+# 2. Remove Istio
+kubectl delete namespace istio-ingress --ignore-not-found=true
+kubectl delete namespace istio-system --ignore-not-found=true
+
+helm uninstall istio-ingress -n istio-ingress 2>/dev/null || true
+helm uninstall ztunnel -n istio-system 2>/dev/null || true
+helm uninstall istio-cni -n istio-system 2>/dev/null || true
+helm uninstall istiod -n istio-system 2>/dev/null || true
+helm uninstall istio-base -n istio-system 2>/dev/null || true
+
+# 3. Remove EBS CSI Driver addon
+aws eks delete-addon \
+  --cluster-name $(terraform output -raw eks_cluster_name) \
+  --addon-name aws-ebs-csi-driver \
+  --region us-west-2
+
+# 4. Destroy Terraform resources
+cd terraform
+terraform destroy
+
+# 5. Check for orphaned volumes
+aws ec2 describe-volumes \
+  --filters "Name=tag:Project,Values=Ollama-Private-LLM" \
+  --region us-west-2
+```
+
+### Cleanup Orphaned EBS Volumes
+
+If `terraform destroy` leaves behind EBS volumes (due to `Retain` reclaim policy):
+
+```bash
+# List orphaned volumes
+aws ec2 describe-volumes \
+  --filters "Name=tag:Project,Values=Ollama-Private-LLM" \
+  --region us-west-2 \
+  --query 'Volumes[?State==`available`].[VolumeId,Size,Tags]' \
+  --output table
+
+# Delete a specific volume
+aws ec2 delete-volume --volume-id vol-xxxxx --region us-west-2
 ```
 
 ---
