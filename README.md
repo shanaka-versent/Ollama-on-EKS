@@ -475,34 +475,63 @@ kubectl wait --for=condition=ready pod -l app=ollama -n ollama --timeout=300s
 
 ### Useful debugging commands
 
+**ArgoCD**
 ```bash
-# ArgoCD — check all apps and sync status
+# Check all apps and sync status
 kubectl get applications -n argocd
 kubectl describe application ollama-root -n argocd
 
-# ArgoCD UI (run in separate terminal)
+# ArgoCD UI (run in a separate terminal, then open https://localhost:8080)
 kubectl port-forward svc/argocd-server -n argocd 8080:443
-# Password: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d
+# Password:
+kubectl -n argocd get secret argocd-initial-admin-secret \
+  -o jsonpath='{.data.password}' | base64 -d
+```
 
+**Ollama**
+```bash
 # Check all pods
 kubectl get pods -A
 
-# Istio components (installed by ArgoCD)
-kubectl get pods -n istio-system
-kubectl get pods -n istio-ingress
-kubectl get gateway -n istio-ingress
+# Ollama pod status
+kubectl get pods -n ollama
 
-# Ollama logs
-kubectl logs -n ollama deploy/ollama -f
-
-# Model loader job logs
+# Model loader — wait for "pull completed"
 kubectl logs -n ollama -l app=model-loader -f
+
+# Ollama server logs
+kubectl logs -n ollama deploy/ollama -f
 
 # GPU status
 kubectl exec -n ollama deploy/ollama -- nvidia-smi
+```
 
-# LB Controller logs
+**Istio + Gateway**
+```bash
+kubectl get pods -n istio-system
+kubectl get pods -n istio-ingress
+kubectl get gateway -n istio-ingress
 kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
+```
+
+**Kong Konnect — check control planes and network state**
+```bash
+source .env
+
+# List control planes
+curl -s "https://${KONNECT_REGION}.api.konghq.com/v2/control-planes" \
+  -H "Authorization: Bearer $KONNECT_TOKEN" | \
+  jq '.data[] | {name, id, cloud_gateway}'
+
+# Poll cloud gateway network state (initializing → ready, takes ~30 min)
+while true; do
+  STATE=$(curl -s "https://global.api.konghq.com/v2/cloud-gateways/networks" \
+    -H "Authorization: Bearer ${KONNECT_TOKEN}" | \
+    jq -r '.data[] | select(.name == "ollama-eks-network") | .state' 2>/dev/null)
+  echo "[$(date '+%H:%M:%S')] ollama-eks-network: ${STATE:-unknown}"
+  [[ "$STATE" == "ready" ]] && echo "Ready — run ./scripts/04-post-setup.sh" && break
+  sleep 30
+done
 
 # Kong config diff (before sync)
 deck gateway diff deck/kong.yaml \
