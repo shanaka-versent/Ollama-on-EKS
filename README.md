@@ -27,7 +27,7 @@ Client → Kong Cloud AI GW (Kong's AWS) --[Transit GW]--> Internal NLB --> Isti
 | Istio Ambient Mesh | Your AWS account (EKS) | L4 mTLS, Gateway API routing |
 | Ollama server | Your AWS account (EKS) | Model server — loads model, runs GPU inference |
 | EBS gp3 (200GB) | Your AWS account (AZ-local) | Block storage — attaches to EC2 GPU node via Nitro NVMe hypervisor (not PrivateLink) |
-| qwen3-coder:32b | Your AWS account (EKS) | The actual LLM brain doing the reasoning |
+| qwen2.5-coder:32b | Your AWS account (EKS) | The actual LLM brain doing the reasoning |
 
 ---
 
@@ -107,8 +107,8 @@ This runs `terraform apply` (VPC, EKS, IAM, ArgoCD) then `scripts/01-setup.sh` w
 # 1. All ArgoCD apps should be Synced / Healthy
 kubectl get applications -n argocd
 
-# 2. Model loader should show "pull completed" (qwen3-coder:32b is ~20GB, takes 10–30 min)
-kubectl logs -n ollama -l app=model-loader -f
+# 2. Model loader should show "pull completed" (qwen2.5-coder:32b is ~20GB, takes 10–30 min)
+kubectl logs -n ollama -l app=ollama-model-loader -f
 
 # 3. Ollama pod should be Running
 kubectl get pods -n ollama
@@ -119,31 +119,10 @@ kubectl get pods -n ollama
 ### Phase 2: Complete Kong Transit Gateway Setup (~30–60 min)
 
 The cloud gateway network takes ~30 min to provision. Once ready, Kong initiates a
-Transit Gateway attachment to your VPC — **you must accept this in your AWS account**.
+Transit Gateway attachment to your VPC. The TGW is configured with `auto_accept_shared_attachments = "enable"`,
+so **no manual acceptance is required** — Kong's attachment is accepted automatically.
 
-**Step 3: Accept the Transit Gateway attachment in AWS**
-
-```bash
-# Check for a pending attachment from Kong's account
-aws ec2 describe-transit-gateway-attachments \
-  --region us-west-2 \
-  --filters "Name=transit-gateway-id,Values=$(terraform -chdir=terraform output -raw transit_gateway_id)" \
-            "Name=state,Values=pendingAcceptance" \
-  --query 'TransitGatewayAttachments[*].{ID:TransitGatewayAttachmentId,State:State,Account:CreatorAccountId}' \
-  --output table
-```
-
-If an attachment appears, accept it:
-
-```bash
-aws ec2 accept-transit-gateway-vpc-attachment \
-  --transit-gateway-attachment-id <tgw-attach-id-from-above> \
-  --region us-west-2
-```
-
-> **Note:** If no attachment is pending yet, the network is still provisioning. Wait and re-run the check every few minutes.
-
-**Step 4: Poll until the attachment is ready**
+**Step 3: Poll until the attachment is ready**
 
 ```bash
 source .env
@@ -217,16 +196,16 @@ source claude-switch.sh ollama \
 # Verify connectivity
 curl -s "https://<KONG_PROXY_URL>/api/tags" \
   -H "apikey: <your-api-key>" | jq '.models[].name'
-# Should return: qwen3-coder:32b
+# Should return: qwen2.5-coder:32b
 
-claude --model qwen3-coder:32b
+claude --model qwen2.5-coder:32b
 ```
 
 **Connect without Kong (local port-forward, single user only):**
 
 ```bash
 source claude-switch.sh local
-claude --model qwen3-coder:32b
+claude --model qwen2.5-coder:32b
 ```
 
 ---
@@ -309,7 +288,7 @@ ArgoCD auto-deploys these from Git after `terraform apply`:
 | Wave | What Gets Deployed | Source |
 |------|--------------------|--------|
 | 3 | Ollama Deployment (4 GPUs, 96Gi), Service (ClusterIP :11434), NetworkPolicy | `k8s/ollama/` |
-| 4 | Model Loader Job — pulls `qwen3-coder:32b` to EBS volume | `k8s/model-loader/` |
+| 4 | Model Loader Job — pulls `qwen2.5-coder:32b` to EBS volume | `k8s/model-loader/` |
 
 ### Post-Terraform (automated by `deploy.sh`)
 
@@ -385,7 +364,7 @@ claude
 
 ```bash
 source claude-switch.sh local
-claude --model qwen3-coder:32b
+claude --model qwen2.5-coder:32b
 ```
 
 Starts `kubectl port-forward -n ollama svc/ollama 11434:11434` automatically in the background.
@@ -397,7 +376,7 @@ source claude-switch.sh ollama \
   --endpoint https://<KONG_PROXY_URL> \
   --apikey <your-api-key>
 
-claude --model qwen3-coder:32b
+claude --model qwen2.5-coder:32b
 ```
 
 ### Check Current Mode
@@ -438,7 +417,7 @@ ollama_memory_limit    = "20Gi"
 ollama_memory_request  = "16Gi"
 ollama_cpu_limit       = 4
 ollama_cpu_request     = 2
-ollama_model           = "qwen3-coder:7b"
+ollama_model           = "qwen2.5-coder:7b"
 ```
 
 ---
@@ -541,7 +520,7 @@ kubectl wait --for=condition=ready pod -l app=ollama -n ollama --timeout=300s
 │   ├── gateway.yaml              # Istio Gateway (internal NLB)
 │   ├── httproutes.yaml           # HTTPRoutes for Ollama
 │   ├── ollama/                   # Deployment, Service, NetworkPolicy, StorageClass, PVC
-│   └── model-loader/             # Job: pulls qwen3-coder:32b to EBS volume
+│   └── model-loader/             # Job: pulls qwen2.5-coder:32b to EBS volume
 ├── scripts/
 │   ├── 01-setup.sh               # Post-terraform orchestrator (called by deploy.sh)
 │   ├── 02-generate-certs.sh      # TLS certificates for Istio Gateway
@@ -574,57 +553,163 @@ kubectl wait --for=condition=ready pod -l app=ollama -n ollama --timeout=300s
 | GPU quota exceeded | AWS `InsufficientInstanceCapacity` | Request quota increase in AWS Console |
 | Kong 409 on re-run | Control plane or network already exists | Script is idempotent — it will reuse existing resources automatically |
 
-### Useful debugging commands
+### Debug Commands Reference
 
-**ArgoCD**
+Click a section to expand it.
+
+<details>
+<summary><strong>ArgoCD — Check sync and app health</strong></summary>
+
 ```bash
-# Check all apps and sync status
+# Summary: all apps with sync + health status
 kubectl get applications -n argocd
-kubectl describe application ollama-root -n argocd
 
-# ArgoCD UI (run in a separate terminal, then open https://localhost:8080)
+# Detailed status for a specific app (shows sync diff, conditions, events)
+kubectl describe application <app-name> -n argocd
+
+# ArgoCD web UI — open https://localhost:8080 in a separate terminal
 kubectl port-forward svc/argocd-server -n argocd 8080:443
-# Password:
+# Admin password:
 kubectl -n argocd get secret argocd-initial-admin-secret \
   -o jsonpath='{.data.password}' | base64 -d
 ```
 
-**Ollama**
+</details>
+
+<details>
+<summary><strong>Ollama — Model loading and GPU</strong></summary>
+
 ```bash
-# Check all pods
+# All pods across all namespaces (spot pending/failed pods)
 kubectl get pods -A
 
-# Ollama pod status
-kubectl get pods -n ollama
+# Ollama pod status + assigned node
+kubectl get pods -n ollama -o wide
 
-# Model loader — wait for "pull completed"
-kubectl logs -n ollama -l app=model-loader -f
+# Stream model loader logs (shows download progress)
+kubectl logs -n ollama -l app=ollama-model-loader -f
 
 # Ollama server logs
 kubectl logs -n ollama deploy/ollama -f
 
-# GPU status
+# List loaded models (inside the Ollama pod)
+kubectl exec -n ollama deploy/ollama -- ollama list
+
+# GPU status inside the Ollama pod
 kubectl exec -n ollama deploy/ollama -- nvidia-smi
+
+# Check Ollama API is responding (from within the cluster)
+cat <<'EOF' | kubectl apply -f - && sleep 15 && kubectl logs test-curl -n ollama && kubectl delete pod test-curl -n ollama
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-curl
+  namespace: ollama
+spec:
+  restartPolicy: Never
+  tolerations:
+    - key: CriticalAddonsOnly
+      operator: Exists
+      effect: NoSchedule
+  containers:
+    - name: curl
+      image: curlimages/curl:latest
+      command: ["curl", "-s", "http://ollama.ollama.svc.cluster.local:11434/api/tags"]
+EOF
+
+# Verify a model name exists in Ollama registry before changing job.yaml
+# Returns {"status":"pulling manifest"} if valid, {"error":"file does not exist"} if invalid
+cat <<'EOF' | kubectl apply -f - && sleep 10 && kubectl logs test-model-check -n ollama && kubectl delete pod test-model-check -n ollama
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-model-check
+  namespace: ollama
+spec:
+  restartPolicy: Never
+  tolerations:
+    - key: CriticalAddonsOnly
+      operator: Exists
+      effect: NoSchedule
+  containers:
+    - name: curl
+      image: curlimages/curl:latest
+      command: ["/bin/sh", "-c", "timeout 5 curl -X POST http://ollama.ollama.svc.cluster.local:11434/api/pull -H 'Content-Type: application/json' -d '{\"name\":\"qwen2.5-coder:32b\"}' --no-buffer 2>&1 | head -2"]
+EOF
+
+# Storage used by model cache
+kubectl exec -n ollama deploy/ollama -- df -h /root/.ollama
 ```
 
-**Istio + Gateway**
+</details>
+
+<details>
+<summary><strong>EKS Nodes — Instance types, taints, pod scheduling</strong></summary>
+
 ```bash
-kubectl get pods -n istio-system
-kubectl get pods -n istio-ingress
-kubectl get gateway -n istio-ingress
-kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
+# Node list with instance types and node groups
+kubectl get nodes -o json | jq -r \
+  '.items[] | "\(.metadata.name) | \(.metadata.labels["node.kubernetes.io/instance-type"]) | \(.metadata.labels["eks.amazonaws.com/nodegroup"])"'
+
+# Why is a pod Pending? (shows taint/resource/affinity mismatch)
+kubectl describe pod -n <namespace> <pod-name> | tail -20
+
+# Check which nodes have which taints (system=CriticalAddonsOnly, gpu=nvidia.com/gpu)
+kubectl get nodes -o json | jq -r '.items[] | "\(.metadata.name): \(.spec.taints // [] | map(.key + "=" + (.value // "") + ":" + .effect) | join(", "))"'
+
+# Patch gateway deployment to add CriticalAddonsOnly toleration (if pod is stuck Pending)
+kubectl patch deployment ollama-gateway-istio -n istio-ingress --type='json' \
+  -p='[{"op":"add","path":"/spec/template/spec/tolerations","value":[{"key":"CriticalAddonsOnly","operator":"Exists","effect":"NoSchedule"}]}]'
 ```
 
-**Kong Konnect — check control planes and network state**
+</details>
+
+<details>
+<summary><strong>Istio + Gateway — NLB provisioning and traffic routing</strong></summary>
+
+```bash
+# Istio control plane pods
+kubectl get pods -n istio-system
+
+# Gateway pod and NLB status
+kubectl get pods -n istio-ingress
+kubectl get gateway -n istio-ingress        # shows ADDRESS (NLB DNS) once ready
+kubectl get service -n istio-ingress        # shows EXTERNAL-IP (same NLB DNS)
+
+# Gateway deployment tolerations (must have CriticalAddonsOnly to schedule on system nodes)
+kubectl get deployment ollama-gateway-istio -n istio-ingress -o json | \
+  jq '.spec.template.spec | {tolerations, nodeSelector}'
+
+# AWS LB Controller logs (diagnose NLB provisioning failures)
+kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller --tail=50
+
+# HTTPRoutes status (confirm Ollama route is Accepted + Resolved)
+kubectl get httproutes -A
+
+# NLB DNS hostname
+kubectl get svc ollama-gateway-istio -n istio-ingress \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+```
+
+</details>
+
+<details>
+<summary><strong>Kong Konnect — Control planes, networks, TGW state</strong></summary>
+
 ```bash
 source .env
 
-# List control planes
+# List control planes (shows cloud_gateway flag)
 curl -s "https://${KONNECT_REGION}.api.konghq.com/v2/control-planes" \
   -H "Authorization: Bearer $KONNECT_TOKEN" | \
-  jq '.data[] | {name, id, cloud_gateway}'
+  jq -r '.data[] | "\(.id) | \(.name) | cloud_gateway=\(.cloud_gateway)"'
 
-# Poll cloud gateway network state (initializing → ready, takes ~30 min)
+# List cloud gateway networks with state
+curl -s "https://global.api.konghq.com/v2/cloud-gateways/networks" \
+  -H "Authorization: Bearer $KONNECT_TOKEN" | \
+  jq -r '.data[] | "\(.id) | \(.name) | \(.state)"'
+
+# Poll network state until ready (initializing → ready, takes ~30 min)
 while true; do
   STATE=$(curl -s "https://global.api.konghq.com/v2/cloud-gateways/networks" \
     -H "Authorization: Bearer ${KONNECT_TOKEN}" | \
@@ -634,58 +719,84 @@ while true; do
   sleep 30
 done
 
-# Kong config diff (before sync)
+# Check Transit Gateway attachment state
+NETWORK_ID=$(curl -s "https://global.api.konghq.com/v2/cloud-gateways/networks" \
+  -H "Authorization: Bearer $KONNECT_TOKEN" | \
+  jq -r '.data[] | select(.name == "ollama-eks-network") | .id')
+
+curl -s "https://global.api.konghq.com/v2/cloud-gateways/networks/${NETWORK_ID}/transit-gateways" \
+  -H "Authorization: Bearer $KONNECT_TOKEN" | jq '.data[] | {id, name, state}'
+
+# Poll TGW attachment until ready
+TGW_ATT_ID=$(curl -s "https://global.api.konghq.com/v2/cloud-gateways/networks/${NETWORK_ID}/transit-gateways" \
+  -H "Authorization: Bearer $KONNECT_TOKEN" | jq -r '.data[0].id')
+while true; do
+  STATE=$(curl -s \
+    "https://global.api.konghq.com/v2/cloud-gateways/networks/${NETWORK_ID}/transit-gateways/${TGW_ATT_ID}" \
+    -H "Authorization: Bearer $KONNECT_TOKEN" | jq -r '.state')
+  echo "[$(date '+%H:%M:%S')] TGW attachment: $STATE"
+  [[ "$STATE" == "ready" ]] && echo "Ready — proceed to Phase 3" && break
+  sleep 30
+done
+
+# List dataplane group configurations (check CP → network wiring)
+curl -s "https://global.api.konghq.com/v2/cloud-gateways/configurations" \
+  -H "Authorization: Bearer $KONNECT_TOKEN" | \
+  jq '.data[] | {id, control_plane_id, version, dataplane_groups: (.dataplane_groups | length)}'
+
+# Kong config diff (what will change on next sync)
 deck gateway diff deck/kong.yaml \
   --konnect-addr https://${KONNECT_REGION}.api.konghq.com \
   --konnect-token $KONNECT_TOKEN \
   --konnect-control-plane-name kong-cloud-gateway-eks
 ```
 
-**Kong Konnect — get the proxy URL and connect**
-
-The proxy URL for a Dedicated Cloud Gateway is shown in the Konnect UI — it is **not** returned by the configurations API (that field is only populated for serverless gateways).
-
-Step 1 — Get your proxy URL from the UI:
+> **Note:** The proxy URL for a Dedicated Cloud Gateway is shown in the Konnect UI only — it is **not** returned by the configurations API (that field is only populated for serverless gateways).
 > **[cloud.konghq.com](https://cloud.konghq.com) → Gateway Manager → `kong-cloud-gateway-eks` → Overview → Proxy URL**
 
-Step 2 — Verify TGW attachment is ready (required before traffic flows):
+</details>
+
+<details>
+<summary><strong>Kong Konnect — Connect and verify end-to-end</strong></summary>
+
 ```bash
 source .env
+KONG_PROXY_URL="<paste-url-from-konnect-ui>"   # e.g. https://xxxx.gateways.konggateway.com
+
+# Verify TGW attachment is ready (traffic won't flow until this is "ready")
 NETWORK_ID=$(curl -s "https://global.api.konghq.com/v2/cloud-gateways/networks" \
   -H "Authorization: Bearer $KONNECT_TOKEN" | \
   jq -r '.data[] | select(.name == "ollama-eks-network") | .id')
-
 curl -s "https://global.api.konghq.com/v2/cloud-gateways/networks/${NETWORK_ID}/transit-gateways" \
   -H "Authorization: Bearer $KONNECT_TOKEN" | jq '.data[] | {name, state}'
-# state should be: "ready"
-```
 
-Step 3 — Update API keys in `deck/kong.yaml` and sync:
-```bash
-# Edit deck/kong.yaml — replace placeholder keys under consumers:
-#   key: change-me-admin-key-do-not-use-in-production  ← replace this
+# Update API keys in deck/kong.yaml (replace placeholder values)
+# Edit deck/kong.yaml — under consumers, set real keys for team-admin, team-dev
 
+# Sync Kong config
 deck gateway sync deck/kong.yaml \
   --konnect-addr https://${KONNECT_REGION}.api.konghq.com \
   --konnect-token $KONNECT_TOKEN \
   --konnect-control-plane-name kong-cloud-gateway-eks
-```
 
-Step 4 — Connect:
-```bash
-KONG_PROXY_URL="<paste-url-from-konnect-ui>"
+# Verify Ollama responds through Kong
+curl -s "https://${KONG_PROXY_URL}/api/tags" -H "apikey: <your-api-key>" | jq '.models[].name'
+# Expected output: "qwen2.5-coder:32b"
 
+# Test OpenAI-compatible chat via Kong ai-proxy
+curl -s "https://${KONG_PROXY_URL}/ai/chat" \
+  -H "apikey: <your-api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen2.5-coder:32b","messages":[{"role":"user","content":"Hello"}]}'
+
+# Connect Claude Code through Kong
 source claude-switch.sh ollama \
   --endpoint "https://${KONG_PROXY_URL}" \
   --apikey <your-api-key>
-
-# Verify connectivity
-curl -s "https://${KONG_PROXY_URL}/api/tags" \
-  -H "apikey: <your-api-key>" | jq '.models[].name'
-# Should return: qwen3-coder:32b
-
-claude --model qwen3-coder:32b
+claude --model qwen2.5-coder:32b
 ```
+
+</details>
 
 ---
 

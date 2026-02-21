@@ -8,10 +8,42 @@
 #   Client --> Kong Cloud AI GW (managed) --[Transit GW]--> Internal NLB --> Istio Gateway --> Ollama
 #
 # IMPORTANT: This uses Gateway API (gateway.networking.k8s.io), NOT Ingress
-# IMPORTANT: Apply AFTER scripts/01-install-istio.sh and scripts/02-generate-certs.sh
+# IMPORTANT: Apply AFTER terraform apply and scripts/02-generate-certs.sh
 #
 # Apply:
 #   kubectl apply -f k8s/gateway.yaml
+#
+# Node scheduling: All cluster nodes carry either CriticalAddonsOnly or nvidia.com/gpu taints.
+# The Deployment seed below provides tolerations so Istio places the gateway pod on system nodes.
+# Istio's gateway controller merges the container spec into this seed Deployment.
+
+---
+# Deployment seed: Istio Gateway API auto-provisioning merges the istio-proxy container
+# into this Deployment, preserving the tolerations defined here.
+# Without this, the gateway pod cannot schedule (all nodes are tainted).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama-gateway-istio
+  namespace: istio-ingress
+  labels:
+    gateway.networking.k8s.io/gateway-name: ollama-gateway
+spec:
+  selector:
+    matchLabels:
+      gateway.networking.k8s.io/gateway-name: ollama-gateway
+  template:
+    metadata:
+      labels:
+        gateway.networking.k8s.io/gateway-name: ollama-gateway
+    spec:
+      tolerations:
+        - key: CriticalAddonsOnly
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: istio-proxy
+          image: auto  # placeholder — Istio replaces with the real istio-proxy image
 
 ---
 apiVersion: gateway.networking.k8s.io/v1

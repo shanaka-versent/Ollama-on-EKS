@@ -173,9 +173,10 @@ create_network() {
             \"cidr_block\": \"${DCGW_CIDR}\"
         }")
 
-    # 409 = network already exists — fetch it instead of failing
-    if [[ "$(echo "$NETWORK_RESPONSE" | jq -r '.status // empty')" == "409" ]]; then
-        log "  Network already exists — fetching existing ID..."
+    # On any error (409 conflict or 403 quota exceeded), fall back to listing existing networks
+    RESPONSE_STATUS=$(echo "$NETWORK_RESPONSE" | jq -r '.status // empty')
+    if [[ -n "$RESPONSE_STATUS" ]]; then
+        log "  Network creation returned status ${RESPONSE_STATUS} — fetching existing network by name..."
         EXISTING_NET=$(curl -s \
             "https://global.api.konghq.com/v2/cloud-gateways/networks" \
             -H "Authorization: Bearer $KONNECT_TOKEN")
@@ -267,7 +268,7 @@ share_ram_with_kong() {
 
     aws ram associate-resource-share \
         --resource-share-arn "${RAM_SHARE_ARN}" \
-        --principals "${KONG_AWS_ACCOUNT_ID}" > /dev/null 2>&1
+        --principals "${KONG_AWS_ACCOUNT_ID}" > /dev/null 2>&1 || true
 
     log "  RAM share associated with Kong's AWS account"
 }
