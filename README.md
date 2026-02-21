@@ -82,32 +82,24 @@ cp .env.example .env
 # Leave blank to skip Kong and use local port-forward mode only
 ```
 
-### Step 2: Deploy Infrastructure
+### Step 2: Deploy Everything
 
 ```bash
-cd terraform
-terraform init
-terraform plan
-terraform apply    # ~20 min — EKS + GPU node + ArgoCD bootstrap
+./deploy.sh
 ```
 
-Terraform deploys AWS infra **and** bootstraps ArgoCD, which automatically starts syncing Istio, Ollama, and Gateway in the background.
-
-### Step 3: Run Post-Setup (one command does everything)
-
-```bash
-./scripts/01-setup.sh
-```
-
-This single script handles everything after `terraform apply`:
+That's it. The script handles the full lifecycle end-to-end:
+- `terraform init + apply` — VPC, EKS, IAM, ArgoCD bootstrap (~20 min)
+- ArgoCD auto-syncs Istio, Ollama, and Gateway from Git (waves -2 to 6)
 - Configures `kubectl` from Terraform outputs
-- Waits for ArgoCD to create namespaces (Wave 1)
-- Generates TLS certificates (unblocks Wave 5 — Gateway)
+- Waits for ArgoCD Wave 1 (namespaces)
+- Generates TLS certificates (unblocks Wave 5 — Istio Gateway)
 - Waits for Ollama to be ready
 - Sets up Kong Konnect Cloud AI Gateway *(if `.env` credentials are set)*
-- Discovers NLB + syncs Kong AI config *(if Kong enabled)*
 
-### Step 4: Connect Claude Code
+> Already deployed? Re-run just the post-setup: `./scripts/01-setup.sh`
+
+### Step 3: Connect Claude Code
 
 **With Kong (team access — recommended):**
 ```bash

@@ -81,33 +81,24 @@ cp .env.example .env
 # Edit .env — set KONNECT_REGION and KONNECT_TOKEN (optional, for Kong team access)
 ```
 
-### Step 2: Deploy Infrastructure
+### Step 2: Deploy Everything
 
 ```bash
-cd terraform
-terraform init
-terraform apply    # ~20 min for EKS + GPU node
+./deploy.sh
 ```
 
-ArgoCD bootstraps automatically. It then syncs all Kubernetes workloads (Istio, Ollama, Gateway) from Git in wave order — no manual steps needed.
+That's it. The script handles the full lifecycle end-to-end:
+- `terraform init + apply` — VPC, EKS, IAM, ArgoCD bootstrap (~20 min)
+- ArgoCD auto-syncs Istio, Ollama, and Gateway from Git (waves -2 to 6)
+- Configures `kubectl` from Terraform outputs
+- Waits for ArgoCD Wave 1 (namespaces)
+- Generates TLS certificates (unblocks Wave 5 — Istio Gateway)
+- Waits for Ollama to be ready
+- Sets up Kong Konnect Cloud AI Gateway *(if `.env` credentials are set)*
 
-### Step 3: Run Post-Setup (one command does everything)
+> Already deployed? Re-run just the post-setup: `./scripts/01-setup.sh`
 
-```bash
-./scripts/01-setup.sh
-```
-
-This script:
-1. Configures `kubectl` from Terraform outputs
-2. Waits for ArgoCD Wave 1 (namespaces) to be ready
-3. Generates TLS certificates for the Istio Gateway
-4. Waits for Ollama deployment (Wave 3)
-5. Sets up Kong Konnect Cloud AI Gateway (if `KONNECT_TOKEN` is set in `.env`)
-
-> **Without Kong:** Script completes in ~15–20 min. Use port-forward for single-user access.
-> **With Kong:** Network provisioning adds ~30 min. Script polls automatically.
-
-### Step 4: Connect Claude Code
+### Step 3: Connect Claude Code
 
 **Kong team access (multi-user):**
 
