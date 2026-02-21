@@ -399,29 +399,55 @@ deck gateway sync deck/kong.yaml \
 
 ### Deployment Sequence
 
-```
-terraform apply
-  └── VPC, EKS, IAM, ArgoCD, LB Controller, Transit Gateway, RAM Share
-        └── ArgoCD bootstraps root app → sync waves run in order:
-              Wave -2  Gateway API CRDs
-              Wave -1  Istio Base CRDs
-              Wave  0  Istiod + CNI + ztunnel + NVIDIA device plugin
-              Wave  1  Namespaces (ollama, istio-ingress)
-              Wave  2  StorageClass + PVC (200Gi gp3)
-              Wave  3  Ollama Deployment + Service + NetworkPolicy
-              Wave  4  Model Loader Job (pulls qwen3-coder:30b)
-              Wave  5  Istio Gateway → internal NLB  [needs TLS cert]
-              Wave  6  HTTPRoutes → Ollama :11434
+```mermaid
+%%{init: {'theme': 'neutral', 'themeVariables': {'primaryColor': '#ECECFF', 'primaryBorderColor': '#9370DB', 'lineColor': '#666', 'secondaryColor': '#ffffde'}}}%%
+flowchart TD
+    START([🚀 deploy.sh])
 
-scripts/01-setup.sh  (called by deploy.sh)
-  ├── kubectl config from Terraform outputs
-  ├── scripts/02-generate-certs.sh  → TLS secret → Wave 5 becomes healthy
-  ├── Wait for Ollama ready
-  └── scripts/03-setup-cloud-gateway.sh  → Kong control plane + network + TGW attach
+    subgraph TF["⚙️ terraform apply"]
+        TF1["VPC · EKS · IAM\nLB Controller · Transit Gateway · RAM Share"]
+        TF2["helm install argo-cd"]
+        TF3["helm install argocd-apps\nRoot Application → argocd/apps/"]
+        TF1 --> TF2 --> TF3
+    end
 
-scripts/04-post-setup.sh  (manual after TGW is ready)
-  ├── Discover NLB hostname from kubectl
-  └── deck gateway sync → push kong.yaml to Konnect
+    subgraph ARGO["🔄 ArgoCD — automated sync waves"]
+        W_2["Wave -2 · Gateway API CRDs"]
+        W_1["Wave -1 · Istio Base CRDs"]
+        W0["Wave  0 · Istiod · CNI · ztunnel · NVIDIA plugin"]
+        W1["Wave  1 · Namespaces: ollama · istio-ingress"]
+        W2["Wave  2 · StorageClass gp3 · PVC 200Gi"]
+        W3["Wave  3 · Ollama Deployment · Service · NetworkPolicy"]
+        W4["Wave  4 · Model Loader Job — qwen3-coder:30b ~18GB"]
+        W5["⚠️ Wave  5 · Istio Gateway → internal NLB\nDegraded until TLS secret exists"]
+        W6["Wave  6 · HTTPRoutes → ollama:11434"]
+        W_2 --> W_1 --> W0 --> W1 --> W2 --> W3 --> W4 --> W5 --> W6
+    end
+
+    subgraph SETUP["📜 scripts/01-setup.sh — called by deploy.sh"]
+        SA["kubectl config from Terraform outputs"]
+        SB["scripts/02-generate-certs.sh\ncreates istio-gateway-tls secret"]
+        SC["Wait for Ollama pod Ready"]
+        SD["scripts/03-setup-cloud-gateway.sh\nKong control plane · network · TGW attach request"]
+        SA --> SB --> SC --> SD
+    end
+
+    subgraph POST["📜 scripts/04-post-setup.sh — manual after TGW ready"]
+        PA["Discover NLB DNS\nkubectl get gateway -n istio-ingress"]
+        PB["deck gateway sync\npush kong.yaml to Kong Konnect"]
+        PA --> PB
+    end
+
+    DONE(["✅ Ollama reachable via Kong Gateway"])
+
+    START --> TF1
+    TF3 --> W_2
+    TF3 --> SA
+    SB -. "unblocks Wave 5" .-> W5
+    SD --> WAIT(["⏳ Wait ~30 min\nfor TGW attachment ready"])
+    WAIT --> PA
+    W6 --> DONE
+    PB --> DONE
 ```
 
 ### Sync Wave Ordering
