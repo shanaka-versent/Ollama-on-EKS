@@ -551,6 +551,41 @@ kubectl get nodes -o json | jq -r '.items[] | "\(.metadata.name): \(.spec.taints
 </details>
 
 <details>
+<summary><strong>Scale-down verification — confirm GPU node and pod are stopped</strong></summary>
+
+Run these after the scale-down commands to confirm billing has stopped:
+
+```bash
+# Deployment should show 0/0 READY (replicas=0)
+kubectl get deployment ollama -n ollama
+
+# Pod list — no ollama pod should be Running (Completed model-loader is fine)
+kubectl get pods -n ollama -o wide
+
+# Node list — GPU node (g5.12xlarge) should be gone; only system t3.medium nodes remain
+# SchedulingDisabled means the node is still draining — wait a minute and re-run
+kubectl get nodes -o wide
+
+# GPU nodegroup desired/min/max — desiredSize should be 0
+aws eks describe-nodegroup \
+  --cluster-name $(terraform -chdir=terraform output -raw eks_cluster_name) \
+  --nodegroup-name $(terraform -chdir=terraform output -raw gpu_node_group_name) \
+  --region $(terraform -chdir=terraform output -raw region) \
+  --query 'nodegroup.scalingConfig'
+```
+
+Expected output after a successful scale-down:
+- Deployment: `ollama   0/0`
+- Pods: only `ollama-model-loader-xxxx   Completed`
+- Nodes: two `t3.medium` system nodes, no `g5.12xlarge`
+- scalingConfig: `{"desiredSize": 0, "maxSize": 2, "minSize": 0}`
+
+> **If the pod is `Pending` instead of gone**, the deployment replicas were not set to 0.
+> Fix: `kubectl scale deployment ollama -n ollama --replicas=0`
+
+</details>
+
+<details>
 <summary><strong>Istio + Gateway — NLB provisioning</strong></summary>
 
 ```bash
