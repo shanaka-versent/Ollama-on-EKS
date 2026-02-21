@@ -424,6 +424,84 @@ scripts/04-post-setup.sh  (manual after TGW is ready)
   └── deck gateway sync → push kong.yaml to Konnect
 ```
 
+### ArgoCD GitOps Flow
+
+End-to-end sequence from `terraform apply` through all sync waves to a running Ollama endpoint:
+
+```mermaid
+%%{init: {'theme': 'neutral', 'themeVariables': {'primaryColor': '#ECECFF', 'primaryBorderColor': '#9370DB', 'lineColor': '#666', 'secondaryColor': '#ffffde'}}}%%
+sequenceDiagram
+    actor Dev as Developer
+    participant TF as Terraform
+    participant ARGO as ArgoCD Controller<br/>(argocd ns)
+    participant GIT as GitHub Repo<br/>(argocd/apps/)
+    participant K8S as Kubernetes API<br/>(EKS)
+    participant AWS as AWS<br/>(LB Controller)
+
+    Dev->>TF: terraform apply
+
+    Note over TF,K8S: Bootstrap — AWS infrastructure + ArgoCD
+    TF->>K8S: VPC, EKS, IAM, LB Controller, Transit Gateway, RAM Share
+    TF->>K8S: helm install argo-cd (argocd namespace)
+    TF->>K8S: helm install argocd-apps → root Application pointing to argocd/apps/
+
+    Note over ARGO,GIT: ArgoCD polls Git every 3 min and reconciles drift
+    ARGO->>GIT: Discover child Applications in argocd/apps/
+    GIT-->>ARGO: 12 Application manifests (waves -2 to 6)
+
+    Note over ARGO,K8S: Wave -2 — Gateway API CRDs (prune disabled)
+    ARGO->>K8S: Apply Gateway API CRDs v1.2.0
+    K8S-->>ARGO: Healthy
+
+    Note over ARGO,K8S: Wave -1 — Istio Base CRDs
+    ARGO->>K8S: helm install istio/base v1.24.2
+    K8S-->>ARGO: Healthy
+
+    Note over ARGO,K8S: Wave 0 — Service Mesh + GPU plugin
+    ARGO->>K8S: helm install istiod (ambient profile)
+    ARGO->>K8S: helm install istio-cni
+    ARGO->>K8S: helm install ztunnel DaemonSet (L4 mTLS on every node)
+    ARGO->>K8S: helm install nvidia-device-plugin DaemonSet
+    K8S-->>ARGO: All Healthy
+
+    Note over ARGO,K8S: Wave 1 — Namespaces
+    ARGO->>K8S: Create ollama + istio-ingress namespaces
+    Note right of K8S: labelled istio.io/dataplane-mode: ambient
+    K8S-->>ARGO: Healthy
+
+    Note over ARGO,K8S: Wave 2 — Storage
+    ARGO->>K8S: StorageClass gp3 (Retain) + PVC 200Gi
+    K8S-->>ARGO: Healthy
+
+    Note over ARGO,K8S: Wave 3 — Ollama workload
+    ARGO->>K8S: Deployment (4 GPUs, strategy Recreate) + Service ClusterIP + NetworkPolicy
+    K8S-->>ARGO: Synced (pod Running once GPU node is Ready)
+
+    Note over ARGO,K8S: Wave 4 — Model Loader
+    ARGO->>K8S: Job: poll /api/tags then POST /api/pull qwen3-coder:30b
+    Note right of K8S: Downloads ~18GB to EBS PVC (10-30 min)
+    K8S-->>ARGO: Job Completed
+
+    Note over ARGO,K8S: Wave 5 — Istio Gateway (TLS dependency)
+    ARGO->>K8S: Gateway resource (internal NLB annotation)
+    Note right of K8S: Degraded — missing istio-gateway-tls secret
+    Dev->>K8S: scripts/02-generate-certs.sh creates TLS secret
+    ARGO->>K8S: selfHeal retries automatically
+    K8S->>AWS: LB Controller provisions internal NLB
+    AWS-->>K8S: NLB DNS assigned
+    K8S-->>ARGO: Healthy
+
+    Note over ARGO,K8S: Wave 6 — HTTPRoutes
+    ARGO->>K8S: HTTPRoute: /* to ollama.ollama.svc:11434
+    K8S-->>ARGO: Healthy
+
+    Note over Dev,AWS: All 12 apps Synced + Healthy
+    Dev->>Dev: scripts/03-setup-cloud-gateway.sh
+    Note right of Dev: Kong Konnect control plane + Transit Gateway attach
+    Dev->>Dev: scripts/04-post-setup.sh
+    Note right of Dev: Discover NLB DNS + deck gateway sync to Konnect
+```
+
 ### Layer 1 — Cloud Foundations (Terraform `modules/vpc`)
 
 | Resource | Details |
