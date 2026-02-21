@@ -50,7 +50,7 @@ output "gpu_node_group_name" {
 }
 
 # ==============================================================================
-# LAYER 3: ARGOCD + OLLAMA (managed by ArgoCD GitOps)
+# LAYER 2: ARGOCD BOOTSTRAP + LAYER 3/4: OLLAMA (managed by ArgoCD GitOps)
 # ==============================================================================
 
 output "argocd_admin_password_command" {
@@ -149,7 +149,7 @@ output "connect_to_ollama" {
        ${module.eks.cluster_name != "" ? "aws eks update-kubeconfig --region ${var.region} --name ${module.eks.cluster_name}" : ""}
 
     2. Start the tunnel (keep this terminal open):
-       ${module.ollama.port_forward_command}
+       kubectl port-forward -n ${var.ollama_namespace} svc/ollama 11434:11434
 
     3. In another terminal, run Claude Code:
        ANTHROPIC_BASE_URL=http://localhost:11434 \
