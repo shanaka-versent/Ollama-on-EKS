@@ -222,6 +222,22 @@ variable "kong_cloud_gateway_cidr" {
 }
 
 # ==============================================================================
+# ARGOCD GITOPS
+# ==============================================================================
+
+variable "git_repo_url" {
+  description = "Git repository URL for ArgoCD to sync (public repo — no credentials needed)"
+  type        = string
+  default     = "https://github.com/shanaka-versent/Ollama-on-EKS"
+}
+
+variable "argocd_chart_version" {
+  description = "ArgoCD Helm chart version (argo-cd chart from argoproj.github.io/argo-helm)"
+  type        = string
+  default     = "7.7.16"
+}
+
+# ==============================================================================
 # TAGS
 # ==============================================================================
 

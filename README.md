@@ -90,26 +90,30 @@ $(terraform output -raw eks_get_credentials_command)
 kubectl get nodes  # Verify cluster is running
 ```
 
-### Step 3: Install Istio + Gateway API
+### Step 3: Monitor ArgoCD Auto-Deployment
+
+ArgoCD automatically installs Istio, deploys Ollama, and configures the Gateway — no manual steps needed.
 
 ```bash
-./scripts/01-install-istio.sh
+# Watch all applications sync in wave order
+kubectl get applications -n argocd -w
+
+# Access ArgoCD UI (optional)
+$(terraform output -raw argocd_ui_command)
+# Password: $(terraform output -raw argocd_admin_password_command)
 ```
 
+Wave order: CRDs → Istio → Namespaces → StorageClass/PVC → Ollama → Model Pull → Gateway → HTTPRoutes
+
 ### Step 4: Generate TLS Certificates
+
+Required for the HTTPS listener on the Istio Gateway. ArgoCD self-heals and picks this up automatically.
 
 ```bash
 ./scripts/02-generate-certs.sh
 ```
 
-### Step 5: Apply Gateway + Routes
-
-```bash
-kubectl apply -f k8s/gateway.yaml
-kubectl apply -f k8s/httproutes.yaml
-```
-
-### Step 6: Set Up Kong Konnect Cloud AI Gateway
+### Step 5: Set Up Kong Konnect Cloud AI Gateway
 
 ```bash
 ./scripts/03-setup-cloud-gateway.sh
@@ -117,7 +121,7 @@ kubectl apply -f k8s/httproutes.yaml
 
 This creates the Konnect control plane, cloud gateway network, and Transit Gateway attachment. Network provisioning takes ~30 minutes.
 
-### Step 7: Post-Setup (Discover NLB + Sync Kong Config)
+### Step 6: Post-Setup (Discover NLB + Sync Kong Config)
 
 ```bash
 ./scripts/04-post-setup.sh
@@ -125,7 +129,7 @@ This creates the Konnect control plane, cloud gateway network, and Transit Gatew
 
 This discovers the Istio Gateway NLB hostname, updates `deck/kong.yaml`, and syncs the AI Gateway configuration to Konnect.
 
-### Step 8: Connect Claude Code
+### Step 7: Connect Claude Code
 
 Get your Kong proxy URL from Konnect UI:
 **https://cloud.konghq.com → Gateway Manager → Data Plane Nodes**
@@ -140,9 +144,25 @@ claude --model qwen3-coder:32b
 
 ---
 
-## What Terraform Creates
+## Architecture Layers
 
-### Layer 1: Cloud Foundations (`modules/vpc`)
+### External: Kong Konnect Cloud AI Gateway (Kong's AWS account)
+
+Kong is the external-facing entry point that sits on top of your 4-layer private infrastructure. It lives in Kong's managed AWS account and connects to yours via Transit Gateway.
+
+| Component | Details |
+|-----------|---------|
+| Kong Cloud AI GW | Managed Kong in Kong's AWS — auth, rate limiting, LLM-aware routing |
+| Transit Gateway | Terraform-provisioned bridge between Kong's VPC and your EKS VPC |
+| RAM Share | Shares your TGW with Kong's AWS account for cross-account attachment |
+| `ai-proxy` Plugin | Translates OpenAI format → Ollama API transparently |
+| `key-auth` Plugin | API key auth per team member (consumer-level) |
+
+Scripts that configure Kong: `03-setup-cloud-gateway.sh`, `04-post-setup.sh`
+
+---
+
+### Layer 1: Cloud Foundations (Terraform — `modules/vpc`)
 
 | Resource | Details |
 |----------|---------|
@@ -153,52 +173,50 @@ claude --model qwen3-coder:32b
 | NAT Gateway | Outbound internet for private subnets (single NAT) |
 | Route Tables | Public routes via IGW, private routes via NAT |
 
-### Layer 2: EKS Cluster (`modules/iam`, `modules/eks`)
+### Layer 2: Kubernetes Infrastructure (Terraform — `modules/iam`, `modules/eks`, `modules/argocd`, `modules/lb-controller`)
 
 | Resource | Details |
 |----------|---------|
-| IAM Roles | Cluster role, Node role, EBS CSI IRSA role |
+| IAM Roles | Cluster role, Node role, EBS CSI IRSA role, LB Controller IRSA role |
 | EKS Cluster | Kubernetes 1.31, public + private API endpoint |
 | OIDC Provider | Enables IRSA (IAM Roles for Service Accounts) |
 | System Node Group | 2x `t3.medium`, tainted `CriticalAddonsOnly` |
 | GPU Node Group | 1x `g5.12xlarge` (4x NVIDIA A10G, 96GB VRAM), tainted `nvidia.com/gpu` |
 | EKS Addons | VPC-CNI, CoreDNS, kube-proxy, EBS CSI Driver |
-
-### Layer 3: Ollama Deployment (`modules/ollama`)
-
-| Resource | Details |
-|----------|---------|
-| Namespace | `ollama` with purpose labels |
-| GP3 StorageClass | EBS gp3 with 4000 IOPS, volume expansion enabled |
-| PVC | 200GB for model storage (persists across pod restarts) |
-| NVIDIA Device Plugin | Helm chart — enables K8s GPU scheduling |
-| Deployment | Ollama container with 4 GPUs, 96GB memory limit |
-| Service | ClusterIP on port 11434 — **never exposed to internet** |
-| NetworkPolicy | Ingress: `istio-ingress` + `ollama` namespaces only. Egress: DNS + HTTPS |
-| Model Loader Job | Auto-pulls `qwen3-coder:32b` after deployment |
-
-### Layer 4: Kong Cloud AI Gateway Connectivity (conditional: `enable_kong = true`)
-
-| Resource | Details |
-|----------|---------|
-| Transit Gateway | Private network bridge to Kong's managed infrastructure |
-| TGW VPC Attachment | Attaches EKS VPC to the Transit Gateway |
+| ArgoCD | Helm chart v7.7.16 — GitOps controller, watches `argocd/apps/` in this repo |
+| AWS LB Controller | Helm release — provisions internal NLBs from Gateway API resources |
+| Transit Gateway | Private network bridge to Kong's managed infrastructure (if `enable_kong = true`) |
 | RAM Share | Shares TGW with Kong's AWS account for cross-account connectivity |
-| VPC Routes | Routes `192.168.0.0/16` (Kong CIDR) via Transit Gateway |
-| Security Group Rule | Allows inbound from Kong Cloud Gateway CIDR |
-| LB Controller IAM | IRSA role + policy for AWS Load Balancer Controller |
-| LB Controller | Helm release — creates internal NLBs from Gateway API resources |
+| VPC Routes + SG | Routes `192.168.0.0/16` via TGW, inbound SG rule for Kong CIDR |
 
-### Post-Terraform (Scripts + kubectl)
+### Layer 3: Kubernetes Customizations (ArgoCD — sync waves -2 to 2, 5, 6)
 
-| Component | Details |
-|-----------|---------|
-| Istio Ambient Mesh | Gateway API CRDs, Istiod, CNI, ztunnel, ingress gateway |
-| TLS Certificates | Self-signed CA + server cert for HTTPS listener |
-| Istio Gateway | Internal NLB via AWS LB Controller (Gateway API) |
-| HTTPRoutes | Path-based routing from Gateway to Ollama service |
-| Kong Konnect | Control plane, cloud gateway network, TGW attachment |
-| Kong AI Config | `ai-proxy` plugin for Ollama, `key-auth`, rate limiting |
+ArgoCD auto-deploys these from Git after `terraform apply`:
+
+| Wave | What Gets Deployed | Source |
+|------|--------------------|--------|
+| -2 | Gateway API CRDs v1.2.0 | kubernetes-sigs/gateway-api |
+| -1 | Istio Base CRDs | istio/base v1.24.2 |
+| 0 | Istiod (ambient profile), Istio CNI, ztunnel, NVIDIA Device Plugin | Helm charts |
+| 1 | `ollama` + `istio-ingress` namespaces with `istio.io/dataplane-mode: ambient` | `k8s/namespaces.yaml` |
+| 2 | GP3 StorageClass (4000 IOPS) + 200Gi PVC | `k8s/ollama/` |
+| 5 | Istio Gateway → internal NLB (needs TLS cert from `02-generate-certs.sh`) | `k8s/gateway.yaml` |
+| 6 | HTTPRoutes → Ollama service | `k8s/httproutes.yaml` |
+
+### Layer 4: Applications (ArgoCD — sync waves 3, 4)
+
+| Wave | What Gets Deployed | Source |
+|------|--------------------|--------|
+| 3 | Ollama Deployment (4 GPUs, 96Gi), Service (ClusterIP :11434), NetworkPolicy | `k8s/ollama/` |
+| 4 | Model Loader Job — pulls `qwen3-coder:32b` to EBS volume | `k8s/model-loader/` |
+
+### Post-Terraform (one-time scripts)
+
+| Script | What It Does |
+|--------|-------------|
+| `02-generate-certs.sh` | Creates TLS secret; ArgoCD self-heals and Wave 5 (Gateway) becomes healthy |
+| `03-setup-cloud-gateway.sh` | Creates Kong Konnect control plane + cloud gateway network + TGW attachment |
+| `04-post-setup.sh` | Discovers NLB hostname, updates `deck/kong.yaml`, syncs AI Gateway config |
 
 ---
 
@@ -456,22 +474,41 @@ kubectl wait --for=condition=ready pod -l app=ollama -n ollama --timeout=300s
 │       ├── vpc/                  # Layer 1: VPC, subnets, NAT
 │       ├── iam/                  # Layer 2: IAM roles
 │       ├── eks/                  # Layer 2: EKS cluster + node groups
-│       ├── ollama/               # Layer 3: Ollama deployment
+│       ├── argocd/               # Layer 3: ArgoCD GitOps bootstrap
 │       └── lb-controller/        # Layer 4: AWS LB Controller
+├── argocd/
+│   └── apps/                     # ArgoCD Application manifests (sync waves -2 to 6)
+│       ├── 00-gateway-api-crds.yaml
+│       ├── 01-istio-base.yaml
+│       ├── 02-istiod.yaml
+│       ├── 03-istio-cni.yaml
+│       ├── 04-ztunnel.yaml
+│       ├── 05-nvidia-device-plugin.yaml
+│       ├── 06-namespaces.yaml
+│       ├── 07-ollama-storage.yaml
+│       ├── 08-ollama.yaml
+│       ├── 09-model-loader.yaml
+│       ├── 10-gateway.yaml
+│       └── 11-httproutes.yaml
+├── k8s/
+│   ├── namespaces.yaml           # ollama + istio-ingress namespaces (ambient mode)
+│   ├── gateway.yaml              # Istio Gateway (internal NLB)
+│   ├── httproutes.yaml           # HTTPRoutes for Ollama
+│   ├── ollama/                   # Ollama Deployment, Service, NetworkPolicy, StorageClass, PVC
+│   └── model-loader/             # Job: pulls qwen3-coder:32b
 ├── scripts/
 │   ├── 00-destroy-all.sh         # Complete teardown automation
-│   ├── 01-install-istio.sh       # Istio Ambient Mesh + Gateway API
 │   ├── 02-generate-certs.sh      # TLS certificates for Istio Gateway
 │   ├── 03-setup-cloud-gateway.sh # Kong Konnect Cloud Gateway setup
 │   └── 04-post-setup.sh          # Discover NLB + sync Kong config
-├── k8s/
-│   ├── gateway.yaml              # Istio Gateway (internal NLB)
-│   └── httproutes.yaml           # HTTPRoutes for Ollama
 ├── deck/
 │   └── kong.yaml                 # Kong AI Gateway declarative config
+├── docs/
+│   └── architecture.png          # Architecture diagram
+├── generate-diagram.py           # Regenerates docs/architecture.png
 ├── claude-switch.sh              # Claude Code mode switcher
 ├── .env.example                  # Kong Konnect credentials template
-├── README.md                      # This file
+├── README.md                     # This file
 └── .gitignore
 ```
 
@@ -488,7 +525,8 @@ kubectl wait --for=condition=ready pod -l app=ollama -n ollama --timeout=300s
 | Kong returns 429 | Rate limit exceeded | Wait or increase `minute` limit in `deck/kong.yaml` |
 | NLB not provisioning | `kubectl get gateway -n istio-ingress` | Check LB Controller: `kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller` |
 | TGW attachment pending | Check Konnect UI → Cloud Gateways | Network provisioning takes ~30 min |
-| Istio pods not ready | `kubectl get pods -n istio-system` | Re-run `./scripts/01-install-istio.sh` |
+| Istio pods not ready | `kubectl get pods -n istio-system` | Check ArgoCD app: `kubectl get application -n argocd` — ArgoCD self-heals automatically |
+| ArgoCD app stuck | `kubectl get applications -n argocd` | Check sync status: `kubectl describe application <name> -n argocd` |
 | Port-forward drops | Connection timeout | Use Kong mode instead, or loop: `while true; do kubectl port-forward ...; sleep 2; done` |
 | Claude Code outputs raw JSON | Model too small | Use 32B+ model |
 | GPU quota exceeded | AWS `InsufficientInstanceCapacity` | Request quota increase in AWS Console |
@@ -496,16 +534,27 @@ kubectl wait --for=condition=ready pod -l app=ollama -n ollama --timeout=300s
 ### Useful debugging commands
 
 ```bash
+# ArgoCD — check all apps and sync status
+kubectl get applications -n argocd
+kubectl describe application ollama-root -n argocd
+
+# ArgoCD UI (run in separate terminal)
+kubectl port-forward svc/argocd-server -n argocd 8080:443
+# Password: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d
+
 # Check all pods
 kubectl get pods -A
 
-# Istio components
+# Istio components (installed by ArgoCD)
 kubectl get pods -n istio-system
 kubectl get pods -n istio-ingress
 kubectl get gateway -n istio-ingress
 
 # Ollama logs
 kubectl logs -n ollama deploy/ollama -f
+
+# Model loader job logs
+kubectl logs -n ollama -l app=model-loader
 
 # GPU status
 kubectl exec -n ollama deploy/ollama -- nvidia-smi
@@ -532,10 +581,11 @@ deck gateway diff deck/kong.yaml \
 
 This script automatically:
 1. Removes Kong Konnect control plane and cloud gateway network
-2. Uninstalls Istio components (ingress gateway, CNI, ztunnel, istiod)
-3. Deletes the EBS CSI Driver addon
-4. Runs `terraform destroy` to remove all AWS resources
-5. Checks for orphaned EBS volumes
+2. Deletes all ArgoCD Applications (cascades to Istio, Ollama, Gateway — ArgoCD `prune: true`)
+3. Uninstalls ArgoCD Helm releases
+4. Deletes the EBS CSI Driver addon
+5. Runs `terraform destroy` to remove all AWS resources
+6. Checks for orphaned EBS volumes
 
 **Note:** The script will prompt for confirmation before destroying anything. Use `--force` to skip confirmation:
 
@@ -551,27 +601,28 @@ If you prefer to manually destroy resources:
 # 1. Remove Kong Konnect resources
 #    https://cloud.konghq.com → Gateway Manager → delete control plane
 
-# 2. Remove Istio
-kubectl delete namespace istio-ingress --ignore-not-found=true
-kubectl delete namespace istio-system --ignore-not-found=true
+# 2. Remove ArgoCD Applications (cascades to Istio, Ollama, Gateway)
+kubectl delete applications --all -n argocd --timeout=120s 2>/dev/null || true
+sleep 30
 
-helm uninstall istio-ingress -n istio-ingress 2>/dev/null || true
-helm uninstall ztunnel -n istio-system 2>/dev/null || true
-helm uninstall istio-cni -n istio-system 2>/dev/null || true
-helm uninstall istiod -n istio-system 2>/dev/null || true
-helm uninstall istio-base -n istio-system 2>/dev/null || true
+# 3. Uninstall ArgoCD
+helm uninstall argocd-root-app -n argocd 2>/dev/null || true
+helm uninstall argocd -n argocd 2>/dev/null || true
 
-# 3. Remove EBS CSI Driver addon
+# 4. Clean up namespaces
+kubectl delete namespace istio-ingress istio-system ollama argocd --ignore-not-found=true
+
+# 5. Remove EBS CSI Driver addon
 aws eks delete-addon \
   --cluster-name $(terraform output -raw eks_cluster_name) \
   --addon-name aws-ebs-csi-driver \
   --region us-west-2
 
-# 4. Destroy Terraform resources
+# 6. Destroy Terraform resources
 cd terraform
 terraform destroy
 
-# 5. Check for orphaned volumes
+# 7. Check for orphaned volumes
 aws ec2 describe-volumes \
   --filters "Name=tag:Project,Values=Ollama-Private-LLM" \
   --region us-west-2

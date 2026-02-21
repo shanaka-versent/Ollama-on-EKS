@@ -1,0 +1,29 @@
+# Wave 6: HTTPRoutes
+# Configures path-based routing from the Istio Gateway to the Ollama service.
+# All traffic to the Gateway (from Kong Cloud AI Gateway via Transit Gateway)
+# is forwarded to the Ollama ClusterIP service on port 11434.
+# Requires: gateway (wave 5), ollama service (wave 3)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: httproutes
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "6"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/shanaka-versent/Ollama-on-EKS
+    targetRevision: HEAD
+    path: k8s
+    directory:
+      include: "httproutes.yaml"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: ollama
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ApplyOutOfSyncOnly=true

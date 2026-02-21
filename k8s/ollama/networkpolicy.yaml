@@ -1,0 +1,50 @@
+# Ollama NetworkPolicy — defense-in-depth access control
+# Ingress: only from istio-ingress namespace (NLB/Gateway traffic) and
+#          from the ollama namespace itself (model loader job, health checks)
+# Egress:  DNS (UDP+TCP/53) and HTTPS (443) for model downloads from ollama.com
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ollama-restrict
+  namespace: ollama
+  labels:
+    app: ollama
+    app.kubernetes.io/part-of: ollama-private-llm
+spec:
+  podSelector:
+    matchLabels:
+      app: ollama
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow traffic from the Istio ingress gateway (Kong → Transit GW → NLB → Istio)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: istio-ingress
+      ports:
+        - port: 11434
+          protocol: TCP
+    # Allow traffic from within the ollama namespace (model loader job, probes)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ollama
+      ports:
+        - port: 11434
+          protocol: TCP
+  egress:
+    # DNS resolution
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # HTTPS for pulling models from ollama.com / Hugging Face
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - port: 443
+          protocol: TCP

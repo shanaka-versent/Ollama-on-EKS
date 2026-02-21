@@ -1,0 +1,37 @@
+# Wave 0: ztunnel — L4 Proxy DaemonSet
+# Runs on every node and provides automatic mTLS for all pod-to-pod traffic.
+# This is the core of Istio Ambient Mesh — no sidecar injection needed.
+# Must tolerate both system node and GPU node taints (runs everywhere).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ztunnel
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  source:
+    repoURL: https://istio-release.storage.googleapis.com/charts
+    chart: ztunnel
+    targetRevision: 1.24.2
+    helm:
+      releaseName: ztunnel
+      values: |
+        tolerations:
+          - key: CriticalAddonsOnly
+            operator: Exists
+            effect: NoSchedule
+          - key: nvidia.com/gpu
+            operator: Exists
+            effect: NoSchedule
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: istio-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true

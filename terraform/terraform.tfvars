@@ -56,9 +56,15 @@ auto_pull_model          = true
 
 # Kong Cloud AI Gateway
 # Exposes Ollama via Kong Konnect Dedicated Cloud Gateway with Transit Gateway.
-# After terraform apply, run scripts to set up Istio + Kong Konnect.
+# After terraform apply, ArgoCD auto-deploys Istio + Ollama.
+# Then run: scripts/02-generate-certs.sh + scripts/03-setup-cloud-gateway.sh
 enable_kong               = true
 kong_cloud_gateway_cidr   = "192.168.0.0/16"
+
+# ArgoCD GitOps
+# ArgoCD watches argocd/apps/ in the Git repo and deploys everything automatically.
+git_repo_url         = "https://github.com/shanaka-versent/Ollama-on-EKS"
+argocd_chart_version = "7.7.16"
 
 # Tags
 tags = {

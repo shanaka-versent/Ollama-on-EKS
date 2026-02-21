@@ -50,22 +50,37 @@ output "gpu_node_group_name" {
 }
 
 # ==============================================================================
-# LAYER 3: OLLAMA
+# LAYER 3: ARGOCD + OLLAMA (managed by ArgoCD GitOps)
 # ==============================================================================
 
+output "argocd_admin_password_command" {
+  description = "Command to retrieve the ArgoCD initial admin password"
+  value       = module.argocd.admin_password_command
+}
+
+output "argocd_ui_command" {
+  description = "Command to access the ArgoCD UI at https://localhost:8080"
+  value       = module.argocd.port_forward_command
+}
+
+output "argocd_check_apps" {
+  description = "Command to check ArgoCD application sync status"
+  value       = "kubectl get applications -n argocd"
+}
+
 output "ollama_namespace" {
-  description = "Ollama Kubernetes namespace"
-  value       = module.ollama.namespace
+  description = "Ollama Kubernetes namespace (managed by ArgoCD)"
+  value       = var.ollama_namespace
 }
 
 output "ollama_cluster_url" {
   description = "Ollama in-cluster URL"
-  value       = module.ollama.cluster_url
+  value       = "http://ollama.${var.ollama_namespace}.svc.cluster.local:11434"
 }
 
 output "ollama_port_forward_command" {
-  description = "Command to tunnel Ollama to your local machine"
-  value       = module.ollama.port_forward_command
+  description = "Command to tunnel Ollama to your local machine (requires kubectl access)"
+  value       = "kubectl port-forward -n ${var.ollama_namespace} svc/ollama 11434:11434"
 }
 
 # ==============================================================================
@@ -93,23 +108,20 @@ output "ram_share_arn" {
 }
 
 output "kong_cloud_gateway_setup_command" {
-  description = "Command to set up Kong Cloud AI Gateway"
+  description = "Post-terraform steps to finish Kong Cloud AI Gateway setup"
   value = (var.enable_kong ? <<-EOT
-    # 1. Install Istio + Gateway API:
-    ./scripts/01-install-istio.sh
+    # ArgoCD automatically installs Istio + deploys Ollama after terraform apply.
+    # Monitor progress:
+    kubectl get applications -n argocd
 
-    # 2. Generate TLS certs for Istio Gateway:
+    # 1. Generate TLS certs for Istio Gateway (run once after terraform apply):
     ./scripts/02-generate-certs.sh
 
-    # 3. Apply Gateway + HTTPRoutes:
-    kubectl apply -f k8s/gateway.yaml
-    kubectl apply -f k8s/httproutes.yaml
-
-    # 4. Set up Kong Konnect Cloud AI Gateway:
+    # 2. Set up Kong Konnect Cloud AI Gateway:
     #    (ensure .env has KONNECT_REGION and KONNECT_TOKEN)
     ./scripts/03-setup-cloud-gateway.sh
 
-    # 5. Discover NLB endpoint + configure Kong routes:
+    # 3. Discover NLB endpoint + configure Kong routes:
     ./scripts/04-post-setup.sh
 
     # Auto-populated from Terraform:

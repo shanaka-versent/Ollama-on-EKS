@@ -1,0 +1,31 @@
+# Wave 3: Ollama Deployment
+# Deploys the Ollama LLM server with:
+#   - 4x NVIDIA A10G GPUs (g5.12xlarge node)
+#   - 96Gi memory limit, 64Gi request
+#   - 200Gi EBS gp3 persistent storage for models
+#   - NetworkPolicy: ingress from istio-ingress + ollama namespaces only
+# Requires: namespaces (wave 1), storage (wave 2), NVIDIA plugin (wave 0)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ollama
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/shanaka-versent/Ollama-on-EKS
+    targetRevision: HEAD
+    path: k8s/ollama
+    directory:
+      include: "{deployment.yaml,service.yaml,networkpolicy.yaml}"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: ollama
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ApplyOutOfSyncOnly=true

@@ -1,0 +1,39 @@
+# Wave 0: Istiod — Istio Control Plane (Ambient Profile)
+# Deploys the Istio control plane in ambient mesh mode (no sidecars).
+# Runs in parallel with istio-cni and ztunnel (all wave 0).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: istiod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  source:
+    repoURL: https://istio-release.storage.googleapis.com/charts
+    chart: istiod
+    targetRevision: 1.24.2
+    helm:
+      releaseName: istiod
+      values: |
+        profile: ambient
+        meshConfig:
+          accessLogFile: /dev/stdout
+        pilot:
+          nodeSelector:
+            kubernetes.io/os: linux
+          tolerations:
+            - key: CriticalAddonsOnly
+              operator: Exists
+              effect: NoSchedule
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: istio-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true

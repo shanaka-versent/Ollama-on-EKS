@@ -1,0 +1,19 @@
+# 200Gi Persistent Volume Claim for Ollama model storage
+# Uses the gp3 StorageClass with Retain policy.
+# The EBS volume is created in the same AZ as the Ollama pod (WaitForFirstConsumer).
+# Models downloaded here persist across pod restarts and node replacements.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ollama-models-pvc
+  namespace: ollama
+  labels:
+    app: ollama
+    app.kubernetes.io/part-of: ollama-private-llm
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: gp3
+  resources:
+    requests:
+      storage: 200Gi

@@ -1,0 +1,29 @@
+# Wave 1: Namespaces
+# Creates the ollama and istio-ingress namespaces with the Istio ambient mesh label.
+# The label istio.io/dataplane-mode=ambient enrolls all pods in the namespace
+# into ambient mesh — automatic mTLS via ztunnel, no sidecar injection.
+# Must run after Istio is installed (wave 0) and before workloads (wave 2+).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: namespaces
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/shanaka-versent/Ollama-on-EKS
+    targetRevision: HEAD
+    path: k8s
+    directory:
+      include: "namespaces.yaml"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: false   # Don't delete namespaces automatically — destructive
+      selfHeal: true
+    syncOptions:
+      - ApplyOutOfSyncOnly=true

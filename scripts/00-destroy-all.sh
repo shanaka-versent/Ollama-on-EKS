@@ -148,40 +148,35 @@ if ! kubectl cluster-info &>/dev/null 2>&1; then
     echo ""
 else
     # ===========================================================================
-    # Step 3: Delete Istio
+    # Step 3: Delete ArgoCD Applications (removes Istio, Ollama, Gateway, etc.)
     # ===========================================================================
 
-    log "Step 3: Removing Istio components..."
+    log "Step 3: Removing ArgoCD Applications (Istio, Ollama, Gateway, HTTPRoutes)..."
 
-    # Uninstall ingress gateway first (depends on istio-system)
-    if helm list -n istio-ingress 2>/dev/null | grep -q istio-ingress; then
-        log "  Uninstalling Istio ingress gateway..."
-        helm uninstall istio-ingress -n istio-ingress 2>/dev/null || true
+    # Delete all ArgoCD Applications — ArgoCD cascades deletion to all managed
+    # Kubernetes resources (Istio, NVIDIA plugin, Ollama, Gateway, HTTPRoutes)
+    if kubectl get applications -n argocd &>/dev/null 2>&1; then
+        log "  Deleting all ArgoCD Applications..."
+        kubectl delete applications --all -n argocd --timeout=120s 2>/dev/null || true
+        sleep 10
     fi
 
-    # Delete the gateway namespace to trigger resource cleanup
-    if kubectl get namespace istio-ingress &>/dev/null 2>&1; then
-        log "  Deleting istio-ingress namespace..."
-        kubectl delete namespace istio-ingress --ignore-not-found=true 2>/dev/null || true
-        sleep 5
+    # Uninstall ArgoCD Helm releases
+    if helm list -n argocd 2>/dev/null | grep -q argocd; then
+        log "  Uninstalling ArgoCD..."
+        helm uninstall argocd-root-app -n argocd 2>/dev/null || true
+        helm uninstall argocd -n argocd 2>/dev/null || true
     fi
 
-    # Uninstall Istio system components
-    for release in ztunnel istio-cni istiod istio-base; do
-        if helm list -n istio-system 2>/dev/null | grep -q "^$release"; then
-            log "  Uninstalling $release..."
-            helm uninstall "$release" -n istio-system 2>/dev/null || true
+    # Clean up namespaces that ArgoCD managed
+    for ns in istio-ingress istio-system ollama argocd; do
+        if kubectl get namespace "$ns" &>/dev/null 2>&1; then
+            log "  Deleting namespace: $ns"
+            kubectl delete namespace "$ns" --ignore-not-found=true --timeout=60s 2>/dev/null || true
         fi
     done
 
-    # Delete istio-system namespace
-    if kubectl get namespace istio-system &>/dev/null 2>&1; then
-        log "  Deleting istio-system namespace..."
-        kubectl delete namespace istio-system --ignore-not-found=true 2>/dev/null || true
-        sleep 5
-    fi
-
-    log "  Istio components removed"
+    log "  ArgoCD and all managed resources removed"
     echo ""
 
     # ===========================================================================
@@ -250,7 +245,8 @@ echo "  ${GREEN}Destruction Complete${NC}"
 echo "=========================================="
 echo ""
 echo "  ✓ Kong Konnect resources removed"
-echo "  ✓ Istio components removed"
+echo "  ✓ ArgoCD Applications deleted (Istio, Ollama, Gateway)"
+echo "  ✓ ArgoCD uninstalled"
 echo "  ✓ EKS cluster destroyed"
 echo "  ✓ VPC, Transit Gateway, Security Groups deleted"
 echo "  ✓ Terraform state cleaned"

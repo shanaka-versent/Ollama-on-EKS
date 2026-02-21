@@ -11,22 +11,26 @@
 #   - EKS Cluster, Node Groups (System + GPU)
 #   - OIDC Provider for IRSA
 #   - EKS Addons (VPC-CNI, CoreDNS, kube-proxy, EBS CSI)
-#   - AWS Load Balancer Controller (creates internal NLB for Istio Gateway)
+#   - AWS Load Balancer Controller (creates internal NLB from Gateway API resources)
 #   - Transit Gateway (Kong Cloud Gateway <-> EKS private connectivity)
 #
-# Layer 3: Ollama Deployment (Terraform via Kubernetes Provider)
-#   - NVIDIA Device Plugin
-#   - GP3 StorageClass + PVC
-#   - Ollama Deployment (GPU-accelerated)
-#   - ClusterIP Service (internal only)
-#   - NetworkPolicy (locked down)
-#   - Model Loader Job (auto-pulls model)
+# Layer 3: GitOps Bootstrap (Terraform)
+#   - ArgoCD installed via Helm (runs on system nodes)
+#   - Root Application bootstrapped — watches argocd/apps/ in Git
+#   - ArgoCD auto-deploys in sync wave order:
+#       Wave -2/-1:  Gateway API CRDs + Istio CRDs
+#       Wave 0:      Istiod + Istio CNI + ztunnel + NVIDIA Device Plugin
+#       Wave 1:      Namespaces (ollama, istio-ingress) with ambient mesh label
+#       Wave 2:      StorageClass + PVC (200Gi EBS gp3)
+#       Wave 3:      Ollama Deployment + Service + NetworkPolicy
+#       Wave 4:      Model Loader Job (pulls qwen3-coder:32b)
+#       Wave 5:      Istio Gateway (creates internal NLB)
+#       Wave 6:      HTTPRoutes (routing to Ollama :11434)
 #
 # Layer 4: Kong Cloud Gateway (Scripts + decK)
-#   - Istio Ambient Mesh + Gateway API (scripts/01-install-istio.sh)
-#   - Istio Gateway (internal NLB) + HTTPRoutes (kubectl apply)
+#   - TLS certs for Istio Gateway (scripts/02-generate-certs.sh)
 #   - Kong Konnect Cloud Gateway setup (scripts/03-setup-cloud-gateway.sh)
-#   - Kong routes, plugins, consumers (deck/kong.yaml)
+#   - Kong routes, plugins, consumers (scripts/04-post-setup.sh + deck/kong.yaml)
 #
 # Traffic Flow:
 # Client --> Kong Cloud GW (Kong's infra) --[Transit GW]--> Internal NLB --> Istio Gateway --> Ollama
@@ -359,7 +363,7 @@ module "lb_controller" {
   cluster_dependency = module.eks.cluster_name
 }
 
-# Wait for LB Controller to be ready before Istio Gateway creates NLB
+# Wait for LB Controller to be ready before ArgoCD tries to create the NLB via Gateway
 resource "time_sleep" "wait_for_lb_controller" {
   count           = var.enable_kong ? 1 : 0
   depends_on      = [module.lb_controller]
@@ -371,12 +375,10 @@ resource "time_sleep" "wait_for_lb_controller" {
 # ==============================================================================
 # Creates an AWS Transit Gateway and shares it via RAM so Kong's Cloud Gateway
 # can establish private network connectivity to the EKS VPC.
-# Kong Cloud Gateway sends all traffic to the single Istio Gateway NLB
-# through this Transit Gateway.
+# Kong Cloud Gateway sends all traffic to the Istio Gateway NLB via this TGW.
 #
-# After terraform apply:
-# 1. Run scripts/01-install-istio.sh to install Istio + Gateway
-# 2. Run scripts/03-setup-cloud-gateway.sh to create Cloud GW and attach TGW
+# After terraform apply, ArgoCD automatically installs Istio + deploys Ollama.
+# Then run: scripts/02-generate-certs.sh + scripts/03-setup-cloud-gateway.sh
 # Note: auto_accept_shared_attachments is enabled — no manual acceptance needed
 
 resource "aws_ec2_transit_gateway" "kong" {
@@ -450,32 +452,24 @@ resource "aws_security_group_rule" "allow_kong_cloud_gw" {
 }
 
 # ==============================================================================
-# LAYER 3: OLLAMA DEPLOYMENT
+# LAYER 3: ARGOCD GITOPS BOOTSTRAP
 # ==============================================================================
+# ArgoCD is installed via Helm and a root Application is bootstrapped that
+# watches argocd/apps/ in the Git repository. ArgoCD then automatically
+# deploys all Kubernetes workloads (Istio, Ollama, Gateway, HTTPRoutes)
+# in sync-wave order — no manual kubectl apply steps needed.
 
-module "ollama" {
-  source = "./modules/ollama"
+module "argocd" {
+  source = "./modules/argocd"
 
-  namespace     = var.ollama_namespace
-  ollama_model  = var.ollama_model
+  cluster_name         = module.eks.cluster_name
+  region               = var.region
+  git_repo_url         = var.git_repo_url
+  argocd_chart_version = var.argocd_chart_version
 
-  # Storage
-  model_storage_size = var.model_storage_size
-
-  # GPU Resources (match to your instance type)
-  gpu_count             = var.gpu_count
-  ollama_memory_limit   = var.ollama_memory_limit
-  ollama_memory_request = var.ollama_memory_request
-  ollama_cpu_limit      = var.ollama_cpu_limit
-  ollama_cpu_request    = var.ollama_cpu_request
-
-  # Ollama Config
-  ollama_keep_alive        = var.ollama_keep_alive
-  ollama_num_parallel      = var.ollama_num_parallel
-  ollama_max_loaded_models = var.ollama_max_loaded_models
-
-  # Model auto-pull
-  auto_pull_model = var.auto_pull_model
-
-  depends_on = [module.eks, aws_eks_addon.ebs_csi]
+  depends_on = [
+    module.eks,
+    aws_eks_addon.ebs_csi,
+    time_sleep.wait_for_lb_controller,
+  ]
 }

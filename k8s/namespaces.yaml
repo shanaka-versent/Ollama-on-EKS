@@ -1,0 +1,19 @@
+# Namespaces with Istio Ambient Mesh enrollment
+# The label istio.io/dataplane-mode=ambient enables automatic mTLS for all
+# pods in the namespace via ztunnel — no sidecar injection required.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ollama
+  labels:
+    istio.io/dataplane-mode: ambient
+    app.kubernetes.io/part-of: ollama-private-llm
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: istio-ingress
+  labels:
+    istio.io/dataplane-mode: ambient
+    app.kubernetes.io/part-of: ollama-private-llm

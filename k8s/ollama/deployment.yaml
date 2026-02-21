@@ -1,0 +1,80 @@
+# Ollama Deployment
+# Runs the Ollama LLM server on a g5.12xlarge GPU node (4x NVIDIA A10G, 96GB VRAM).
+# The pod is scheduled exclusively on GPU nodes via nodeSelector + toleration.
+# Model data is stored on a 200Gi EBS gp3 PVC that persists across restarts.
+#
+# To change the instance type or GPU count:
+#   1. Update resources.limits/requests below
+#   2. Update the OLLAMA_* env vars if needed
+#   3. Commit and push — ArgoCD self-heals automatically
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama
+  namespace: ollama
+  labels:
+    app: ollama
+    app.kubernetes.io/part-of: ollama-private-llm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ollama
+  template:
+    metadata:
+      labels:
+        app: ollama
+    spec:
+      # Schedule on GPU nodes only
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: ollama
+          image: ollama/ollama:latest
+          ports:
+            - name: http
+              containerPort: 11434
+              protocol: TCP
+          env:
+            - name: OLLAMA_HOST
+              value: "0.0.0.0:11434"
+            - name: OLLAMA_KEEP_ALIVE
+              value: "24h"
+            - name: OLLAMA_NUM_PARALLEL
+              value: "4"
+            - name: OLLAMA_MAX_LOADED_MODELS
+              value: "2"
+          resources:
+            limits:
+              nvidia.com/gpu: "4"   # 4x NVIDIA A10G on g5.12xlarge
+              memory: "96Gi"
+              cpu: "16"
+            requests:
+              nvidia.com/gpu: "4"
+              memory: "64Gi"
+              cpu: "8"
+          volumeMounts:
+            - name: ollama-data
+              mountPath: /root/.ollama
+          readinessProbe:
+            httpGet:
+              path: /api/tags
+              port: 11434
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /api/tags
+              port: 11434
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
+      volumes:
+        - name: ollama-data
+          persistentVolumeClaim:
+            claimName: ollama-models-pvc

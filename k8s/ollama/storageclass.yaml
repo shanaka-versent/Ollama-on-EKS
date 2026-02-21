@@ -1,0 +1,18 @@
+# EBS gp3 StorageClass for Ollama model storage
+# - Retain: EBS volume survives PVC deletion (models are expensive to re-download)
+# - WaitForFirstConsumer: volume created in same AZ as the Ollama pod
+# - iops=4000, throughput=250: optimized for large model file I/O
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "false"
+provisioner: ebs.csi.aws.com
+reclaimPolicy: Retain
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+parameters:
+  type: gp3
+  iops: "4000"
+  throughput: "250"

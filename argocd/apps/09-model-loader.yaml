@@ -1,0 +1,27 @@
+# Wave 4: Model Loader Job
+# Runs a one-time Job that waits for Ollama to be ready, then pulls qwen3-coder:32b.
+# The model is stored on the 200Gi EBS gp3 PVC and persists across pod restarts.
+# Model pull takes ~10-20 min depending on network speed (32B model = ~20GB).
+# Requires: Ollama deployment running (wave 3)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: model-loader
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/shanaka-versent/Ollama-on-EKS
+    targetRevision: HEAD
+    path: k8s/model-loader
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: ollama
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: false   # Do not re-run the Job if it completed successfully
+    syncOptions:
+      - ApplyOutOfSyncOnly=true

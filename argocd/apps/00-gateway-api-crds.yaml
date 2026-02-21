@@ -1,0 +1,25 @@
+# Wave -2: Gateway API CRDs
+# Must be installed first — Istio and the Gateway resource depend on these CRDs.
+# prune: false — never let ArgoCD delete CRDs (safe default for cluster-wide resources).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gateway-api-crds
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/kubernetes-sigs/gateway-api
+    targetRevision: v1.2.0
+    path: config/crd
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: false   # Never delete CRDs automatically
+      selfHeal: true
+    syncOptions:
+      - ApplyOutOfSyncOnly=true

@@ -1,0 +1,34 @@
+# Wave 5: Istio Gateway (Internal NLB)
+# Creates the Kubernetes Gateway API resource that the AWS Load Balancer Controller
+# reconciles into an internal AWS Network Load Balancer.
+# The NLB is only reachable via the Transit Gateway from Kong's AWS account.
+#
+# IMPORTANT: Wave 5 will initially fail if the istio-gateway-tls Secret does not
+# exist. Run ./scripts/02-generate-certs.sh AFTER terraform apply to create the
+# secret. ArgoCD will self-heal and retry automatically once the secret is present.
+#
+# Requires: namespaces (wave 1), Istio control plane (wave 0), Gateway API CRDs (wave -2)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gateway
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/shanaka-versent/Ollama-on-EKS
+    targetRevision: HEAD
+    path: k8s
+    directory:
+      include: "gateway.yaml"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: istio-ingress
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ApplyOutOfSyncOnly=true

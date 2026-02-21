@@ -1,0 +1,21 @@
+# Ollama ClusterIP Service
+# Internal-only service — never exposed to the internet.
+# Reachable within the cluster at: http://ollama.ollama.svc.cluster.local:11434
+# External access flows through: Kong Cloud AI GW → Transit Gateway → NLB → Istio Gateway → this service
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama
+  namespace: ollama
+  labels:
+    app: ollama
+    app.kubernetes.io/part-of: ollama-private-llm
+spec:
+  type: ClusterIP
+  selector:
+    app: ollama
+  ports:
+    - name: http
+      port: 11434
+      targetPort: 11434
+      protocol: TCP

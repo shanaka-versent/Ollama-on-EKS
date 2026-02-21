@@ -1,0 +1,30 @@
+# Wave 2: Ollama Storage
+# Creates the EBS gp3 StorageClass and 200Gi PVC for model storage.
+# The PVC uses WaitForFirstConsumer binding — the EBS volume is only created
+# when the Ollama pod is scheduled to a node (Wave 3).
+# The EBS CSI driver (managed by Terraform EKS addon) must be running first.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ollama-storage
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/shanaka-versent/Ollama-on-EKS
+    targetRevision: HEAD
+    path: k8s/ollama
+    directory:
+      include: "{storageclass.yaml,pvc.yaml}"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: ollama
+  syncPolicy:
+    automated:
+      prune: false   # Don't delete PVC — contains model data (Retain policy protects EBS)
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true

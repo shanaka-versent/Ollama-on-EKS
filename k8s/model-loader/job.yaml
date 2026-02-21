@@ -1,0 +1,74 @@
+# Model Loader Job — pulls qwen3-coder:32b into persistent EBS storage
+# Runs once after Ollama is ready (Wave 4, after Wave 3 Ollama deployment).
+# The model is stored on the 200Gi EBS PVC and survives pod restarts.
+# Pull time: ~10-20 minutes depending on network (model is ~20GB compressed).
+#
+# To change the model:
+#   1. Update OLLAMA_MODEL below
+#   2. Update resources in k8s/ollama/deployment.yaml if needed
+#   3. Delete the completed Job: kubectl delete job ollama-model-loader -n ollama
+#   4. Commit and push — ArgoCD creates a new Job
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ollama-model-loader
+  namespace: ollama
+  labels:
+    app: ollama-model-loader
+    app.kubernetes.io/part-of: ollama-private-llm
+spec:
+  # Retry up to 3 times if the pull fails (network issues, timeout)
+  backoffLimit: 3
+  # Clean up after 1 hour (whether success or failure)
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: OnFailure
+      # Run on system nodes (not GPU nodes — this is just a curl command)
+      tolerations:
+        - key: CriticalAddonsOnly
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: model-loader
+          image: curlimages/curl:latest
+          env:
+            - name: OLLAMA_MODEL
+              value: "qwen3-coder:32b"
+            - name: OLLAMA_URL
+              value: "http://ollama.ollama.svc.cluster.local:11434"
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "=== Ollama Model Loader ==="
+              echo "Model: ${OLLAMA_MODEL}"
+              echo "Ollama URL: ${OLLAMA_URL}"
+              echo ""
+
+              echo "Waiting for Ollama to be ready..."
+              until curl -sf "${OLLAMA_URL}/api/tags" > /dev/null 2>&1; do
+                echo "  Not ready yet, retrying in 10s..."
+                sleep 10
+              done
+              echo "Ollama is ready."
+              echo ""
+
+              echo "Checking if model is already loaded..."
+              if curl -sf "${OLLAMA_URL}/api/tags" | grep -q "${OLLAMA_MODEL}"; then
+                echo "Model ${OLLAMA_MODEL} already present. Skipping pull."
+                exit 0
+              fi
+
+              echo "Pulling model ${OLLAMA_MODEL} (this may take 10-20 minutes)..."
+              curl -X POST "${OLLAMA_URL}/api/pull" \
+                -H "Content-Type: application/json" \
+                -d "{\"name\": \"${OLLAMA_MODEL}\"}" \
+                --max-time 3600 \
+                --no-buffer
+
+              echo ""
+              echo "Verifying model is available..."
+              curl -sf "${OLLAMA_URL}/api/tags" | grep "${OLLAMA_MODEL}" \
+                && echo "SUCCESS: ${OLLAMA_MODEL} is ready." \
+                || (echo "ERROR: Model pull may have failed. Check Ollama logs." && exit 1)

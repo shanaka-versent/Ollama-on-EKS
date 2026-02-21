@@ -1,0 +1,38 @@
+# Wave 0: Istio CNI Plugin
+# Configures per-node network rules for ztunnel traffic interception.
+# Required for ambient mesh — pods don't get sidecars; ztunnel intercepts at node level.
+# Runs as a DaemonSet so must tolerate all node taints.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: istio-cni
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  source:
+    repoURL: https://istio-release.storage.googleapis.com/charts
+    chart: cni
+    targetRevision: 1.24.2
+    helm:
+      releaseName: istio-cni
+      values: |
+        profile: ambient
+        tolerations:
+          - key: CriticalAddonsOnly
+            operator: Exists
+            effect: NoSchedule
+          - key: nvidia.com/gpu
+            operator: Exists
+            effect: NoSchedule
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: istio-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true
