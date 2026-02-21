@@ -107,25 +107,49 @@ echo ""
 
 log "Step 1: Removing Kong Konnect resources..."
 
+CP_NAME="${KONNECT_CONTROL_PLANE_NAME:-kong-cloud-gateway-eks}"
+NETWORK_NAME="ollama-eks-network"
+
 if [[ -z "${KONNECT_TOKEN:-}" || -z "${KONNECT_REGION:-}" ]]; then
     warn "  KONNECT_TOKEN or KONNECT_REGION not set. Skipping Kong cleanup."
-    warn "  Remove the control plane manually at: https://cloud.konghq.com → Gateway Manager"
+    warn "  Remove resources manually at: https://cloud.konghq.com → Gateway Manager"
 else
-    log "  Fetching control plane ID..."
+    # Delete cloud gateway network first (must be removed before control plane)
+    log "  Fetching cloud gateway network: ${NETWORK_NAME}"
+    NETWORKS=$(curl -s \
+        "https://global.api.konghq.com/v2/cloud-gateways/networks" \
+        -H "Authorization: Bearer $KONNECT_TOKEN" 2>/dev/null || true)
+
+    NETWORK_ID=$(echo "$NETWORKS" | jq -r \
+        --arg name "$NETWORK_NAME" '.data[] | select(.name == $name) | .id' | head -1 || true)
+
+    if [[ -n "$NETWORK_ID" && "$NETWORK_ID" != "null" ]]; then
+        log "  Deleting cloud gateway network: $NETWORK_ID"
+        curl -s -X DELETE \
+            "https://global.api.konghq.com/v2/cloud-gateways/networks/${NETWORK_ID}" \
+            -H "Authorization: Bearer $KONNECT_TOKEN" > /dev/null 2>&1 || true
+        log "  Network deletion initiated"
+    else
+        log "  No cloud gateway network found (${NETWORK_NAME}) — skipping"
+    fi
+
+    # Delete control plane by name
+    log "  Fetching control plane: ${CP_NAME}"
     CP_RESPONSE=$(curl -s \
         "https://${KONNECT_REGION}.api.konghq.com/v2/control-planes" \
         -H "Authorization: Bearer $KONNECT_TOKEN" 2>/dev/null || true)
 
-    CP_ID=$(echo "$CP_RESPONSE" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+    CP_ID=$(echo "$CP_RESPONSE" | jq -r \
+        --arg name "$CP_NAME" '.data[] | select(.name == $name) | .id' | head -1 || true)
 
     if [[ -n "$CP_ID" && "$CP_ID" != "null" ]]; then
         log "  Deleting control plane: $CP_ID"
         curl -s -X DELETE \
             "https://${KONNECT_REGION}.api.konghq.com/v2/control-planes/$CP_ID" \
             -H "Authorization: Bearer $KONNECT_TOKEN" > /dev/null 2>&1 || true
-        log "  Control plane deletion initiated (may take a few minutes)"
+        log "  Control plane deletion initiated"
     else
-        warn "  Could not find control plane. Delete manually if needed."
+        warn "  Could not find control plane '${CP_NAME}'. Delete manually if needed."
     fi
 fi
 
