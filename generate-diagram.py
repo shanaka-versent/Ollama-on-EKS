@@ -119,17 +119,27 @@ with Diagram(
                 sys_nodes = EC2("System Nodes\n2× t3.medium")
                 gpu_node  = EC2("GPU Node\ng5.12xlarge\n4× NVIDIA A10G  ·  96 GB VRAM")
 
-            with Cluster(
-                "ollama namespace\n(NetworkPolicy: istio-ingress only)",
-                graph_attr={
-                    "bgcolor": "#fce7f3",
-                    "pencolor": "#db2777",
-                    "penwidth": "2",
-                },
-            ):
-                svc = Svc("ClusterIP  :11434\nnever internet-exposed")
-                pod = Pod("Ollama Pod\n4× GPU  ·  96 GB VRAM\nqwen3-coder:32b")
-                vol = EBS("200 GB EBS gp3\nmodel storage  ·  Retain policy")
+                with Cluster(
+                    "ollama namespace\n(NetworkPolicy: istio-ingress only)",
+                    graph_attr={
+                        "bgcolor": "#fce7f3",
+                        "pencolor": "#db2777",
+                        "penwidth": "2",
+                    },
+                ):
+                    svc = Svc("ClusterIP  :11434\nnever internet-exposed")
+                    pod = Pod("Ollama Pod\n4× GPU  ·  96 GB VRAM\nqwen3-coder:32b")
+
+            # EBS is an AWS-native service — NOT inside EKS or the K8s namespace.
+            # The EBS CSI Driver calls AWS APIs to attach the volume directly to the
+            # EC2 GPU node as a virtual NVMe block device (Nitro hypervisor-level).
+            # kubelet then mounts it into the pod — no network socket involved.
+            vol = EBS(
+                "EBS gp3  ·  200 GB\n"
+                "AZ-local AWS block storage\n"
+                "Attached to EC2 via Nitro NVMe\n"
+                "Retain policy  ·  4000 IOPS"
+            )
 
     # ── Traffic flow — numbered steps ─────────────────────────────────────────
     [claude_code, api_client] >> Edge(label="① HTTPS") >> kong_gw
@@ -146,4 +156,17 @@ with Diagram(
 
     svc >> Edge(label="⑥") >> pod
 
-    pod - vol
+    # EBS attaches to the EC2 GPU node at the hypervisor level (Nitro NVMe).
+    # kubelet on that node mounts it into the Ollama pod as /root/.ollama.
+    # This is NOT PrivateLink — it is a block device, not a network connection.
+    gpu_node >> Edge(
+        label="NVMe block device\n(Nitro hypervisor attach)",
+        style="dashed",
+        color="#6b7280",
+    ) >> vol
+
+    pod >> Edge(
+        label="PVC mount\n/root/.ollama",
+        style="dashed",
+        color="#6b7280",
+    ) >> vol
