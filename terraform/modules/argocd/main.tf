@@ -60,11 +60,14 @@ resource "helm_release" "argocd_root_app" {
   namespace  = var.namespace
   timeout    = 120
 
+  # argocd-apps v2.x uses a map (application name as key), not a list.
+  # Using a list with a `name` field causes the chart to use the numeric
+  # list index as the application name, producing the "cannot unmarshal
+  # number into metadata.name" error.
   values = [
     yamlencode({
-      applications = [
-        {
-          name      = "ollama-root"
+      applications = {
+        "ollama-root" = {
           namespace = var.namespace
           project   = "default"
 
@@ -90,7 +93,7 @@ resource "helm_release" "argocd_root_app" {
             ]
           }
         }
-      ]
+      }
     })
   ]
 
