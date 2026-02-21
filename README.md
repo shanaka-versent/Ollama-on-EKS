@@ -303,20 +303,6 @@ ollama_cpu_limit       = 4
 ollama_cpu_request     = 2
 ```
 
-### Monthly Cost Estimates
-
-> All figures are approximate (~) based on us-east-1 On-Demand pricing and subject to AWS pricing changes. Spot instances vary with market demand.
-
-| Component | 24/7 | 8 hrs/day weekdays | 8 hrs/day Spot |
-|-----------|------|--------------------|----------------|
-| EKS Control Plane | ~$73 | ~$73 | ~$73 |
-| g5.12xlarge (4x A10G / 96GB VRAM) | ~$4,082 | ~$907 | ~$304 |
-| EBS 200GB gp3 | ~$18 | ~$18 | ~$18 |
-| Kong Konnect Cloud GW | Varies | Varies | Varies |
-| **Total** | **~$4,173+** | **~$998+** | **~$395+** |
-
-> EKS control plane and EBS run 24/7 regardless of GPU scaling. Scale down the GPU node group when not in use to stop ~$5.67/hr GPU billing.
-
 ### Scale to Zero (Stop GPU Billing)
 
 When you're done for the day — stop the GPU node to avoid ~$5.67/hr charges:
