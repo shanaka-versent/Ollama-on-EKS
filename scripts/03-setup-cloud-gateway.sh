@@ -92,7 +92,7 @@ validate_env() {
 }
 
 # ---------------------------------------------------------------------------
-# Step 1: Create Control Plane
+# Step 1: Create Control Plane (idempotent — reuses existing on 409)
 # ---------------------------------------------------------------------------
 create_control_plane() {
     log "Step 1: Creating Konnect control plane: ${CP_NAME}"
@@ -118,10 +118,20 @@ create_control_plane() {
             }
         }")
 
-    CONTROL_PLANE_ID=$(echo "$CP_RESPONSE" | jq -r '.id')
+    # 409 = control plane already exists — fetch it instead of failing
+    if [[ "$(echo "$CP_RESPONSE" | jq -r '.status // empty')" == "409" ]]; then
+        log "  Control plane already exists — fetching existing ID..."
+        EXISTING_CP=$(curl -s \
+            "https://${KONNECT_REGION}.api.konghq.com/v2/control-planes" \
+            -H "Authorization: Bearer $KONNECT_TOKEN")
+        CONTROL_PLANE_ID=$(echo "$EXISTING_CP" | jq -r \
+            --arg name "$CP_NAME" '.data[] | select(.name == $name) | .id' | head -1)
+    else
+        CONTROL_PLANE_ID=$(echo "$CP_RESPONSE" | jq -r '.id')
+    fi
 
     if [[ -z "$CONTROL_PLANE_ID" || "$CONTROL_PLANE_ID" == "null" ]]; then
-        error "Failed to create control plane"
+        error "Failed to create or find control plane"
         error "Response: $CP_RESPONSE"
         exit 1
     fi
@@ -163,10 +173,20 @@ create_network() {
             \"cidr_block\": \"${DCGW_CIDR}\"
         }")
 
-    NETWORK_ID=$(echo "$NETWORK_RESPONSE" | jq -r '.id')
+    # 409 = network already exists — fetch it instead of failing
+    if [[ "$(echo "$NETWORK_RESPONSE" | jq -r '.status // empty')" == "409" ]]; then
+        log "  Network already exists — fetching existing ID..."
+        EXISTING_NET=$(curl -s \
+            "https://global.api.konghq.com/v2/cloud-gateways/networks" \
+            -H "Authorization: Bearer $KONNECT_TOKEN")
+        NETWORK_ID=$(echo "$EXISTING_NET" | jq -r \
+            --arg name "$DCGW_NETWORK_NAME" '.data[] | select(.name == $name) | .id' | head -1)
+    else
+        NETWORK_ID=$(echo "$NETWORK_RESPONSE" | jq -r '.id')
+    fi
 
     if [[ -z "$NETWORK_ID" || "$NETWORK_ID" == "null" ]]; then
-        error "Failed to create network"
+        error "Failed to create or find network"
         error "Response: $NETWORK_RESPONSE"
         warn "You may need to create this via Konnect UI instead."
         return
