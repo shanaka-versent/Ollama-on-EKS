@@ -27,6 +27,51 @@ Client → Kong Cloud AI GW (Kong's AWS) --[Transit GW]--> Internal NLB --> Isti
 | EBS gp3 (200GB) | Your AWS account | Persists downloaded models across pod restarts |
 | qwen3-coder:30b | Your EKS GPU node | The LLM — 30B MoE model, 18GB on disk |
 
+### Request Sequence
+
+How a prompt travels from Claude Code (or any OpenAI-compatible client) through every layer to Ollama and back:
+
+```mermaid
+sequenceDiagram
+    actor Dev as Developer (Mac)
+    participant CC as Claude Code<br/>/ Copilot
+    participant Kong as Kong Cloud AI GW<br/>(Kong's AWS — managed)
+    participant TGW as Transit Gateway<br/>(cross-account private link)
+    participant NLB as Internal NLB<br/>(EKS VPC — not internet-facing)
+    participant IGW as Istio Gateway<br/>(istio-ingress namespace)
+    participant ZT as ztunnel<br/>(Ambient mTLS — every node)
+    participant OLM as Ollama Pod<br/>(GPU node — 4× A10G)
+    participant EBS as EBS Volume<br/>(model cache — 200GB gp3)
+
+    Dev->>CC: Types prompt or code request
+
+    CC->>Kong: HTTPS POST /v1/chat/completions<br/>Authorization: Bearer &lt;apikey&gt;
+
+    Note over Kong: key-auth plugin — validates API key<br/>rate-limiting — checks 60 req/min counter<br/>request-transformer — adds X-Kong-Proxy header
+
+    Kong->>TGW: HTTP over private network<br/>(never touches the internet)
+    TGW->>NLB: Routes into EKS VPC (10.0.0.0/16)
+    NLB->>IGW: Forwards to Istio Gateway pod
+
+    Note over ZT: ztunnel intercepts all pod traffic<br/>establishes L4 mTLS tunnel transparently
+
+    IGW->>ZT: Encrypted via mTLS
+    ZT->>OLM: Decrypted request → ollama:11434
+
+    OLM->>EBS: Load model weights (if not in GPU VRAM)
+    EBS-->>OLM: qwen3-coder:30b weights (~18GB)
+
+    Note over OLM: GPU inference on 4× NVIDIA A10G<br/>context window: 32K tokens
+
+    OLM-->>ZT: Streaming response tokens
+    ZT-->>IGW: mTLS encrypted stream
+    IGW-->>NLB: HTTP response
+    NLB-->>TGW: Forward back through private link
+    TGW-->>Kong: Response arrives at Kong
+    Kong-->>CC: HTTPS streaming response
+    CC-->>Dev: Displays generated code / answer
+```
+
 ---
 
 ## Prerequisites
