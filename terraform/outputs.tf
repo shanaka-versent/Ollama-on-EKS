@@ -94,7 +94,7 @@ output "ram_share_arn" {
 
 output "kong_cloud_gateway_setup_command" {
   description = "Command to set up Kong Cloud AI Gateway"
-  value = var.enable_kong ? <<-EOT
+  value = (var.enable_kong ? <<-EOT
     # 1. Install Istio + Gateway API:
     ./scripts/01-install-istio.sh
 
@@ -116,7 +116,9 @@ output "kong_cloud_gateway_setup_command" {
     #   TRANSIT_GATEWAY_ID = ${aws_ec2_transit_gateway.kong[0].id}
     #   RAM_SHARE_ARN      = ${aws_ram_resource_share.kong_tgw[0].arn}
     #   EKS_VPC_CIDR       = ${module.vpc.vpc_cidr}
-  EOT : "Kong not enabled"
+  EOT
+    : "Kong not enabled"
+  )
 }
 
 # ==============================================================================
