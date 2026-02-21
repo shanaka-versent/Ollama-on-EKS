@@ -11,3 +11,9 @@ terraform/*.tfstate
 terraform/*.tfstate.*
 terraform/*.tfplan
 terraform/.terraform.lock.hcl
+
+# Environment variables (secrets)
+.env
+
+# TLS certificates
+certs/

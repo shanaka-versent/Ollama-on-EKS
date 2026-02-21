@@ -248,7 +248,7 @@ resource "kubernetes_service" "ollama" {
 }
 
 # ==============================================================================
-# NETWORK POLICY (locked down — cluster-internal only)
+# NETWORK POLICY (locked down — istio-ingress + ollama namespaces only)
 # ==============================================================================
 
 resource "kubernetes_network_policy" "ollama_restrict" {
@@ -266,10 +266,29 @@ resource "kubernetes_network_policy" "ollama_restrict" {
 
     policy_types = ["Ingress", "Egress"]
 
-    # Ingress: only from within the cluster
+    # Ingress: from Istio ingress gateway (Kong traffic arrives here via NLB)
     ingress {
       from {
-        namespace_selector {}
+        namespace_selector {
+          match_labels = {
+            "kubernetes.io/metadata.name" = "istio-ingress"
+          }
+        }
+      }
+      ports {
+        port     = "11434"
+        protocol = "TCP"
+      }
+    }
+
+    # Ingress: from ollama namespace itself (model loader job, health checks)
+    ingress {
+      from {
+        namespace_selector {
+          match_labels = {
+            "kubernetes.io/metadata.name" = var.namespace
+          }
+        }
       }
       ports {
         port     = "11434"

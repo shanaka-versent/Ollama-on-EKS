@@ -69,6 +69,57 @@ output "ollama_port_forward_command" {
 }
 
 # ==============================================================================
+# KONG CLOUD AI GATEWAY (Transit Gateway)
+# ==============================================================================
+
+output "vpc_cidr" {
+  description = "VPC CIDR block"
+  value       = module.vpc.vpc_cidr
+}
+
+output "transit_gateway_id" {
+  description = "Transit Gateway ID — provide to Konnect when attaching Cloud Gateway network"
+  value       = var.enable_kong ? aws_ec2_transit_gateway.kong[0].id : null
+}
+
+output "transit_gateway_arn" {
+  description = "Transit Gateway ARN"
+  value       = var.enable_kong ? aws_ec2_transit_gateway.kong[0].arn : null
+}
+
+output "ram_share_arn" {
+  description = "RAM Resource Share ARN — provide to Konnect for Transit Gateway attachment"
+  value       = var.enable_kong ? aws_ram_resource_share.kong_tgw[0].arn : null
+}
+
+output "kong_cloud_gateway_setup_command" {
+  description = "Command to set up Kong Cloud AI Gateway"
+  value = var.enable_kong ? <<-EOT
+    # 1. Install Istio + Gateway API:
+    ./scripts/01-install-istio.sh
+
+    # 2. Generate TLS certs for Istio Gateway:
+    ./scripts/02-generate-certs.sh
+
+    # 3. Apply Gateway + HTTPRoutes:
+    kubectl apply -f k8s/gateway.yaml
+    kubectl apply -f k8s/httproutes.yaml
+
+    # 4. Set up Kong Konnect Cloud AI Gateway:
+    #    (ensure .env has KONNECT_REGION and KONNECT_TOKEN)
+    ./scripts/03-setup-cloud-gateway.sh
+
+    # 5. Discover NLB endpoint + configure Kong routes:
+    ./scripts/04-post-setup.sh
+
+    # Auto-populated from Terraform:
+    #   TRANSIT_GATEWAY_ID = ${aws_ec2_transit_gateway.kong[0].id}
+    #   RAM_SHARE_ARN      = ${aws_ram_resource_share.kong_tgw[0].arn}
+    #   EKS_VPC_CIDR       = ${module.vpc.vpc_cidr}
+  EOT : "Kong not enabled"
+}
+
+# ==============================================================================
 # QUICK START COMMANDS
 # ==============================================================================
 

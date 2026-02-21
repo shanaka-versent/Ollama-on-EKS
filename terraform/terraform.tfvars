@@ -54,6 +54,12 @@ ollama_num_parallel      = 4
 ollama_max_loaded_models = 2
 auto_pull_model          = true
 
+# Kong Cloud AI Gateway
+# Exposes Ollama via Kong Konnect Dedicated Cloud Gateway with Transit Gateway.
+# After terraform apply, run scripts to set up Istio + Kong Konnect.
+enable_kong               = true
+kong_cloud_gateway_cidr   = "192.168.0.0/16"
+
 # Tags
 tags = {
   Project   = "Ollama-Private-LLM"

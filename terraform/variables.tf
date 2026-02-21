@@ -206,6 +206,22 @@ variable "auto_pull_model" {
 }
 
 # ==============================================================================
+# KONG CLOUD AI GATEWAY
+# ==============================================================================
+
+variable "enable_kong" {
+  description = "Enable Kong Cloud AI Gateway (Transit Gateway, LB Controller, Istio prereqs)"
+  type        = bool
+  default     = true
+}
+
+variable "kong_cloud_gateway_cidr" {
+  description = "Kong Cloud Gateway CIDR block (do not change unless Kong changes their network)"
+  type        = string
+  default     = "192.168.0.0/16"
+}
+
+# ==============================================================================
 # TAGS
 # ==============================================================================
 

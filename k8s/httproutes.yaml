@@ -1,0 +1,67 @@
+# Ollama on EKS - HTTPRoutes for Kubernetes Gateway API
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# Routes traffic from the Istio Gateway to the Ollama service.
+# Kong Cloud AI Gateway sends traffic to the Istio Gateway NLB,
+# which uses these HTTPRoutes for path-based routing to pods.
+#
+# Apply:
+#   kubectl apply -f k8s/httproutes.yaml
+
+---
+# Ollama Route — handles all Ollama API paths
+# Catches /api/*, /v1/*, and any other path sent by Kong
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: ollama-route
+  namespace: ollama
+spec:
+  parentRefs:
+    - name: ollama-gateway
+      namespace: istio-ingress
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: ollama
+          port: 11434
+
+---
+# Health Route — handles /healthz for Kong Cloud Gateway health checks
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: health-route
+  namespace: ollama
+spec:
+  parentRefs:
+    - name: ollama-gateway
+      namespace: istio-ingress
+  rules:
+    - matches:
+        - path:
+            type: Exact
+            value: /healthz
+      backendRefs:
+        - name: ollama
+          port: 11434
+
+---
+# ReferenceGrant — allow HTTPRoutes in 'ollama' namespace to reference
+# services and attach to the Gateway in 'istio-ingress' namespace
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-ollama-routes
+  namespace: ollama
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: ollama
+  to:
+    - group: ""
+      kind: Service

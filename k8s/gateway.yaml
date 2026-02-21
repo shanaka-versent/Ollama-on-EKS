@@ -1,0 +1,63 @@
+# Ollama on EKS - Istio Gateway with Internal NLB
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# Creates the Istio ingress gateway with an INTERNAL NLB.
+# Kong Cloud Gateway reaches this NLB via AWS Transit Gateway.
+#
+# Traffic flow:
+#   Client --> Kong Cloud AI GW (managed) --[Transit GW]--> Internal NLB --> Istio Gateway --> Ollama
+#
+# IMPORTANT: This uses Gateway API (gateway.networking.k8s.io), NOT Ingress
+# IMPORTANT: Apply AFTER scripts/01-install-istio.sh and scripts/02-generate-certs.sh
+#
+# Apply:
+#   kubectl apply -f k8s/gateway.yaml
+
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: ollama-gateway
+  namespace: istio-ingress
+spec:
+  gatewayClassName: istio
+
+  # Infrastructure configuration for the auto-created LoadBalancer Service
+  # Uses AWS Load Balancer Controller annotations for INTERNAL NLB
+  infrastructure:
+    labels:
+      role: system
+    annotations:
+      # AWS Load Balancer Controller - INTERNAL NLB (not internet-facing)
+      service.beta.kubernetes.io/aws-load-balancer-type: "external"
+      service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+      # CRITICAL: Internal scheme — only reachable via Transit Gateway from Kong
+      service.beta.kubernetes.io/aws-load-balancer-scheme: "internal"
+      # Health check configuration
+      service.beta.kubernetes.io/aws-load-balancer-healthcheck-protocol: "TCP"
+      service.beta.kubernetes.io/aws-load-balancer-healthcheck-port: "traffic-port"
+      service.beta.kubernetes.io/aws-load-balancer-healthcheck-interval: "10"
+      service.beta.kubernetes.io/aws-load-balancer-healthcheck-unhealthy-threshold: "2"
+
+  listeners:
+    # HTTP Listener (port 80) — Kong Cloud Gateway connects here
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: All
+
+    # HTTPS Listener (port 443) — optional end-to-end TLS
+    - name: https
+      port: 443
+      protocol: HTTPS
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: istio-gateway-tls
+            namespace: istio-ingress
+      allowedRoutes:
+        namespaces:
+          from: All
