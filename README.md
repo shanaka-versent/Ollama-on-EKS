@@ -47,9 +47,12 @@ sequenceDiagram
     Dev->>CC: Types prompt or code request
 
     Note over CC,Kong: 🔒 HTTPS — public internet
-    CC->>+Kong: POST /v1/chat/completions<br/>Authorization: Bearer &lt;apikey&gt;
+    CC->>+Kong: POST /v1/chat/completions
+    Note right of CC: Authorization: Bearer apikey
 
-    Note over Kong: 🔑 key-auth — validate API key<br/>⏱ rate-limiting — 60 req/min per consumer<br/>📋 request-transformer — add X-Kong-Proxy header
+    Note over Kong: 🔑 key-auth — validate API key
+    Note over Kong: ⏱ rate-limiting — 60 req/min per consumer
+    Note over Kong: 📋 request-transformer — add X-Kong-Proxy header
 
     Note over Kong,NLB: 🔒 Private network — Transit Gateway, never touches the internet
     Kong->>+TGW: HTTP (cross-account private link)
@@ -58,12 +61,13 @@ sequenceDiagram
 
     Note over IGW,OLM: 🔒 Istio Ambient mTLS — transparent L4 encryption between pods
     IGW->>+ZT: Intercepted by ztunnel (no sidecar needed)
-    ZT->>+OLM: Decrypted → ollama.ollama.svc:11434
+    ZT->>+OLM: Decrypted request to ollama.ollama.svc:11434
 
     OLM->>+EBS: Load model weights (if not already in GPU VRAM)
     EBS-->>-OLM: qwen3-coder:30b (~18GB)
 
-    Note over OLM: ⚡ GPU inference — 4× NVIDIA A10G (96GB VRAM)<br/>Context window: 32K tokens
+    Note over OLM: ⚡ GPU inference — 4x NVIDIA A10G (96GB VRAM)
+    Note over OLM: Context window: 32K tokens
 
     OLM-->>-ZT: Streaming response tokens
     ZT-->>-IGW: mTLS encrypted stream
