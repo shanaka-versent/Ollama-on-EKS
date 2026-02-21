@@ -14,9 +14,37 @@
 #   kubectl apply -f k8s/gateway.yaml
 #
 # Node scheduling: All cluster nodes carry either CriticalAddonsOnly or nvidia.com/gpu taints.
-# After ArgoCD deploys this Gateway, scripts/02-generate-certs.sh patches the auto-generated
-# Deployment (ollama-gateway-istio) with CriticalAddonsOnly toleration so the gateway pod
-# can schedule on system nodes. Istio preserves this toleration across reconciliations.
+# The Deployment below is a seed for Istio's auto-provisioning: Istio merges the real
+# istio-proxy container into it. ArgoCD ignores the containers diff (see 10-gateway.yaml
+# ignoreDifferences) so the toleration persists without creating a sync loop.
+
+---
+# Deployment seed: provides CriticalAddonsOnly toleration so the gateway pod schedules
+# on system nodes. Istio's controller merges the istio-proxy container into this Deployment.
+# ArgoCD ignoreDifferences skips container drift — only tolerations are enforced from Git.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama-gateway-istio
+  namespace: istio-ingress
+  labels:
+    gateway.networking.k8s.io/gateway-name: ollama-gateway
+spec:
+  selector:
+    matchLabels:
+      gateway.networking.k8s.io/gateway-name: ollama-gateway
+  template:
+    metadata:
+      labels:
+        gateway.networking.k8s.io/gateway-name: ollama-gateway
+    spec:
+      tolerations:
+        - key: CriticalAddonsOnly
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: istio-proxy
+          image: auto  # Istio replaces this with the real istio-proxy image
 
 ---
 apiVersion: gateway.networking.k8s.io/v1
