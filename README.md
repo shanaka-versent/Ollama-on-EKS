@@ -32,43 +32,45 @@ Client → Kong Cloud AI GW (Kong's AWS) --[Transit GW]--> Internal NLB --> Isti
 How a prompt travels from Claude Code (or any OpenAI-compatible client) through every layer to Ollama and back:
 
 ```mermaid
+%%{init: {'theme': 'neutral', 'themeVariables': {'primaryColor': '#ECECFF', 'primaryBorderColor': '#9370DB', 'lineColor': '#666', 'secondaryColor': '#ffffde'}}}%%
 sequenceDiagram
     actor Dev as Developer (Mac)
     participant CC as Claude Code<br/>/ Copilot
     participant Kong as Kong Cloud AI GW<br/>(Kong's AWS — managed)
-    participant TGW as Transit Gateway<br/>(cross-account private link)
-    participant NLB as Internal NLB<br/>(EKS VPC — not internet-facing)
-    participant IGW as Istio Gateway<br/>(istio-ingress namespace)
-    participant ZT as ztunnel<br/>(Ambient mTLS — every node)
-    participant OLM as Ollama Pod<br/>(GPU node — 4× A10G)
-    participant EBS as EBS Volume<br/>(model cache — 200GB gp3)
+    participant TGW as Transit Gateway<br/>(cross-account)
+    participant NLB as Internal NLB<br/>(EKS VPC)
+    participant IGW as Istio Gateway<br/>(istio-ingress ns)
+    participant ZT as ztunnel<br/>(Ambient mTLS)
+    participant OLM as Ollama Pod<br/>(4× NVIDIA A10G)
+    participant EBS as EBS Volume<br/>(200GB gp3)
 
     Dev->>CC: Types prompt or code request
 
-    CC->>Kong: HTTPS POST /v1/chat/completions<br/>Authorization: Bearer &lt;apikey&gt;
+    Note over CC,Kong: 🔒 HTTPS — public internet
+    CC->>+Kong: POST /v1/chat/completions<br/>Authorization: Bearer &lt;apikey&gt;
 
-    Note over Kong: key-auth plugin — validates API key<br/>rate-limiting — checks 60 req/min counter<br/>request-transformer — adds X-Kong-Proxy header
+    Note over Kong: 🔑 key-auth — validate API key<br/>⏱ rate-limiting — 60 req/min per consumer<br/>📋 request-transformer — add X-Kong-Proxy header
 
-    Kong->>TGW: HTTP over private network<br/>(never touches the internet)
-    TGW->>NLB: Routes into EKS VPC (10.0.0.0/16)
-    NLB->>IGW: Forwards to Istio Gateway pod
+    Note over Kong,NLB: 🔒 Private network — Transit Gateway, never touches the internet
+    Kong->>+TGW: HTTP (cross-account private link)
+    TGW->>+NLB: Routes into EKS VPC (10.0.0.0/16)
+    NLB->>+IGW: Forwards to Istio Gateway pod
 
-    Note over ZT: ztunnel intercepts all pod traffic<br/>establishes L4 mTLS tunnel transparently
+    Note over IGW,OLM: 🔒 Istio Ambient mTLS — transparent L4 encryption between pods
+    IGW->>+ZT: Intercepted by ztunnel (no sidecar needed)
+    ZT->>+OLM: Decrypted → ollama.ollama.svc:11434
 
-    IGW->>ZT: Encrypted via mTLS
-    ZT->>OLM: Decrypted request → ollama:11434
+    OLM->>+EBS: Load model weights (if not already in GPU VRAM)
+    EBS-->>-OLM: qwen3-coder:30b (~18GB)
 
-    OLM->>EBS: Load model weights (if not in GPU VRAM)
-    EBS-->>OLM: qwen3-coder:30b weights (~18GB)
+    Note over OLM: ⚡ GPU inference — 4× NVIDIA A10G (96GB VRAM)<br/>Context window: 32K tokens
 
-    Note over OLM: GPU inference on 4× NVIDIA A10G<br/>context window: 32K tokens
-
-    OLM-->>ZT: Streaming response tokens
-    ZT-->>IGW: mTLS encrypted stream
-    IGW-->>NLB: HTTP response
-    NLB-->>TGW: Forward back through private link
-    TGW-->>Kong: Response arrives at Kong
-    Kong-->>CC: HTTPS streaming response
+    OLM-->>-ZT: Streaming response tokens
+    ZT-->>-IGW: mTLS encrypted stream
+    IGW-->>-NLB: HTTP response
+    NLB-->>-TGW: Forward back through private link
+    TGW-->>-Kong: Response arrives at Kong
+    Kong-->>-CC: 🔒 HTTPS streaming response
     CC-->>Dev: Displays generated code / answer
 ```
 
