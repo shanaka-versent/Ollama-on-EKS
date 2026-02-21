@@ -18,15 +18,15 @@
 #   - ALL AWS resources created by terraform apply
 #
 # Usage:
-#   ./scripts/00-destroy-all.sh [--force]
+#   ./destroy.sh [--force]
 #
 # Options:
 #   --force    Skip confirmation prompts (dangerous!)
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")}" && pwd)"
-REPO_DIR="${SCRIPT_DIR}/.."
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="${SCRIPT_DIR}"
 TERRAFORM_DIR="${REPO_DIR}/terraform"
 ENV_FILE="${REPO_DIR}/.env"
 
