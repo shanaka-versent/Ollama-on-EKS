@@ -303,39 +303,54 @@ ArgoCD auto-deploys these from Git after `terraform apply`:
 
 ## Kong AI Gateway Features
 
-The `deck/kong.yaml` configuration uses Kong's AI Gateway plugins:
+The `deck/kong.yaml` configuration applies Kong's gateway plugins:
 
 | Plugin | Purpose |
 |--------|---------|
-| `ai-proxy` | LLM-aware routing — translates OpenAI format to Ollama API |
-| `ai-rate-limiting-advanced` | Token-based rate limiting for LLM requests |
-| `key-auth` | API key authentication per team member |
-| `rate-limiting` | Request-based rate limiting for direct API access |
+| `key-auth` | API key authentication — accepts `apikey`, `x-api-key`, or `Authorization: Bearer` headers |
+| `rate-limiting` | Request-based rate limiting (60 req/min per consumer) |
 | `request-size-limiting` | Protects against oversized prompts (10MB limit) |
-| `prometheus` | Per-consumer metrics and latency tracking |
-| `cors` | Cross-origin support for web-based LLM clients |
+
+> **Note on Cloud Gateway plugin support:** Kong Konnect Cloud Gateway (Dedicated tier) does not support `ai-proxy` with `ollama` provider, `ai-rate-limiting-advanced`, or `prometheus`. The config uses standard plugins that are universally available.
 
 ### Routes
 
 | Route | Path | Description |
 |-------|------|-------------|
-| AI Chat | `/ai/chat` | OpenAI-compatible chat completions via `ai-proxy` |
-| AI Completions | `/ai/completions` | OpenAI-compatible text completions via `ai-proxy` |
 | Ollama Direct | `/api/*`, `/v1/*` | Pass-through for Claude Code and native Ollama API |
 | Health Check | `/healthz` | Kong Cloud Gateway health probe |
 
+### Authentication
+
+Kong accepts API keys in three formats:
+
+```bash
+# Direct header (curl, scripts)
+-H "apikey: <your-key>"
+
+# OpenAI-compatible header
+-H "x-api-key: <your-key>"
+
+# Bearer token (used by Claude Code via ANTHROPIC_AUTH_TOKEN)
+-H "Authorization: Bearer <your-key>"
+```
+
+Consumer credentials in `deck/kong.yaml` must include both the bare key and the `Bearer <key>` variant to support all three formats.
+
 ### Adding Team Members
 
-Edit `deck/kong.yaml` to add consumers:
+Edit `deck/kong.yaml` to add consumers (include both bare key and `Bearer <key>` for full header support):
 
 ```yaml
 consumers:
   - username: alice
     keyauth_credentials:
       - key: alice-secure-key-here
+      - key: "Bearer alice-secure-key-here"
   - username: bob
     keyauth_credentials:
       - key: bob-secure-key-here
+      - key: "Bearer bob-secure-key-here"
 ```
 
 Then sync:
@@ -344,7 +359,7 @@ Then sync:
 deck gateway sync deck/kong.yaml \
   --konnect-addr https://${KONNECT_REGION}.api.konghq.com \
   --konnect-token $KONNECT_TOKEN \
-  --konnect-control-plane-name ollama-ai-gateway
+  --konnect-control-plane-name kong-cloud-gateway-eks
 ```
 
 ---
@@ -541,8 +556,9 @@ kubectl wait --for=condition=ready pod -l app=ollama -n ollama --timeout=300s
 | Pod stuck in `Pending` | `kubectl describe pod -n ollama -l app=ollama` | GPU node not ready — wait or check nodegroup |
 | `Insufficient nvidia.com/gpu` | NVIDIA plugin not ready | Wait for DaemonSet: `kubectl get ds -n kube-system` |
 | Model pull fails | `kubectl exec -n ollama deploy/ollama -- df -h /root/.ollama` | Disk full — increase `model_storage_size` |
-| Kong returns 401 | Missing or wrong API key | Check `apikey` header matches `deck/kong.yaml` consumer |
+| Kong returns 401 | Missing or wrong API key | Check header: `apikey`, `x-api-key`, or `Authorization: Bearer <key>`. For Bearer, credentials must include `"Bearer <key>"` entry in `deck/kong.yaml` |
 | Kong returns 429 | Rate limit exceeded | Wait or increase `minute` limit in `deck/kong.yaml` |
+| Ollama returns `500 model failed to load` | CUDA INT_MAX overflow with large context | `OLLAMA_CONTEXT_LENGTH` must be set (e.g. `32768`). Without it, Ollama allocates KV cache for the full model context (up to 1M tokens × 4 parallel), which overflows the 2GB CUDA copy limit on qwen3moe |
 | NLB not provisioning | `kubectl get gateway -n istio-ingress` | Check LB Controller: `kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller` |
 | TGW attachment `initializing` | Poll with loop in Phase 2 Step 4 | Network provisioning ~30 min; then accept the attachment in AWS (Step 3) |
 | TGW attachment stuck `pendingAcceptance` | `aws ec2 describe-transit-gateway-attachments --region us-west-2 --filters Name=state,Values=pendingAcceptance` | Run `aws ec2 accept-transit-gateway-vpc-attachment --transit-gateway-attachment-id <id> --region us-west-2` |
@@ -783,8 +799,8 @@ deck gateway sync deck/kong.yaml \
 curl -s "https://${KONG_PROXY_URL}/api/tags" -H "apikey: <your-api-key>" | jq '.models[].name'
 # Expected output: "qwen3-coder:30b"
 
-# Test OpenAI-compatible chat via Kong ai-proxy
-curl -s "https://${KONG_PROXY_URL}/ai/chat" \
+# Test OpenAI-compatible chat completions
+curl -s "https://${KONG_PROXY_URL}/v1/chat/completions" \
   -H "apikey: <your-api-key>" \
   -H "Content-Type: application/json" \
   -d '{"model":"qwen3-coder:30b","messages":[{"role":"user","content":"Hello"}]}'

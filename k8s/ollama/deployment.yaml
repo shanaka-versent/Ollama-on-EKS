@@ -17,6 +17,10 @@ metadata:
     app.kubernetes.io/part-of: ollama-private-llm
 spec:
   replicas: 1
+  # Recreate (not RollingUpdate) because GPU nodes have exclusive GPU allocation.
+  # RollingUpdate would leave new pod Pending forever (old pod holds all GPUs).
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: ollama
@@ -48,6 +52,11 @@ spec:
               value: "4"
             - name: OLLAMA_MAX_LOADED_MODELS
               value: "2"
+            # Cap context to 32K to avoid INT_MAX overflow in CUDA copy kernel.
+            # qwen3-coder supports up to 128K but reserveWorstCaseGraph allocates
+            # num_parallel × context KV cache which exceeds 2GB at default (1M ctx).
+            - name: OLLAMA_CONTEXT_LENGTH
+              value: "32768"
           resources:
             limits:
               nvidia.com/gpu: "4"   # 4x NVIDIA A10G on g5.12xlarge
