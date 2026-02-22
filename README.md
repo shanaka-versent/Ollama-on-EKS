@@ -282,10 +282,10 @@ ollama_cpu_request     = 2
 When you're done for the day — stop the GPU node to avoid ~$5.67/hr charges:
 
 ```bash
-# Stop the pod
+# 1. Stop the pod first
 kubectl scale deployment ollama -n ollama --replicas=0
 
-# Scale down the GPU node group
+# 2. Scale down the GPU node group
 aws eks update-nodegroup-config \
   --cluster-name $(terraform -chdir=terraform output -raw eks_cluster_name) \
   --nodegroup-name $(terraform -chdir=terraform output -raw gpu_node_group_name) \
@@ -298,19 +298,22 @@ aws eks update-nodegroup-config \
 The EBS volume with your downloaded models is preserved — no re-download needed:
 
 ```bash
-# Scale up the GPU node group
+# 1. Scale up the GPU node group
 aws eks update-nodegroup-config \
   --cluster-name $(terraform -chdir=terraform output -raw eks_cluster_name) \
   --nodegroup-name $(terraform -chdir=terraform output -raw gpu_node_group_name) \
   --scaling-config minSize=0,maxSize=2,desiredSize=1 \
   --region $(terraform -chdir=terraform output -raw region)
 
-# Start the pod
+# 2. Wait for the GPU node to join the cluster (~3-5 min)
+kubectl wait --for=condition=ready node -l eks.amazonaws.com/nodegroup=gpu-ollama-dev --timeout=600s
+
+# 3. Start the pod
 kubectl scale deployment ollama -n ollama --replicas=1
 kubectl wait --for=condition=ready pod -l app=ollama -n ollama --timeout=300s
 ```
 
-> **Note:** The GPU node group is pinned to a single AZ (`us-west-2a`) to match the EBS volume. EBS volumes are AZ-scoped — if a GPU node starts in a different AZ the Ollama pod stays `Pending` with a volume affinity conflict. This is handled automatically by Terraform (`gpu_subnet_ids = [private_subnet_ids[0]]`).
+> **Note:** The GPU node group is pinned to `us-west-2a` to match the EBS PVC (AZ-scoped). This is enforced by Terraform — `gpu_subnet_ids = [private_subnet_ids[0]]`. If you ever see a volume affinity conflict, run `terraform apply` to reconcile the node group subnet configuration.
 
 ---
 
