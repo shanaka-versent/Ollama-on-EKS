@@ -1,0 +1,41 @@
+name: Kong Config Sync
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'deck/kong-config.yaml'
+
+jobs:
+  sync:
+    name: Sync kong-config.yaml to Konnect
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install decK
+        uses: kong/setup-deck@v1
+
+      - name: Validate config
+        run: |
+          deck gateway validate deck/kong-config.yaml \
+            --konnect-addr https://${{ secrets.KONNECT_REGION }}.api.konghq.com \
+            --konnect-token ${{ secrets.KONNECT_TOKEN }} \
+            --konnect-control-plane-name ${{ secrets.KONNECT_CP_NAME }}
+
+      - name: Diff (show what will change)
+        run: |
+          deck gateway diff deck/kong-config.yaml \
+            --konnect-addr https://${{ secrets.KONNECT_REGION }}.api.konghq.com \
+            --konnect-token ${{ secrets.KONNECT_TOKEN }} \
+            --konnect-control-plane-name ${{ secrets.KONNECT_CP_NAME }}
+
+      - name: Sync to Konnect
+        run: |
+          deck gateway sync deck/kong-config.yaml \
+            --konnect-addr https://${{ secrets.KONNECT_REGION }}.api.konghq.com \
+            --konnect-token ${{ secrets.KONNECT_TOKEN }} \
+            --konnect-control-plane-name ${{ secrets.KONNECT_CP_NAME }}

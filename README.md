@@ -188,6 +188,14 @@ done
 ./scripts/04-post-setup.sh
 ```
 
+**Step 4: Set GitHub secrets and enable auto-sync**
+
+```bash
+./scripts/06-setup-github-sync.sh
+```
+
+This reads your `.env`, gets the NLB hostname from the cluster, sets `KONNECT_TOKEN` / `KONNECT_REGION` / `KONNECT_CP_NAME` as GitHub Actions secrets, and triggers the first sync. After this, any change to `deck/kong-config.yaml` pushed to `main` auto-syncs to Konnect.
+
 ---
 
 ### Phase 3 — Connect (~5 min)
@@ -375,11 +383,21 @@ The Kong config is split into two files to allow safe Git commits:
 
 | File | Contents | Git | Sync |
 |------|----------|-----|------|
-| `deck/kong-config.yaml` | Services, routes, plugins — no secrets | ✅ Committed | `./scripts/05-sync-kong-config.sh --config-only` |
+| `deck/kong-config.yaml` | Services, routes, plugins — no secrets | ✅ Committed | Auto via GitHub Actions on push to `main` |
 | `deck/kong-consumers.yaml` | Consumers + API keys | ❌ Gitignored | `./scripts/05-sync-kong-config.sh` |
 | `deck/kong-consumers.yaml.sample` | Consumer format template | ✅ Committed | Reference only |
 
-`scripts/05-sync-kong-config.sh` validates, shows a diff, prompts for confirmation, then syncs to Konnect. Reads credentials from `.env`.
+**One-time setup** — run after initial deployment to wire everything up automatically:
+```bash
+./scripts/06-setup-github-sync.sh
+```
+
+This script extracts the NLB hostname from the cluster, sets GitHub Actions secrets (`KONNECT_TOKEN`, `KONNECT_REGION`, `KONNECT_CP_NAME`), commits the updated config, and pushes — triggering the first sync automatically. After that, every push to `deck/kong-config.yaml` on `main` auto-syncs to Konnect.
+
+**Consumer credentials** (API keys) are gitignored and synced manually:
+```bash
+./scripts/05-sync-kong-config.sh
+```
 
 ### Adding Team Members
 
