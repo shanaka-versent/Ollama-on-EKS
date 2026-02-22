@@ -77,7 +77,7 @@ while true; do
     --nodegroup-name "$NODE_GROUP" \
     --region "$REGION" \
     --query 'nodegroup.status' --output text 2>/dev/null)
-  [[ "$STATUS" == "ACTIVE" ]] && echo " — done" && break
+  if [[ "$STATUS" == "ACTIVE" ]]; then echo " — done"; break; fi
   echo -n "."
   sleep 15
 done

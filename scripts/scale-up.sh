@@ -72,7 +72,7 @@ while true; do
     --nodegroup-name "$NODE_GROUP" \
     --region "$REGION" \
     --query 'nodegroup.status' --output text 2>/dev/null)
-  [[ "$STATUS" == "ACTIVE" ]] && echo " — done" && break
+  if [[ "$STATUS" == "ACTIVE" ]]; then echo " — done"; break; fi
   echo -n "."
   sleep 15
 done
@@ -83,7 +83,7 @@ echo -n "  Waiting for node Ready"
 while true; do
   READY_COUNT=$(kubectl get nodes -l "eks.amazonaws.com/nodegroup=$NODE_GROUP" \
     --no-headers 2>/dev/null | grep -v "NotReady\|SchedulingDisabled" | wc -l | tr -d ' ')
-  [[ "$READY_COUNT" -ge 1 ]] && echo " — done" && break
+  if [[ "$READY_COUNT" -ge 1 ]]; then echo " — done"; break; fi
   echo -n "."
   sleep 15
 done
@@ -100,7 +100,7 @@ echo -n "  Waiting for pod Running"
 while true; do
   POD_STATUS=$(kubectl get pods -n ollama -l app=ollama \
     --no-headers 2>/dev/null | awk '{print $3}' | head -1)
-  [[ "$POD_STATUS" == "Running" ]] && echo " — done" && break
+  if [[ "$POD_STATUS" == "Running" ]]; then echo " — done"; break; fi
   echo -n "."
   sleep 10
 done
