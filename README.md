@@ -6,9 +6,7 @@ Deploy a fully private Ollama LLM server on AWS EKS with GPU acceleration, expos
 
 ## Architecture
 
-![Architecture Diagram](docs/architecture.png)
-
-> To regenerate: `python3 generate-diagram.py` (requires `pip install diagrams` + `brew install graphviz`)
+![Architecture Diagram](Ollama%20on%20EKS.png)
 
 **Traffic flow:**
 ```
