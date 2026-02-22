@@ -38,8 +38,8 @@ NC='\033[0m'
 PASS=0
 FAIL=0
 
-pass() { echo -e "${GREEN}  ✓ PASS${NC}  $*"; ((PASS++)); }
-fail() { echo -e "${RED}  ✗ FAIL${NC}  $*"; ((FAIL++)); }
+pass() { echo -e "${GREEN}  ✓ PASS${NC}  $*"; PASS=$((PASS + 1)); }
+fail() { echo -e "${RED}  ✗ FAIL${NC}  $*"; FAIL=$((FAIL + 1)); }
 step() { echo -e "\n${CYAN}${BOLD}==> $*${NC}"; }
 info() { echo -e "  ${DIM}$*${NC}"; }
 result() { echo -e "  ${YELLOW}→${NC} $*"; }
