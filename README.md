@@ -245,6 +245,39 @@ claude --model qwen3-coder:30b
 source claude-switch.sh status
 ```
 
+### Integration Test
+
+Verify the full stack end-to-end — switches Claude to Ollama, tests a prompt, cycles scale down/up/down, then restores remote mode:
+
+```bash
+./scripts/test-ollama-stack.sh
+```
+
+```
+==> Test 1: Switch Claude to Ollama via Kong
+  ✓ PASS  Claude switched to Ollama mode
+
+==> Test 2: Kong Gateway reachability
+  ✓ PASS  Kong Gateway reachable (HTTP 200)
+
+==> Test 3: Send prompt to Ollama — 'What is 2+2?'
+  ✓ PASS  Ollama returned correct answer (contains '4')
+
+==> Test 4: Scale down GPU node group
+  ✓ PASS  GPU node group scaled to 0, GPU node gone
+
+==> Test 5: Scale up GPU node group
+  ✓ PASS  GPU node up, Ollama pod Running
+
+==> Test 6: Scale down GPU node group (final)
+  ✓ PASS  GPU node group scaled to 0 cleanly
+
+==> Test 7: Switch Claude back to remote (Anthropic API)
+  ✓ PASS  Claude switched back to remote mode
+
+  All 7 tests passed
+```
+
 ---
 
 ## Cost Management
