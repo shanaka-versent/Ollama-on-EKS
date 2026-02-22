@@ -392,6 +392,7 @@ Terraform provisions ArgoCD during `terraform apply`. ArgoCD then auto-syncs all
 ### Deployment Sequence
 
 ```mermaid
+%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '11px'}, 'flowchart': {'nodeSpacing': 25, 'rankSpacing': 35}}}%%
 flowchart TD
     START(["🚀 deploy.sh"])
 
