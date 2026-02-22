@@ -50,7 +50,7 @@ if [[ "$CURRENT_DESIRED" == "0" ]]; then
 fi
 
 read -r -p "  Scale down now? This will stop the GPU node and end billing. [y/N] " confirm
-if [[ "${confirm,,}" != "y" ]]; then
+if [[ "$(echo "$confirm" | tr '[:upper:]' '[:lower:]')" != "y" ]]; then
   echo ""
   echo "  Aborted."
   echo ""

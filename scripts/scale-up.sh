@@ -50,7 +50,7 @@ if [[ "$CURRENT_DESIRED" == "1" ]]; then
 fi
 
 read -r -p "  Scale up now? This will start a GPU node (~\$5.67/hr). [y/N] " confirm
-if [[ "${confirm,,}" != "y" ]]; then
+if [[ "$(echo "$confirm" | tr '[:upper:]' '[:lower:]')" != "y" ]]; then
   echo ""
   echo "  Aborted."
   echo ""
