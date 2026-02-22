@@ -117,6 +117,18 @@ get_scaling_config() {
 }
 
 # ---------------------------------------------------------------------------
+# Helper: get current node group desired size
+# ---------------------------------------------------------------------------
+get_desired_size() {
+  aws eks describe-nodegroup \
+    --cluster-name "$CLUSTER_NAME" \
+    --nodegroup-name "$NODE_GROUP" \
+    --region "$REGION" \
+    --query 'nodegroup.scalingConfig.desiredSize' \
+    --output text 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
 # Helper: scale node group
 # ---------------------------------------------------------------------------
 scale_nodegroup() {
