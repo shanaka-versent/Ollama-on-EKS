@@ -47,7 +47,7 @@ services:
   # Direct curl usage:
   #   curl https://<KONG_PROXY_URL>/api/tags -H "apikey: <key>"
   - name: ollama-direct
-    url: http://<YOUR_NLB_DNS>:80
+    url: http://k8s-istioing-ollamaga-df71b1176c-0870f678b71f0450.elb.us-west-2.amazonaws.com:80
     protocol: http
     port: 80
     routes:
@@ -71,7 +71,7 @@ services:
   # Health Check — verifies NLB connectivity from Kong Cloud Gateway
   # --------------------------------------------------------------------------
   - name: gateway-health
-    url: http://<YOUR_NLB_DNS>:80
+    url: http://k8s-istioing-ollamaga-df71b1176c-0870f678b71f0450.elb.us-west-2.amazonaws.com:80
     protocol: http
     port: 80
     routes:
