@@ -333,36 +333,20 @@ ollama_cpu_request     = 2
 When you're done for the day — stop the GPU node to avoid ~$5.67/hr charges:
 
 ```bash
-# 1. Stop the pod first
-kubectl scale deployment ollama -n ollama --replicas=0
-
-# 2. Scale down the GPU node group
-aws eks update-nodegroup-config \
-  --cluster-name $(terraform -chdir=terraform output -raw eks_cluster_name) \
-  --nodegroup-name $(terraform -chdir=terraform output -raw gpu_node_group_name) \
-  --scaling-config minSize=0,maxSize=2,desiredSize=0 \
-  --region $(terraform -chdir=terraform output -raw region)
+./scripts/scale-down.sh
 ```
+
+Shows current state, asks for confirmation, then stops the pod and scales the node group to 0.
 
 ### Resume Next Session
 
 The EBS volume with your downloaded models is preserved — no re-download needed:
 
 ```bash
-# 1. Scale up the GPU node group
-aws eks update-nodegroup-config \
-  --cluster-name $(terraform -chdir=terraform output -raw eks_cluster_name) \
-  --nodegroup-name $(terraform -chdir=terraform output -raw gpu_node_group_name) \
-  --scaling-config minSize=0,maxSize=2,desiredSize=1 \
-  --region $(terraform -chdir=terraform output -raw region)
-
-# 2. Wait for the GPU node to join the cluster (~3-5 min)
-kubectl wait --for=condition=ready node -l eks.amazonaws.com/nodegroup=gpu-ollama-dev --timeout=600s
-
-# 3. Start the pod
-kubectl scale deployment ollama -n ollama --replicas=1
-kubectl wait --for=condition=ready pod -l app=ollama -n ollama --timeout=300s
+./scripts/scale-up.sh
 ```
+
+Shows current state, asks for confirmation, then scales up the node group, waits for the node to join, starts the pod, and confirms it's Running.
 
 > **Note:** The GPU node group is pinned to `us-west-2a` to match the EBS PVC (AZ-scoped). This is enforced by Terraform — `gpu_subnet_ids = [private_subnet_ids[0]]`. If you ever see a volume affinity conflict, run `terraform apply` to reconcile the node group subnet configuration.
 
