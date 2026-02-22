@@ -6,7 +6,7 @@
 # consumer credentials to Kong Konnect Cloud Gateway.
 #
 # Prerequisites:
-#   - .env file with KONNECT_TOKEN, KONNECT_REGION, KONNECT_CP_NAME
+#   - .env file with KONNECT_TOKEN, KONNECT_REGION, KONNECT_CONTROL_PLANE_NAME
 #   - decK installed: brew install deck
 #   - deck/kong-config.yaml (committed, no secrets)
 #   - deck/kong-consumers.yaml (gitignored, contains API keys)
@@ -30,14 +30,16 @@ fi
 ENV_FILE="$ROOT_DIR/.env"
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "ERROR: .env file not found at $ENV_FILE"
-  echo "       Create it with: KONNECT_TOKEN, KONNECT_REGION, KONNECT_CP_NAME"
+  echo "       Create it with: KONNECT_TOKEN, KONNECT_REGION, KONNECT_CONTROL_PLANE_NAME"
   exit 1
 fi
 source "$ENV_FILE"
 
 : "${KONNECT_TOKEN:?ERROR: KONNECT_TOKEN not set in .env}"
 : "${KONNECT_REGION:?ERROR: KONNECT_REGION not set in .env}"
-: "${KONNECT_CP_NAME:?ERROR: KONNECT_CP_NAME not set in .env}"
+
+# Match variable name used by 03-setup-cloud-gateway.sh
+CP_NAME="${KONNECT_CONTROL_PLANE_NAME:-ollama-ai-gateway}"
 
 CONFIG_FILE="$ROOT_DIR/deck/kong-config.yaml"
 CONSUMERS_FILE="$ROOT_DIR/deck/kong-consumers.yaml"
@@ -45,7 +47,7 @@ CONSUMERS_FILE="$ROOT_DIR/deck/kong-consumers.yaml"
 DECK_FLAGS=(
   --konnect-addr "https://${KONNECT_REGION}.api.konghq.com"
   --konnect-token "$KONNECT_TOKEN"
-  --konnect-control-plane-name "$KONNECT_CP_NAME"
+  --konnect-control-plane-name "$CP_NAME"
 )
 
 if $CONFIG_ONLY; then
