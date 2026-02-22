@@ -75,8 +75,11 @@ resource "aws_eks_node_group" "gpu" {
   cluster_name    = aws_eks_cluster.main.name
   node_group_name = "gpu-${var.name_prefix}"
   node_role_arn   = var.node_role_arn
-  subnet_ids      = var.node_subnet_ids
-  ami_type        = var.gpu_ami_type
+  # Pin GPU nodes to a single AZ to match EBS volume affinity.
+  # EBS volumes are AZ-scoped — if the GPU node comes up in a different AZ
+  # from the PVC, the pod cannot schedule (volume node affinity conflict).
+  subnet_ids = length(var.gpu_subnet_ids) > 0 ? var.gpu_subnet_ids : var.node_subnet_ids
+  ami_type   = var.gpu_ami_type
 
   instance_types = [var.gpu_node_instance_type]
   capacity_type  = var.gpu_capacity_type

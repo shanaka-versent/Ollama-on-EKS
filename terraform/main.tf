@@ -80,6 +80,10 @@ module "eks" {
   # Network
   subnet_ids      = concat(module.vpc.public_subnet_ids, module.vpc.private_subnet_ids)
   node_subnet_ids = module.vpc.private_subnet_ids
+  # Pin GPU nodes to the first private subnet (AZ-a) so they always land in the
+  # same AZ as the EBS PVC. EBS volumes are AZ-scoped — a GPU node in a different
+  # AZ causes a volume affinity conflict and the Ollama pod stays Pending.
+  gpu_subnet_ids  = [module.vpc.private_subnet_ids[0]]
 
   # System Node Pool
   system_node_count         = var.system_node_count

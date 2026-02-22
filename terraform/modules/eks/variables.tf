@@ -33,8 +33,14 @@ variable "subnet_ids" {
 }
 
 variable "node_subnet_ids" {
-  description = "Subnet IDs for EKS nodes"
+  description = "Subnet IDs for EKS nodes (system node group uses all)"
   type        = list(string)
+}
+
+variable "gpu_subnet_ids" {
+  description = "Subnet IDs for GPU nodes. Pin to a single AZ to match EBS volume affinity. Defaults to node_subnet_ids if not set."
+  type        = list(string)
+  default     = []
 }
 
 variable "cluster_security_group_ids" {

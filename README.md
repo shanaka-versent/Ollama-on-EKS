@@ -344,6 +344,8 @@ kubectl scale deployment ollama -n ollama --replicas=1
 kubectl wait --for=condition=ready pod -l app=ollama -n ollama --timeout=300s
 ```
 
+> **Note:** The GPU node group is pinned to a single AZ (`us-west-2a`) to match the EBS volume. EBS volumes are AZ-scoped — if the GPU node starts in a different AZ, the Ollama pod will stay `Pending` with a volume affinity conflict. This is handled automatically by Terraform (`gpu_subnet_ids = [private_subnet_ids[0]]`).
+
 ---
 
 ## Kong Gateway Reference
