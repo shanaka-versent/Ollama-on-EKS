@@ -215,7 +215,7 @@ scale_nodegroup 0
 
 SCALING=$(get_scaling_config)
 DESIRED=$(get_desired_size)
-NODE_COUNT=$(kubectl get nodes --no-headers 2>/dev/null | grep "g5\." | wc -l | tr -d ' ')
+NODE_COUNT=$(kubectl get nodes --no-headers 2>/dev/null | { grep "g5\." || true; } | wc -l | tr -d ' ')
 POD_STATUS=$(kubectl get deployment ollama -n ollama --no-headers 2>/dev/null | awk '{print $2}')
 
 result "Node group scaling   = $SCALING"
@@ -280,7 +280,7 @@ scale_nodegroup 0
 
 SCALING=$(get_scaling_config)
 DESIRED=$(get_desired_size)
-NODE_COUNT=$(kubectl get nodes --no-headers 2>/dev/null | grep "g5\." | wc -l | tr -d ' ')
+NODE_COUNT=$(kubectl get nodes --no-headers 2>/dev/null | { grep "g5\." || true; } | wc -l | tr -d ' ')
 POD_STATUS=$(kubectl get deployment ollama -n ollama --no-headers 2>/dev/null | awk '{print $2}')
 
 result "Node group scaling   = $SCALING"
