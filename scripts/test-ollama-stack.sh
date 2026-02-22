@@ -202,14 +202,14 @@ info "Scaling node group to 0..."
 scale_nodegroup 0
 
 SCALING=$(get_scaling_config)
-NODE_COUNT=$(kubectl get nodes --no-headers 2>/dev/null | grep -c "g5\." || echo "0")
+DESIRED=$(get_desired_size)
+NODE_COUNT=$(kubectl get nodes --no-headers 2>/dev/null | grep "g5\." | wc -l | tr -d ' ')
 POD_STATUS=$(kubectl get deployment ollama -n ollama --no-headers 2>/dev/null | awk '{print $2}')
 
-result "Node group scaling = $SCALING"
+result "Node group scaling   = $SCALING"
 result "GPU nodes in cluster = $NODE_COUNT"
 result "Ollama deployment    = $POD_STATUS"
 
-DESIRED=$(echo "$SCALING" | python3 -c "import sys,json; print(json.load(sys.stdin)['desiredSize'])" 2>/dev/null || echo "-1")
 if [[ "$DESIRED" == "0" ]] && [[ "$NODE_COUNT" == "0" ]]; then
   pass "GPU node group scaled to 0, GPU node gone"
 else
@@ -245,7 +245,7 @@ result "Node group scaling = $SCALING"
 result "GPU node           = $NODE_NAME"
 result "Ollama pod         = $POD_LINE"
 
-DESIRED=$(echo "$SCALING" | python3 -c "import sys,json; print(json.load(sys.stdin)['desiredSize'])" 2>/dev/null || echo "-1")
+DESIRED=$(get_desired_size)
 POD_STATUS=$(kubectl get pods -n ollama -l app=ollama \
   --no-headers 2>/dev/null | awk '{print $3}' | head -1)
 
@@ -267,14 +267,14 @@ info "Scaling node group to 0..."
 scale_nodegroup 0
 
 SCALING=$(get_scaling_config)
-NODE_COUNT=$(kubectl get nodes --no-headers 2>/dev/null | grep -c "g5\." || echo "0")
+DESIRED=$(get_desired_size)
+NODE_COUNT=$(kubectl get nodes --no-headers 2>/dev/null | grep "g5\." | wc -l | tr -d ' ')
 POD_STATUS=$(kubectl get deployment ollama -n ollama --no-headers 2>/dev/null | awk '{print $2}')
 
-result "Node group scaling = $SCALING"
+result "Node group scaling   = $SCALING"
 result "GPU nodes in cluster = $NODE_COUNT"
 result "Ollama deployment    = $POD_STATUS"
 
-DESIRED=$(echo "$SCALING" | python3 -c "import sys,json; print(json.load(sys.stdin)['desiredSize'])" 2>/dev/null || echo "-1")
 if [[ "$DESIRED" == "0" ]] && [[ "$NODE_COUNT" == "0" ]]; then
   pass "GPU node group scaled to 0 cleanly"
 else
