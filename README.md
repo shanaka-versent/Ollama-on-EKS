@@ -160,41 +160,23 @@ kubectl get pods -n ollama
 
 The cloud gateway network takes ~30 min to provision. Once ready, Kong initiates a Transit Gateway attachment to your VPC. The TGW is configured with `auto_accept_shared_attachments = "enable"`, so **no manual acceptance is required**.
 
-**Step 2: Poll until the TGW attachment is ready**
+**Step 2: Discover NLB and sync Kong config**
 
-```bash
-source .env
-NETWORK_ID=$(curl -s "https://global.api.konghq.com/v2/cloud-gateways/networks" \
-  -H "Authorization: Bearer $KONNECT_TOKEN" | \
-  jq -r '.data[] | select(.name == "ollama-eks-network") | .id')
-
-TGW_ATT_ID=$(curl -s \
-  "https://global.api.konghq.com/v2/cloud-gateways/networks/${NETWORK_ID}/transit-gateways" \
-  -H "Authorization: Bearer $KONNECT_TOKEN" | jq -r '.data[0].id')
-
-while true; do
-  STATE=$(curl -s \
-    "https://global.api.konghq.com/v2/cloud-gateways/networks/${NETWORK_ID}/transit-gateways/${TGW_ATT_ID}" \
-    -H "Authorization: Bearer $KONNECT_TOKEN" | jq -r '.state')
-  echo "$(date '+%H:%M:%S') TGW attachment: $STATE"
-  [[ "$STATE" == "ready" ]] && echo "Ready — proceed to Phase 3" && break
-  sleep 30
-done
-```
-
-**Step 3: Discover NLB and sync Kong config**
+Wait for the TGW attachment to reach `ready` state (the script polls automatically), then:
 
 ```bash
 ./scripts/04-post-setup.sh
 ```
 
-**Step 4: Set GitHub secrets and enable auto-sync**
+This discovers the Istio Gateway NLB hostname, updates `deck/kong-config.yaml`, and syncs services and routes to Konnect.
+
+**Step 3: Set GitHub secrets and enable auto-sync**
 
 ```bash
 ./scripts/06-setup-github-sync.sh
 ```
 
-This reads your `.env`, gets the NLB hostname from the cluster, sets `KONNECT_TOKEN` / `KONNECT_REGION` / `KONNECT_CP_NAME` as GitHub Actions secrets, and triggers the first sync. After this, any change to `deck/kong-config.yaml` pushed to `main` auto-syncs to Konnect.
+This reads your `.env`, sets `KONNECT_TOKEN` / `KONNECT_REGION` / `KONNECT_CP_NAME` as GitHub Actions secrets, commits the updated config, and pushes — triggering the first sync automatically. After this, any push to `deck/kong-config.yaml` on `main` auto-syncs to Konnect.
 
 ---
 
@@ -202,36 +184,22 @@ This reads your `.env`, gets the NLB hostname from the cluster, sets `KONNECT_TO
 
 **Step 4: Get your Kong proxy URL**
 
-The proxy URL is shown in the Konnect UI only (not returned by the API for dedicated gateways):
+The proxy URL is shown in the Konnect UI only:
 
 > **[cloud.konghq.com](https://cloud.konghq.com) → Gateway Manager → `kong-cloud-gateway-eks` → Overview → Proxy URL**
 
 It will look like: `https://xxxx.gateways.konggateway.com`
 
-**Step 5: Set real API keys and sync**
-
-Edit `deck/kong.yaml` — replace the placeholder keys. Each consumer needs both a bare key and a `Bearer <key>` variant (Claude Code sends the Bearer form):
-
-```yaml
-consumers:
-  - username: team-admin
-    keyauth_credentials:
-      - key: your-secure-admin-key-here
-      - key: "Bearer your-secure-admin-key-here"
-  - username: team-dev
-    keyauth_credentials:
-      - key: your-secure-dev-key-here
-      - key: "Bearer your-secure-dev-key-here"
-```
-
-Sync to Konnect:
+**Step 5: Add your first consumer (API key)**
 
 ```bash
-source .env
-deck gateway sync deck/kong.yaml \
-  --konnect-addr https://${KONNECT_REGION}.api.konghq.com \
-  --konnect-token $KONNECT_TOKEN \
-  --konnect-control-plane-name kong-cloud-gateway-eks
+# Copy the sample and add yourself
+cp deck/kong-consumers.yaml.sample deck/kong-consumers.yaml
+# Edit deck/kong-consumers.yaml — replace placeholder keys with real ones
+openssl rand -hex 32   # generate a strong key
+
+# Sync consumers to Konnect
+./scripts/05-sync-kong-config.sh
 ```
 
 **Step 6: Verify end-to-end**
@@ -285,22 +253,22 @@ source claude-switch.sh status
 
 ### GPU Instance Options
 
-> **Instance type is chosen at setup time** — you must decide which model you intend to run *before* running `terraform apply`, because the GPU node group is provisioned for a specific instance. Changing instance type requires `terraform apply` to replace the node group.
+> **Instance type is chosen at setup time** — decide which model you intend to run *before* `terraform apply`. The GPU node group is provisioned for a specific instance type. Changing it requires `terraform apply` to replace the node group.
 
-The model you load into Ollama must fit within the VRAM of the chosen instance. A model that exceeds available VRAM will fail to load or run extremely slowly on CPU fallback.
+The model must fit within the instance VRAM. A model that exceeds VRAM will fail to load or fall back to CPU (very slow).
 
-> **Costs shown are approximate (~) and subject to change.** Always check current [AWS EC2 pricing](https://aws.amazon.com/ec2/pricing/on-demand/) for your region before making decisions.
+> **Costs are approximate (~) and subject to change.** Check current [AWS EC2 pricing](https://aws.amazon.com/ec2/pricing/on-demand/) for your region.
 
 | Instance | GPUs | VRAM | Recommended Models | Cost/hr |
 |----------|------|------|--------------------|---------|
 | `g5.xlarge` | 1x A10G | 24GB | `qwen2.5-coder:7b`, `codellama:7b` | ~$1.01 |
 | `g5.2xlarge` | 1x A10G | 24GB | `qwen2.5-coder:14b`, `llama3.1:8b` | ~$1.21 |
-| `g5.12xlarge` | 4x A10G | 96GB | `qwen3-coder:32b`, `llama3.1:70b` | ~$5.67 |
+| `g5.12xlarge` | 4x A10G | 96GB | `qwen3-coder:30b`, `llama3.1:70b` | ~$5.67 |
 | `p4d.24xlarge` | 8x A100 | 320GB | `llama3.1:405b`, largest models | ~$32.77 |
 
-**Rule of thumb:** model size in GB ≈ parameter count × 0.5 (for 4-bit quantised). A 32B model needs ~18–20GB VRAM minimum; 70B needs ~40GB. Always leave headroom for KV cache.
+**Rule of thumb:** model size in GB ≈ parameter count × 0.5 (4-bit quantised). A 32B model needs ~18–20GB VRAM; 70B needs ~40GB. Leave headroom for KV cache.
 
-When changing instance type, update these variables together:
+When changing instance type, update these variables together in `terraform/terraform.tfvars`:
 
 ```hcl
 gpu_node_instance_type = "g5.xlarge"
@@ -344,7 +312,7 @@ kubectl scale deployment ollama -n ollama --replicas=1
 kubectl wait --for=condition=ready pod -l app=ollama -n ollama --timeout=300s
 ```
 
-> **Note:** The GPU node group is pinned to a single AZ (`us-west-2a`) to match the EBS volume. EBS volumes are AZ-scoped — if the GPU node starts in a different AZ, the Ollama pod will stay `Pending` with a volume affinity conflict. This is handled automatically by Terraform (`gpu_subnet_ids = [private_subnet_ids[0]]`).
+> **Note:** The GPU node group is pinned to a single AZ (`us-west-2a`) to match the EBS volume. EBS volumes are AZ-scoped — if a GPU node starts in a different AZ the Ollama pod stays `Pending` with a volume affinity conflict. This is handled automatically by Terraform (`gpu_subnet_ids = [private_subnet_ids[0]]`).
 
 ---
 
@@ -358,7 +326,7 @@ kubectl wait --for=condition=ready pod -l app=ollama -n ollama --timeout=300s
 | `rate-limiting` | 60 requests/min per consumer (configurable in `deck/kong-config.yaml`) |
 | `request-size-limiting` | Rejects payloads over 10MB |
 
-> **Plugin availability note:** Kong Konnect Cloud Gateway (Dedicated tier) does not support `ai-proxy` with `ollama` provider, `ai-rate-limiting-advanced`, or `prometheus`. The config uses standard plugins that work across all tiers.
+> **Plugin note:** Kong Konnect Cloud Gateway (Dedicated tier) does not support `ai-proxy` with `ollama` provider, `ai-rate-limiting-advanced`, or `prometheus`. The config uses standard plugins that work across all tiers.
 
 ### Routes
 
@@ -377,7 +345,7 @@ Kong accepts API keys in three formats:
 -H "Authorization: Bearer <key>"      # Claude Code (ANTHROPIC_AUTH_TOKEN)
 ```
 
-Because Kong reads the full `Authorization` header value when matching credentials, each consumer needs two credential entries — the bare key and `Bearer <key>` — as shown in `deck/kong-consumers.yaml.sample`.
+Because Kong reads the full `Authorization` header value, each consumer needs two credential entries — the bare key and `Bearer <key>`. See `deck/kong-consumers.yaml.sample` for the format.
 
 ### Configuration Files
 
@@ -389,26 +357,16 @@ The Kong config is split into two files to allow safe Git commits:
 | `deck/kong-consumers.yaml` | Consumers + API keys | ❌ Gitignored | `./scripts/05-sync-kong-config.sh` |
 | `deck/kong-consumers.yaml.sample` | Consumer format template | ✅ Committed | Reference only |
 
-**One-time setup** — run after initial deployment to wire everything up automatically:
-```bash
-./scripts/06-setup-github-sync.sh
-```
-
-This script extracts the NLB hostname from the cluster, sets GitHub Actions secrets (`KONNECT_TOKEN`, `KONNECT_REGION`, `KONNECT_CP_NAME`), commits the updated config, and pushes — triggering the first sync automatically. After that, every push to `deck/kong-config.yaml` on `main` auto-syncs to Konnect.
-
-**Consumer credentials** (API keys) are gitignored and synced manually:
-```bash
-./scripts/05-sync-kong-config.sh
-```
+`scripts/06-setup-github-sync.sh` (run once after deployment) extracts the NLB hostname, sets GitHub Actions secrets, and triggers the first sync. After that, pushes to `deck/kong-config.yaml` auto-sync to Konnect.
 
 ### Adding Team Members
 
-**Step 1** — Set up your local consumers file (first time only):
 ```bash
-cp deck/kong-consumers.yaml.sample deck/kong-consumers.yaml
-```
+# 1. Generate a strong key
+openssl rand -hex 32
 
-**Step 2** — Add the new team member to `deck/kong-consumers.yaml`:
+# 2. Add consumer to deck/kong-consumers.yaml
+```
 ```yaml
 consumers:
   - username: alice
@@ -416,18 +374,12 @@ consumers:
       - key: GENERATED_KEY_HERE
       - key: "Bearer GENERATED_KEY_HERE"
 ```
-
-Generate a strong key:
 ```bash
-openssl rand -hex 32
-```
-
-**Step 3** — Sync to Konnect:
-```bash
+# 3. Sync to Konnect
 ./scripts/05-sync-kong-config.sh
-```
 
-**Step 4** — Share the key via a secure channel (1Password, etc.) — never email or Slack.
+# 4. Share the key via a secure channel (1Password, etc.) — never email or Slack
+```
 
 ### Removing Team Members
 
@@ -475,7 +427,7 @@ flowchart TD
 
     subgraph POST["📜 scripts/04-post-setup.sh — manual after TGW ready"]
         PA["Discover NLB DNS\nkubectl get gateway -n istio-ingress"]
-        PB["deck gateway sync\npush kong.yaml to Kong Konnect"]
+        PB["deck gateway sync\npush kong-config.yaml to Kong Konnect"]
         PA --> PB
     end
 
@@ -651,7 +603,7 @@ sequenceDiagram
 |----------|---------|
 | EKS Cluster | Kubernetes 1.31, public + private API endpoint |
 | System Node Group | 2x `t3.medium`, tainted `CriticalAddonsOnly` |
-| GPU Node Group | 1x `g5.12xlarge` (4x NVIDIA A10G, 96GB VRAM), tainted `nvidia.com/gpu` |
+| GPU Node Group | 1x `g5.12xlarge` (4x NVIDIA A10G, 96GB VRAM), tainted `nvidia.com/gpu`, pinned to `us-west-2a` |
 | EKS Addons | VPC-CNI, CoreDNS, kube-proxy, EBS CSI Driver |
 | IAM / IRSA | Scoped roles for EBS CSI + LB Controller via OIDC |
 | ArgoCD | Helm chart v7.7.16, bootstraps root app pointing to `argocd/apps/` |
@@ -670,7 +622,7 @@ Waves -2 through 2 set up the mesh and storage before Ollama starts. Waves 5–6
 | 3 | Ollama Deployment (4 GPUs, `strategy: Recreate`), Service (ClusterIP :11434), NetworkPolicy |
 | 4 | Model Loader Job — pulls `qwen3-coder:30b` (~18GB) to EBS PVC |
 
-> **`strategy: Recreate`** is required because the GPU node cannot run two Ollama pods simultaneously (the new pod would remain Pending until the old one terminates). `Recreate` terminates the old pod first.
+> **`strategy: Recreate`** is required because the GPU node cannot run two Ollama pods simultaneously — the new pod would stay Pending until the old one terminates.
 
 ---
 
@@ -698,8 +650,8 @@ Waves -2 through 2 set up the mesh and storage before Ollama starts. Waves 5–6
 | Pod stuck in `Pending` | `kubectl describe pod -n ollama -l app=ollama` | GPU node not ready — wait or check nodegroup scaling |
 | `Insufficient nvidia.com/gpu` | NVIDIA device plugin not ready | `kubectl get ds -n kube-system` — wait for DaemonSet rollout |
 | Model pull fails | `kubectl exec -n ollama deploy/ollama -- df -h /root/.ollama` | Disk full — increase PVC size |
-| Kong returns 401 | Wrong or missing API key | Check header: `apikey`, `x-api-key`, or `Authorization: Bearer <key>`. For Bearer, `deck/kong.yaml` must have `"Bearer <key>"` as a separate credential entry |
-| Kong returns 429 | Rate limit hit | Wait or raise the `minute` limit in `deck/kong.yaml` and re-sync |
+| Kong returns 401 | Wrong or missing API key | Check header: `apikey`, `x-api-key`, or `Authorization: Bearer <key>`. For Bearer, `deck/kong-consumers.yaml` must have `"Bearer <key>"` as a separate credential entry |
+| Kong returns 429 | Rate limit hit | Wait or raise the `minute` limit in `deck/kong-config.yaml` and re-sync |
 | Ollama returns `500 model failed to load` | CUDA INT_MAX overflow | `OLLAMA_CONTEXT_LENGTH` must be set (e.g. `32768`). qwen3moe's default context of 262K tokens × 4 parallel overflows the 2GB CUDA copy kernel limit |
 | NLB not provisioning | `kubectl get gateway -n istio-ingress` | Check LB Controller: `kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller` |
 | TGW attachment stuck `initializing` | Check Konnect UI or poll loop in Phase 2 | RAM share must be ASSOCIATED with Kong's AWS account before the attachment is created — verify with `aws ram get-resource-share-associations` |
@@ -769,26 +721,6 @@ spec:
       command: ["curl", "-s", "http://ollama.ollama.svc.cluster.local:11434/api/tags"]
 EOF
 
-# Verify a model tag exists before updating job.yaml
-# Returns {"status":"pulling manifest"} if valid, {"error":"file does not exist"} if not
-cat <<'EOF' | kubectl apply -f - && sleep 10 && kubectl logs test-model-check -n ollama && kubectl delete pod test-model-check -n ollama
-apiVersion: v1
-kind: Pod
-metadata:
-  name: test-model-check
-  namespace: ollama
-spec:
-  restartPolicy: Never
-  tolerations:
-    - key: CriticalAddonsOnly
-      operator: Exists
-      effect: NoSchedule
-  containers:
-    - name: curl
-      image: curlimages/curl:latest
-      command: ["/bin/sh", "-c", "timeout 5 curl -X POST http://ollama.ollama.svc.cluster.local:11434/api/pull -H 'Content-Type: application/json' -d '{\"name\":\"qwen3-coder:30b\"}' --no-buffer 2>&1 | head -2"]
-EOF
-
 # Storage used by model cache
 kubectl exec -n ollama deploy/ollama -- df -h /root/.ollama
 ```
@@ -799,9 +731,8 @@ kubectl exec -n ollama deploy/ollama -- df -h /root/.ollama
 <summary><strong>EKS Nodes — scheduling and taints</strong></summary>
 
 ```bash
-# Node list with instance types and node groups
-kubectl get nodes -o json | jq -r \
-  '.items[] | "\(.metadata.name) | \(.metadata.labels["node.kubernetes.io/instance-type"]) | \(.metadata.labels["eks.amazonaws.com/nodegroup"])"'
+# Node list with instance types and AZ
+kubectl get nodes -L topology.kubernetes.io/zone,node.kubernetes.io/instance-type
 
 # Why is a pod Pending?
 kubectl describe pod -n <namespace> <pod-name> | tail -20
@@ -818,17 +749,16 @@ kubectl get nodes -o json | jq -r '.items[] | "\(.metadata.name): \(.spec.taints
 Run these after the scale-down commands to confirm billing has stopped:
 
 ```bash
-# Deployment should show 0/0 READY (replicas=0)
+# Deployment should show 0/0 READY
 kubectl get deployment ollama -n ollama
 
 # Pod list — no ollama pod should be Running (Completed model-loader is fine)
 kubectl get pods -n ollama -o wide
 
 # Node list — GPU node (g5.12xlarge) should be gone; only system t3.medium nodes remain
-# SchedulingDisabled means the node is still draining — wait a minute and re-run
 kubectl get nodes -o wide
 
-# GPU nodegroup desired/min/max — desiredSize should be 0
+# GPU nodegroup desired size should be 0
 aws eks describe-nodegroup \
   --cluster-name $(terraform -chdir=terraform output -raw eks_cluster_name) \
   --nodegroup-name $(terraform -chdir=terraform output -raw gpu_node_group_name) \
@@ -836,14 +766,9 @@ aws eks describe-nodegroup \
   --query 'nodegroup.scalingConfig'
 ```
 
-Expected output after a successful scale-down:
-- Deployment: `ollama   0/0`
-- Pods: only `ollama-model-loader-xxxx   Completed`
-- Nodes: two `t3.medium` system nodes, no `g5.12xlarge`
-- scalingConfig: `{"desiredSize": 0, "maxSize": 2, "minSize": 0}`
+Expected: `{"desiredSize": 0, "maxSize": 2, "minSize": 0}`
 
-> **If the pod is `Pending` instead of gone**, the deployment replicas were not set to 0.
-> Fix: `kubectl scale deployment ollama -n ollama --replicas=0`
+> If the pod is `Pending` instead of gone, run: `kubectl scale deployment ollama -n ollama --replicas=0`
 
 </details>
 
@@ -864,10 +789,6 @@ kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controll
 
 # HTTPRoute status
 kubectl get httproutes -A
-
-# NLB hostname (used by 04-post-setup.sh to update deck/kong.yaml)
-kubectl get svc ollama-gateway-istio -n istio-ingress \
-  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
 ```
 
 </details>
@@ -888,26 +809,12 @@ curl -s "https://global.api.konghq.com/v2/cloud-gateways/networks" \
   -H "Authorization: Bearer $KONNECT_TOKEN" | \
   jq -r '.data[] | "\(.id) | \(.name) | \(.state)"'
 
-# Poll network until ready (initializing → ready, ~30 min)
-while true; do
-  STATE=$(curl -s "https://global.api.konghq.com/v2/cloud-gateways/networks" \
-    -H "Authorization: Bearer ${KONNECT_TOKEN}" | \
-    jq -r '.data[] | select(.name == "ollama-eks-network") | .state' 2>/dev/null)
-  echo "[$(date '+%H:%M:%S')] ollama-eks-network: ${STATE:-unknown}"
-  [[ "$STATE" == "ready" ]] && echo "Ready — run ./scripts/04-post-setup.sh" && break
-  sleep 30
-done
-
-# Check TGW attachment state
+# Poll TGW attachment until ready
 NETWORK_ID=$(curl -s "https://global.api.konghq.com/v2/cloud-gateways/networks" \
   -H "Authorization: Bearer $KONNECT_TOKEN" | \
   jq -r '.data[] | select(.name == "ollama-eks-network") | .id')
-
-curl -s "https://global.api.konghq.com/v2/cloud-gateways/networks/${NETWORK_ID}/transit-gateways" \
-  -H "Authorization: Bearer $KONNECT_TOKEN" | jq '.data[] | {id, name, state}'
-
-# Poll TGW attachment until ready
-TGW_ATT_ID=$(curl -s "https://global.api.konghq.com/v2/cloud-gateways/networks/${NETWORK_ID}/transit-gateways" \
+TGW_ATT_ID=$(curl -s \
+  "https://global.api.konghq.com/v2/cloud-gateways/networks/${NETWORK_ID}/transit-gateways" \
   -H "Authorization: Bearer $KONNECT_TOKEN" | jq -r '.data[0].id')
 while true; do
   STATE=$(curl -s \
@@ -919,7 +826,7 @@ while true; do
 done
 
 # Kong config diff (preview changes before sync)
-deck gateway diff deck/kong.yaml \
+deck gateway diff deck/kong-config.yaml \
   --konnect-addr https://${KONNECT_REGION}.api.konghq.com \
   --konnect-token $KONNECT_TOKEN \
   --konnect-control-plane-name kong-cloud-gateway-eks
@@ -936,13 +843,6 @@ deck gateway diff deck/kong.yaml \
 ```bash
 source .env
 KONG_PROXY_URL="<paste-from-konnect-ui>"   # e.g. https://xxxx.gateways.konggateway.com
-
-# Confirm TGW attachment is ready
-NETWORK_ID=$(curl -s "https://global.api.konghq.com/v2/cloud-gateways/networks" \
-  -H "Authorization: Bearer $KONNECT_TOKEN" | \
-  jq -r '.data[] | select(.name == "ollama-eks-network") | .id')
-curl -s "https://global.api.konghq.com/v2/cloud-gateways/networks/${NETWORK_ID}/transit-gateways" \
-  -H "Authorization: Bearer $KONNECT_TOKEN" | jq '.data[] | {name, state}'
 
 # Verify Ollama responds through Kong
 curl -s "https://${KONG_PROXY_URL}/api/tags" \
