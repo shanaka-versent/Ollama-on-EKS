@@ -471,27 +471,28 @@ flowchart TD
 ### Sync Wave Ordering
 
 ```mermaid
+%%{init: {'theme': 'default', 'gantt': {'leftPadding': 160}}}%%
 gantt
     title ArgoCD Sync Wave Deployment Order
     dateFormat X
     axisFormat Wave %s
 
     section Infrastructure
-    Gateway API CRDs (wave -2)                :a1, 0, 1
-    Istio Base CRDs (wave -1)                 :a2, 1, 2
-    istiod + CNI + ztunnel + NVIDIA (wave 0)  :a3, 2, 3
+    Gateway API CRDs (wave -2)     :a1, 0, 1
+    Istio Base CRDs (wave -1)      :a2, 1, 2
+    Istiod + CNI + NVIDIA (wave 0) :a3, 2, 3
 
     section Namespaces & Storage
-    Namespaces ollama + istio-ingress (wave 1) :b1, 3, 4
-    StorageClass gp3 + PVC 200Gi (wave 2)     :b2, 4, 5
+    Namespaces (wave 1)            :b1, 3, 4
+    StorageClass + PVC (wave 2)    :b2, 4, 5
 
     section Applications
-    Ollama Deployment + Service (wave 3)       :c1, 5, 6
-    Model Loader Job qwen3-coder:30b (wave 4)  :c2, 6, 7
+    Ollama Deployment (wave 3)     :c1, 5, 6
+    Model Loader Job (wave 4)      :c2, 6, 7
 
     section Gateway & Routing
-    Istio Gateway internal NLB (wave 5)        :d1, 7, 8
-    HTTPRoutes to Ollama 11434 (wave 6)        :d2, 8, 9
+    Istio Gateway NLB (wave 5)     :d1, 7, 8
+    HTTPRoutes (wave 6)            :d2, 8, 9
 ```
 
 | Wave | Application | What Gets Deployed |
