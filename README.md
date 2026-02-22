@@ -6,7 +6,7 @@ Deploy a fully private Ollama LLM server on AWS EKS with GPU acceleration, expos
 
 ## Architecture
 
-![Architecture Diagram](ollama-on-eks.png)
+<img src="ollama-on-eks.png" width="700" alt="Architecture Diagram"/>
 
 **Traffic flow:**
 ```
