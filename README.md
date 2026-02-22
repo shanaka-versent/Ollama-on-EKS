@@ -255,24 +255,42 @@ Verify the full stack end-to-end — switches Claude to Ollama, tests a prompt, 
 
 ```
 ==> Test 1: Switch Claude to Ollama via Kong
+  → ANTHROPIC_BASE_URL   = https://d509717478.gateways.konggateway.com
+  → ANTHROPIC_AUTH_TOKEN = jFwezt8c...
   ✓ PASS  Claude switched to Ollama mode
 
 ==> Test 2: Kong Gateway reachability
+  → HTTP status  = 200
+  → Models available:
+    qwen3-coder:30b
   ✓ PASS  Kong Gateway reachable (HTTP 200)
 
 ==> Test 3: Send prompt to Ollama — 'What is 2+2?'
+  → Model response = '4'
   ✓ PASS  Ollama returned correct answer (contains '4')
 
 ==> Test 4: Scale down GPU node group
+  → Node group scaling   = {"desiredSize": 0, "maxSize": 2, "minSize": 0}
+  → GPU nodes in cluster = 0
+  → Ollama deployment    = 0/0
   ✓ PASS  GPU node group scaled to 0, GPU node gone
 
 ==> Test 5: Scale up GPU node group
+  → Node group scaling = {"desiredSize": 1, "maxSize": 2, "minSize": 0}
+  → GPU node          = ip-10-0-2-x.us-west-2.compute.internal Ready g5.12xlarge
+  → Ollama pod        = ollama-xxxx Running ip-10-0-2-x
   ✓ PASS  GPU node up, Ollama pod Running
 
 ==> Test 6: Scale down GPU node group (final)
+  → Node group scaling   = {"desiredSize": 0, "maxSize": 2, "minSize": 0}
+  → GPU nodes in cluster = 0
+  → Ollama deployment    = 0/0
   ✓ PASS  GPU node group scaled to 0 cleanly
 
 ==> Test 7: Switch Claude back to remote (Anthropic API)
+  → ANTHROPIC_BASE_URL   = unset
+  → KONG_PROXY_URL       = unset
+  → ANTHROPIC_AUTH_TOKEN = unset
   ✓ PASS  Claude switched back to remote mode
 
   All 7 tests passed
