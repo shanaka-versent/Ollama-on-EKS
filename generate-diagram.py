@@ -51,7 +51,7 @@ with Diagram(
 ):
     # ── Team Members ──────────────────────────────────────────────────────────
     with Cluster("Team — Any Device · Any Location"):
-        claude_code = User("Claude Code\nqwen3-coder:32b")
+        claude_code = User("Claude Code\nqwen3.5:122b")
         api_client  = User("OpenAI-compatible\nClient")
 
     # ── Kong Inc's Managed AWS Account ────────────────────────────────────────
@@ -128,7 +128,7 @@ with Diagram(
                     },
                 ):
                     svc = Svc("ClusterIP  :11434\nnever internet-exposed")
-                    pod = Pod("Ollama Pod\n4× GPU  ·  96 GB VRAM\nqwen3-coder:32b")
+                    pod = Pod("Ollama Pod\n4× GPU  ·  96 GB VRAM\nqwen3.5:122b")
 
             # EBS is an AWS-native service — NOT inside EKS or the K8s namespace.
             # The EBS CSI Driver calls AWS APIs to attach the volume directly to the

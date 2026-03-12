@@ -43,13 +43,13 @@ services:
   #
   # Claude Code usage:
   #   source claude-switch.sh ollama --endpoint https://<KONG_PROXY_URL> --apikey <key>
-  #   claude --model qwen3-coder:30b
+  #   claude --model qwen3.5:122b
   #
   # Direct curl usage:
   #   curl https://<KONG_PROXY_URL>/api/tags -H "apikey: <key>"
   #   curl https://<KONG_PROXY_URL>/v1/chat/completions \
   #     -H "apikey: <key>" -H "Content-Type: application/json" \
-  #     -d '{"model":"qwen3-coder:30b","messages":[{"role":"user","content":"Hello"}]}'
+  #     -d '{"model":"qwen3.5:122b","messages":[{"role":"user","content":"Hello"}]}'
   - name: ollama-direct
     url: http://<YOUR_NLB_DNS>:80
     protocol: http

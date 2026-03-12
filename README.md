@@ -23,7 +23,7 @@ Client → Kong Cloud AI GW (Kong's AWS) --[Transit GW]--> Internal NLB --> Isti
 | Istio Ambient Mesh | Your EKS cluster | L4 mTLS between pods, Gateway API routing |
 | Ollama server | Your EKS GPU node | Model server — runs GPU inference |
 | EBS gp3 (200GB) | Your AWS account | Persists downloaded models across pod restarts |
-| qwen3-coder:30b | Your EKS GPU node | The LLM — 30B MoE model, 18GB on disk |
+| qwen3.5:122b | Your EKS GPU node | The LLM — 122B MoE model (10B active), ~81GB on disk |
 
 ### Request Sequence
 
@@ -66,10 +66,10 @@ sequenceDiagram
     end
 
     OLM->>+EBS: Load model weights (if not already in GPU VRAM)
-    EBS-->>-OLM: qwen3-coder:30b (~18GB)
+    EBS-->>-OLM: qwen3.5:122b (~81GB)
 
     Note over OLM: GPU inference — 4x NVIDIA A10G (96GB VRAM)
-    Note over OLM: Context window: 32K tokens
+    Note over OLM: Context window: 16K tokens
 
     OLM-->>-ZT: Streaming response tokens
     ZT-->>-IGW: mTLS encrypted stream
@@ -145,7 +145,7 @@ This runs `terraform apply` (VPC, EKS, IAM, ArgoCD) then `scripts/01-setup.sh`, 
 # All ArgoCD apps should be Synced / Healthy
 kubectl get applications -n argocd
 
-# Model pull should show "completed" (qwen3-coder:30b is ~20GB, takes 10–30 min)
+# Model pull should show "completed" (qwen3.5:122b is ~81GB, takes 30–60 min)
 kubectl logs -n ollama -l app=ollama-model-loader -f
 
 # Ollama pod should be Running
@@ -203,7 +203,7 @@ openssl rand -hex 32   # generate a strong key
 **Step 6: Verify end-to-end**
 
 ```bash
-# Should return: "qwen3-coder:30b"
+# Should return: "qwen3.5:122b"
 curl -s "https://<KONG_PROXY_URL>/api/tags" \
   -H "apikey: <your-api-key>" | jq '.models[].name'
 ```
@@ -215,7 +215,7 @@ source claude-switch.sh ollama \
   --endpoint https://<KONG_PROXY_URL> \
   --apikey <your-api-key>
 
-claude --model qwen3-coder:30b
+claude --model qwen3.5:122b
 ```
 
 ---
@@ -235,11 +235,11 @@ claude
 source claude-switch.sh ollama \
   --endpoint https://<KONG_PROXY_URL> \
   --apikey <your-api-key>
-claude --model qwen3-coder:30b
+claude --model qwen3.5:122b
 
 # Use Ollama directly via port-forward (single user, no Kong)
 source claude-switch.sh local
-claude --model qwen3-coder:30b
+claude --model qwen3.5:122b
 
 # Check what mode you're in
 source claude-switch.sh status
@@ -262,7 +262,7 @@ Verify the full stack end-to-end — switches Claude to Ollama, tests a prompt, 
 ==> Test 2: Kong Gateway reachability
   → HTTP status  = 200
   → Models available:
-    qwen3-coder:30b
+    qwen3.5:122b
   ✓ PASS  Kong Gateway reachable (HTTP 200)
 
 ==> Test 3: Send prompt to Ollama — 'What is 2+2?'
@@ -312,7 +312,7 @@ The model must fit within the instance VRAM. A model that exceeds VRAM will fail
 |----------|------|------|--------------------|---------|
 | `g5.xlarge` | 1x A10G | 24GB | `qwen2.5-coder:7b`, `codellama:7b` | ~$1.01 |
 | `g5.2xlarge` | 1x A10G | 24GB | `qwen2.5-coder:14b`, `llama3.1:8b` | ~$1.21 |
-| `g5.12xlarge` | 4x A10G | 96GB | `qwen3-coder:30b`, `llama3.1:70b` | ~$5.67 |
+| `g5.12xlarge` | 4x A10G | 96GB | `qwen3.5:122b`, `qwen3-coder:30b` | ~$5.67 |
 | `p4d.24xlarge` | 8x A100 | 320GB | `llama3.1:405b`, largest models | ~$32.77 |
 
 **Rule of thumb:** model size in GB ≈ parameter count × 0.5 (4-bit quantised). A 32B model needs ~18–20GB VRAM; 70B needs ~40GB. Leave headroom for KV cache.
@@ -448,7 +448,7 @@ flowchart TD
         W1["Wave  1 · Namespaces: ollama · istio-ingress"]
         W2["Wave  2 · StorageClass gp3 · PVC 200Gi"]
         W3["Wave  3 · Ollama Deployment · Service · NetworkPolicy"]
-        W4["Wave  4 · Model Loader Job — qwen3-coder:30b ~18GB"]
+        W4["Wave  4 · Model Loader Job — qwen3.5:122b ~81GB"]
         W5["⚠️ Wave  5 · Istio Gateway → internal NLB\nDegraded until TLS secret exists"]
         W6["Wave  6 · HTTPRoutes → ollama:11434"]
         W_2 --> W_1 --> W0 --> W1 --> W2 --> W3 --> W4 --> W5 --> W6
@@ -541,7 +541,7 @@ gantt
 | 1 | `namespaces` | `ollama`, `istio-ingress` namespaces labelled `istio.io/dataplane-mode: ambient` |
 | 2 | `ollama-storage` | StorageClass `gp3` (Retain, WaitForFirstConsumer) + PVC 200Gi |
 | 3 | `ollama` | Deployment (4 GPUs, `strategy: Recreate`), Service (ClusterIP :11434), NetworkPolicy |
-| 4 | `model-loader` | Job: pulls `qwen3-coder:30b` (~18GB) to EBS PVC |
+| 4 | `model-loader` | Job: pulls `qwen3.5:122b` (~81GB) to EBS PVC |
 | 5 | `gateway` | Istio Gateway → AWS LB Controller provisions internal NLB ⚠️ requires TLS cert from `02-generate-certs.sh` |
 | 6 | `httproutes` | HTTPRoute: `/*` → `ollama.ollama.svc.cluster.local:11434` |
 
@@ -592,8 +592,8 @@ sequenceDiagram
         Note over ARGO,K8S: Waves 3–4 — Ollama + Model Loader
         ARGO->>K8S: Deployment (4 GPUs, strategy Recreate) + Service + NetworkPolicy
         K8S-->>ARGO: Synced (pod Running once GPU node Ready)
-        ARGO->>K8S: Job: poll /api/tags then POST /api/pull qwen3-coder:30b
-        Note right of K8S: Downloads ~18GB to EBS PVC (10-30 min)
+        ARGO->>K8S: Job: poll /api/tags then POST /api/pull qwen3.5:122b
+        Note right of K8S: Downloads ~81GB to EBS PVC (30-60 min)
         K8S-->>ARGO: Job Completed
     end
 
@@ -658,7 +658,7 @@ Waves -2 through 2 set up the mesh and storage before Ollama starts. Waves 5–6
 | Wave | What |
 |------|------|
 | 3 | Ollama Deployment (4 GPUs, `strategy: Recreate`), Service (ClusterIP :11434), NetworkPolicy |
-| 4 | Model Loader Job — pulls `qwen3-coder:30b` (~18GB) to EBS PVC |
+| 4 | Model Loader Job — pulls `qwen3.5:122b` (~81GB) to EBS PVC |
 
 > **`strategy: Recreate`** is required because the GPU node cannot run two Ollama pods simultaneously — the new pod would stay Pending until the old one terminates.
 
@@ -885,19 +885,19 @@ KONG_PROXY_URL="<paste-from-konnect-ui>"   # e.g. https://xxxx.gateways.konggate
 # Verify Ollama responds through Kong
 curl -s "https://${KONG_PROXY_URL}/api/tags" \
   -H "apikey: <your-api-key>" | jq '.models[].name'
-# Expected: "qwen3-coder:30b"
+# Expected: "qwen3.5:122b"
 
 # Test OpenAI-compatible chat completions
 curl -s "https://${KONG_PROXY_URL}/v1/chat/completions" \
   -H "apikey: <your-api-key>" \
   -H "Content-Type: application/json" \
-  -d '{"model":"qwen3-coder:30b","messages":[{"role":"user","content":"Hello"}]}'
+  -d '{"model":"qwen3.5:122b","messages":[{"role":"user","content":"Hello"}]}'
 
 # Connect Claude Code
 source claude-switch.sh ollama \
   --endpoint "https://${KONG_PROXY_URL}" \
   --apikey <your-api-key>
-claude --model qwen3-coder:30b
+claude --model qwen3.5:122b
 ```
 
 </details>

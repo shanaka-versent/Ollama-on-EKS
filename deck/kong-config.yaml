@@ -42,7 +42,7 @@ services:
   #
   # Claude Code usage:
   #   source claude-switch.sh ollama --endpoint https://<KONG_PROXY_URL> --apikey <key>
-  #   claude --model qwen3-coder:30b
+  #   claude --model qwen3.5:122b
   #
   # Direct curl usage:
   #   curl https://<KONG_PROXY_URL>/api/tags -H "apikey: <key>"

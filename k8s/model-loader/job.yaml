@@ -1,7 +1,7 @@
-# Model Loader Job — pulls qwen3-coder:30b into persistent EBS storage
+# Model Loader Job — pulls qwen3.5:122b into persistent EBS storage
 # Runs once after Ollama is ready (Wave 4, after Wave 3 Ollama deployment).
 # The model is stored on the 200Gi EBS PVC and survives pod restarts.
-# Pull time: ~10-20 minutes depending on network (model is ~20GB compressed).
+# Pull time: ~30-60 minutes depending on network (model is ~81GB).
 #
 # To change the model:
 #   1. Update OLLAMA_MODEL below
@@ -34,7 +34,7 @@ spec:
           image: curlimages/curl:latest
           env:
             - name: OLLAMA_MODEL
-              value: "qwen3-coder:30b"
+              value: "qwen3.5:122b"
             - name: OLLAMA_URL
               value: "http://ollama.ollama.svc.cluster.local:11434"
           command:

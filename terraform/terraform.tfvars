@@ -31,7 +31,7 @@ system_node_instance_type = "t3.medium"
 system_node_min_count     = 1
 system_node_max_count     = 3
 
-# GPU Nodes (g5.12xlarge = 4x NVIDIA A10G, 96GB VRAM — runs 32B models)
+# GPU Nodes (g5.12xlarge = 4x NVIDIA A10G, 96GB VRAM — runs up to 122B MoE models)
 enable_gpu_node_pool   = true
 gpu_node_count         = 1
 gpu_node_instance_type = "g5.12xlarge"
@@ -42,7 +42,7 @@ gpu_capacity_type      = "ON_DEMAND"
 
 # Ollama
 ollama_namespace         = "ollama"
-ollama_model             = "qwen3-coder:32b"
+ollama_model             = "qwen3.5:122b"
 model_storage_size       = "200Gi"
 gpu_count                = 4
 ollama_memory_limit      = "96Gi"
@@ -50,8 +50,8 @@ ollama_memory_request    = "64Gi"
 ollama_cpu_limit         = 16
 ollama_cpu_request       = 8
 ollama_keep_alive        = "24h"
-ollama_num_parallel      = 4
-ollama_max_loaded_models = 2
+ollama_num_parallel      = 2
+ollama_max_loaded_models = 1
 auto_pull_model          = true
 
 # Kong Cloud AI Gateway

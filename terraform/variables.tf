@@ -140,9 +140,9 @@ variable "ollama_namespace" {
 }
 
 variable "ollama_model" {
-  description = "Model to auto-pull (e.g., qwen3-coder:30b, llama3.1:70b, codestral:22b)"
+  description = "Model to auto-pull (e.g., qwen3.5:122b, qwen3-coder:30b, llama3.1:70b)"
   type        = string
-  default     = "qwen3-coder:30b"
+  default     = "qwen3.5:122b"
 }
 
 variable "model_storage_size" {

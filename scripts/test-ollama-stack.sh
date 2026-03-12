@@ -58,7 +58,7 @@ ENV_FILE="$ROOT_DIR/.env"
 
 KONG_PROXY_URL="${KONG_PROXY_URL:-https://d509717478.gateways.konggateway.com}"
 KONG_API_KEY="${KONG_API_KEY:-jFwezt8cwc8skNQnfCLN}"
-MODEL="${MODEL:-qwen3-coder:30b}"
+MODEL="${MODEL:-qwen3.5:122b}"
 AWS_PROFILE="${AWS_PROFILE:-stax-stax-au1-versent-innovation}"
 
 export AWS_PROFILE
