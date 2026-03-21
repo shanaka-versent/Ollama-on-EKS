@@ -1,0 +1,1602 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ollama on EKS — README</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>
+  document.addEventListener('DOMContentLoaded', function() {
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: 'default',
+      securityLevel: 'loose',
+      sequence: { diagramMarginX: 20, diagramMarginY: 10, actorMargin: 60, width: 180, height: 50 },
+      flowchart: { htmlLabels: true, curve: 'basis' },
+      gantt: { leftPadding: 160 }
+    });
+  });
+</script>
+<style>
+  :root {
+    --bg: #ffffff;
+    --text: #1a1a2e;
+    --text-secondary: #555;
+    --accent: #5C4EE5;
+    --accent-light: #E8E6FF;
+    --border: #e0e0e0;
+    --code-bg: #f6f8fa;
+    --table-header: #f0f0f5;
+    --table-stripe: #fafafa;
+    --success: #2E8B57;
+    --warning: #FF9900;
+    --card-shadow: 0 2px 8px rgba(0,0,0,0.08);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.7;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 40px 24px;
+  }
+
+  /* Header / Title */
+  h1 {
+    font-size: 2.4em;
+    font-weight: 700;
+    color: var(--accent);
+    margin-bottom: 12px;
+    padding-bottom: 12px;
+    border-bottom: 3px solid var(--accent);
+  }
+
+  h2 {
+    font-size: 1.6em;
+    font-weight: 600;
+    color: var(--text);
+    margin-top: 48px;
+    margin-bottom: 16px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid var(--border);
+  }
+
+  h3 {
+    font-size: 1.25em;
+    font-weight: 600;
+    color: var(--text);
+    margin-top: 32px;
+    margin-bottom: 12px;
+  }
+
+  h4 {
+    font-size: 1.05em;
+    font-weight: 600;
+    margin-top: 24px;
+    margin-bottom: 8px;
+  }
+
+  p {
+    margin-bottom: 16px;
+    color: var(--text);
+  }
+
+  a {
+    color: var(--accent);
+    text-decoration: none;
+  }
+  a:hover {
+    text-decoration: underline;
+  }
+
+  hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 40px 0;
+  }
+
+  /* Code */
+  code {
+    font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', Consolas, monospace;
+    font-size: 0.88em;
+    background: var(--code-bg);
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: #c7254e;
+  }
+
+  pre {
+    background: #1e1e2e;
+    color: #cdd6f4;
+    border-radius: 8px;
+    padding: 16px 20px;
+    overflow-x: auto;
+    margin-bottom: 20px;
+    line-height: 1.5;
+    box-shadow: var(--card-shadow);
+  }
+
+  pre code {
+    background: none;
+    color: inherit;
+    padding: 0;
+    font-size: 0.85em;
+  }
+
+  /* Tables */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 24px;
+    font-size: 0.92em;
+    box-shadow: var(--card-shadow);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  thead th {
+    background: var(--table-header);
+    font-weight: 600;
+    text-align: left;
+    padding: 12px 16px;
+    border-bottom: 2px solid var(--border);
+    white-space: nowrap;
+  }
+
+  tbody td {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+
+  tbody tr:nth-child(even) {
+    background: var(--table-stripe);
+  }
+
+  tbody tr:hover {
+    background: var(--accent-light);
+  }
+
+  /* Blockquotes */
+  blockquote {
+    border-left: 4px solid var(--accent);
+    background: var(--accent-light);
+    padding: 12px 20px;
+    margin: 16px 0;
+    border-radius: 0 8px 8px 0;
+    color: var(--text);
+  }
+
+  blockquote p {
+    margin-bottom: 0;
+  }
+
+  /* Lists */
+  ul, ol {
+    padding-left: 24px;
+    margin-bottom: 16px;
+  }
+
+  li {
+    margin-bottom: 6px;
+  }
+
+  /* Mermaid diagrams */
+  .mermaid {
+    background: #fafbfc;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    margin: 20px 0;
+    text-align: center;
+    overflow-x: auto;
+  }
+
+  /* Images */
+  img {
+    max-width: 100%;
+    height: auto;
+    border-radius: 8px;
+    box-shadow: var(--card-shadow);
+    margin: 16px 0;
+  }
+
+  /* Details/Summary */
+  details {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 12px;
+    background: var(--table-stripe);
+  }
+
+  summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--accent);
+  }
+
+  summary:hover {
+    text-decoration: underline;
+  }
+
+  /* Strong emphasis in tables */
+  td strong, th strong {
+    color: var(--accent);
+  }
+
+  /* Responsive */
+  @media (max-width: 768px) {
+    body { padding: 16px; }
+    h1 { font-size: 1.8em; }
+    h2 { font-size: 1.3em; }
+    table { font-size: 0.82em; }
+    pre { padding: 12px; font-size: 0.8em; }
+  }
+
+  /* Print */
+  @media print {
+    body { max-width: 100%; padding: 0; }
+    pre { background: #f6f8fa; color: #333; box-shadow: none; }
+    .mermaid { break-inside: avoid; }
+    h2 { break-before: page; }
+  }
+
+  /* Generated timestamp */
+  .generated-at {
+    text-align: right;
+    font-size: 0.82em;
+    color: var(--text-secondary);
+    margin-top: 40px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+  }
+</style>
+</head>
+<body>
+<h1 id="ollama-on-eks">Ollama on EKS</h1>
+<p>Deploy a fully private, air-gapped Ollama LLM server on AWS EKS with GPU acceleration, exposed via CloudFront + WAF + API Gateway. Your code and prompts never leave your AWS account — no third-party LLM provider sees your data.</p>
+<hr />
+<h2 id="architecture">Architecture</h2>
+<h3 id="high-level-architecture">High-Level Architecture</h3>
+<div class="mermaid">flowchart TB
+    subgraph L4["Layer 4 — Edge + Security"]
+        Client([Developer / Client])
+        CF["CloudFront\n+ Shield Standard"]
+        WAF["WAFv2\nRate Limit · IP Allow · Geo-Block\nSQL/XSS · Bot Control"]
+        APIGW["API Gateway\nREST API + x-api-key Auth"]
+    end
+
+    subgraph L1["Layer 1 — VPC (10.0.0.0/16)"]
+        direction TB
+        subgraph pub["Public Subnets"]
+            NAT["NAT Gateway"]
+            IGW["Internet Gateway"]
+        end
+
+        subgraph priv["Private Subnets"]
+            VPCL["VPC Link"]
+            NLB["Internal NLB"]
+
+            subgraph L2["Layer 2 — EKS Cluster (ollama-eks)"]
+                direction TB
+                subgraph L3["Layer 3 — ArgoCD GitOps (Waves 0-7)"]
+                    direction LR
+                    ISTIO["Istio Gateway\nAmbient mTLS"]
+                    OLLAMA["Ollama Pod\nv0.18.2 · 4x A10G"]
+                    EBS["EBS gp3 200GB\n6000 IOPS · 400 MB/s\nSnapshot Pre-loaded"]
+                    WEBUI["Open WebUI v0.8.10\nCognito Auth (MFA)"]
+                    COG["Cognito User Pool\nOAuth/OIDC + TOTP MFA"]
+                    MON["Prometheus + Grafana\nDCGM Exporter"]
+                end
+            end
+        end
+    end
+
+    Client -->|HTTPS| CF
+    CF --> WAF
+    WAF --> CF
+    CF -->|AWS Backbone| APIGW
+    APIGW --> VPCL
+    VPCL --> NLB
+    NLB --> ISTIO
+    ISTIO -->|mTLS| OLLAMA
+    OLLAMA --> EBS
+    WEBUI -->|port 11434| OLLAMA
+
+    style L4 fill:#fff3e0,stroke:#ff9800,stroke-width:2px
+    style L1 fill:#e8f5e9,stroke:#4caf50,stroke-width:2px
+    style L2 fill:#e3f2fd,stroke:#2196f3,stroke-width:2px
+    style L3 fill:#f3e5f5,stroke:#9c27b0,stroke-width:2px
+    style pub fill:#f1f8e9,stroke:#8bc34a
+    style priv fill:#e0f2f1,stroke:#009688
+    style CF fill:#ff9800,color:#fff
+    style WAF fill:#f44336,color:#fff
+    style APIGW fill:#7b1fa2,color:#fff
+    style OLLAMA fill:#1565c0,color:#fff
+    style EBS fill:#2e7d32,color:#fff
+</div>
+
+<p><strong>Traffic flow:</strong></p>
+<pre class="highlight"><code>Client → CloudFront (WAF rate limit + IP allowlist + geo-block) → API Gateway (REST API, x-api-key auth) → VPC Link → Internal NLB → Istio Gateway (mTLS) → Ollama Pod
+</code></pre>
+
+<p>All traffic stays on the AWS backbone. No Transit Gateway. No third-party gateway.</p>
+<h3 id="architecture-4-layers">Architecture (4 Layers)</h3>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>What</th>
+<th>Components</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1 — Cloud Foundations</td>
+<td>VPC (10.0.0.0/16)</td>
+<td>Private/public subnets, NAT Gateway, Internet Gateway</td>
+</tr>
+<tr>
+<td>2 — EKS Cluster</td>
+<td>Kubernetes + GPU</td>
+<td>EKS Control Plane, system nodes (t3.medium), GPU nodes (g5.12xlarge, 4x A10G), EBS CSI Driver, LB Controller</td>
+</tr>
+<tr>
+<td>3 — GitOps</td>
+<td>ArgoCD waves 0-6</td>
+<td>Wave 0: Istio + NVIDIA → Waves 1-2: Namespaces + Storage → Waves 3-4: Ollama + Model Loader → Waves 5-6: Gateway + Routes</td>
+</tr>
+<tr>
+<td>4 — Edge + Security</td>
+<td>CloudFront + WAF + API GW</td>
+<td>CloudFront (+ WAF + Shield Standard) → API Gateway (REST API, x-api-key) → VPC Link → Internal NLB → Istio Gateway (mTLS) → Ollama Pod</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Where</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CloudFront + WAF</td>
+<td>AWS edge</td>
+<td>DDoS protection, rate limiting, IP allowlist, geo-blocking</td>
+</tr>
+<tr>
+<td>API Gateway (REST API)</td>
+<td>Your AWS account</td>
+<td>REST API with native API key auth, VPC Link to private NLB</td>
+</tr>
+<tr>
+<td>Internal NLB</td>
+<td>Your EKS VPC</td>
+<td>Only reachable via VPC Link — not internet-facing</td>
+</tr>
+<tr>
+<td>Istio Ambient Mesh</td>
+<td>Your EKS cluster</td>
+<td>L4 mTLS between pods, Gateway API routing</td>
+</tr>
+<tr>
+<td>Ollama server</td>
+<td>Your EKS GPU node</td>
+<td>Model server — runs GPU inference</td>
+</tr>
+<tr>
+<td>EBS gp3 (200GB)</td>
+<td>Your AWS account</td>
+<td>Pre-loaded models via EBS snapshot, 6000 IOPS, 400 MB/s</td>
+</tr>
+<tr>
+<td>qwen3.5:122b-a10b</td>
+<td>Your EKS GPU node</td>
+<td>Default model — MoE 122B total, 10B active params</td>
+</tr>
+</tbody>
+</table>
+<h3 id="default-model-flagship-qwen35122b-a10b">Default Model: Flagship (qwen3.5:122b-a10b)</h3>
+<p>Three tiers available, all pre-downloaded to EBS via snapshot:</p>
+<table>
+<thead>
+<tr>
+<th>Tier</th>
+<th>Model</th>
+<th>GPU</th>
+<th>Spot Cost</th>
+<th>When to Use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1 (Fallback)</td>
+<td><code>qwen3.5:27b</code></td>
+<td>g5.xlarge (1x A10G)</td>
+<td>$0.35/hr</td>
+<td>Fast iteration, debugging, simple edits</td>
+</tr>
+<tr>
+<td>2 (Code)</td>
+<td><code>qwen3-coder:30b-a3b</code></td>
+<td>g5.xlarge (1x A10G)</td>
+<td>$0.35/hr</td>
+<td>Pure coding tasks, very fast MoE inference</td>
+</tr>
+<tr>
+<td>3 (Default)</td>
+<td><code>qwen3.5:122b-a10b</code></td>
+<td>g5.12xlarge (4x A10G)</td>
+<td>$1.90/hr</td>
+<td>All tasks — maximum quality</td>
+</tr>
+</tbody>
+</table>
+<p>Switch tiers using the <code>/model</code> command in Claude Code, or directly via:</p>
+<pre class="highlight"><code class="language-bash">./switch-model.sh use 3   # flagship (default)
+./switch-model.sh use 1   # fallback
+./switch-model.sh use 2   # code-optimised
+</code></pre>
+
+<h3 id="key-design-decisions">Key Design Decisions</h3>
+<table>
+<thead>
+<tr>
+<th>Decision</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CloudFront + WAF + API Gateway (not Kong)</td>
+<td>99% cost reduction ($756/mo → $6/mo), adds DDoS protection, eliminates Transit Gateway dependency</td>
+</tr>
+<tr>
+<td>EKS Auto Mode</td>
+<td>Replaces manual Karpenter + NVIDIA device plugin — fewer moving parts, AWS manages GPU node lifecycle and drivers</td>
+</tr>
+<tr>
+<td>30-min idle window (<code>consolidateAfter: 30m</code>)</td>
+<td>Nodes stay warm through coffee breaks and short meetings, terminate after 30 min idle to save costs</td>
+</tr>
+<tr>
+<td>EBS snapshots for model weights</td>
+<td>Pre-loaded models on disk, no internet needed for model loading (air-gap compliant), cold start ~3 min instead of 15-25 min</td>
+</tr>
+<tr>
+<td>High-throughput gp3 (400 MB/s + 6000 IOPS)</td>
+<td>Fast model loading from snapshot — critical for reasonable cold start times</td>
+</tr>
+<tr>
+<td>Self-managed observability</td>
+<td>Prometheus + Grafana + DCGM Exporter, all air-gapped (no AMP/AMG dependency)</td>
+</tr>
+<tr>
+<td>Spot with on-demand fallback</td>
+<td>Karpenter tries spot first (~65% savings), auto-falls back to on-demand if reclaimed</td>
+</tr>
+<tr>
+<td>Dual-mode pipeline</td>
+<td>Two separate stacks (not config flag) — compliance by design, eliminates human error risk</td>
+</tr>
+<tr>
+<td>Ollama image pinned to v0.18.2</td>
+<td>Reproducible builds, no surprise breaking changes from <code>:latest</code></td>
+</tr>
+<tr>
+<td>Cognito authentication for Open WebUI</td>
+<td>Centralized auth with MFA — Cognito handles signup, login, TOTP, and role mapping. No local passwords stored in Open WebUI</td>
+</tr>
+<tr>
+<td>cert-manager (not manual openssl)</td>
+<td>Automated TLS lifecycle — 90d duration, 30d auto-renewal, no manual cert rotation</td>
+</tr>
+</tbody>
+</table>
+<h3 id="dual-mode-pipeline-two-separate-stacks">Dual-Mode Pipeline — Two Separate Stacks</h3>
+<p>Two separate deployment stacks — deploy one or the other per engagement. Separate stacks ensure compliance by design and eliminate human error risk.</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Stack A (Fully Air-Gapped)</th>
+<th>Stack B (Hybrid — Local + Bedrock)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Phase 1 (Analysis)</td>
+<td>Local Ollama/Qwen</td>
+<td>Local Ollama/Qwen</td>
+</tr>
+<tr>
+<td>Phase 2 (Report Gen)</td>
+<td>Local Ollama/Qwen</td>
+<td>Latest Claude Opus via AWS Bedrock</td>
+</tr>
+<tr>
+<td>Sanitisation</td>
+<td>Yes — regex + LLM review</td>
+<td>Yes — regex + LLM review</td>
+</tr>
+<tr>
+<td>Internet Egress</td>
+<td>None</td>
+<td>Bedrock VPC endpoint only</td>
+</tr>
+<tr>
+<td>Best For</td>
+<td>Defence, healthcare, government</td>
+<td>Client-approved cloud access</td>
+</tr>
+</tbody>
+</table>
+<p>Stack A physically cannot reach Bedrock — no credentials, no egress rules, no API client.</p>
+<p><strong>Data flow:</strong>
+- <strong>Stack A:</strong> Client Data → Phase 1 (Ollama/Qwen) → Sanitisation → Phase 2 (Ollama/Qwen) → Good quality report
+- <strong>Stack B:</strong> Client Data → Phase 1 (Ollama/Qwen) → Sanitisation → Phase 2 (Latest Claude Opus via Bedrock, sanitised findings only) → High quality report</p>
+<div class="mermaid">flowchart LR
+    CD([Client Data])
+
+    subgraph StackA["Stack A — Fully Air-Gapped"]
+        direction LR
+        A1["Phase 1\nAnalysis\n(Ollama/Qwen)"]
+        AS["Sanitisation\nRegex + LLM Review"]
+        A2["Phase 2\nReport Generation\n(Ollama/Qwen)"]
+        AR([Report\nGood Quality])
+    end
+
+    subgraph StackB["Stack B — Hybrid (Local + Bedrock)"]
+        direction LR
+        B1["Phase 1\nAnalysis\n(Ollama/Qwen)"]
+        BS["Sanitisation\nRegex + LLM Review"]
+        B2["Phase 2\nReport Generation\n(Claude Opus via Bedrock)"]
+        BR([Report\nHigh Quality])
+    end
+
+    CD --> A1
+    A1 --> AS
+    AS --> A2
+    A2 --> AR
+
+    CD --> B1
+    B1 --> BS
+    BS -->|Sanitised JSON only\nVPC Endpoint| B2
+    B2 --> BR
+
+    style StackA fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style StackB fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    style AS fill:#fff3e0,stroke:#ff9800
+    style BS fill:#fff3e0,stroke:#ff9800
+    style A2 fill:#66bb6a,color:#fff
+    style B2 fill:#5c4ee5,color:#fff
+    style AR fill:#a5d6a7
+    style BR fill:#b39ddb
+</div>
+
+<p>Deploy Stack B with: <code>terraform apply -var="enable_bedrock=true"</code></p>
+<h4 id="stack-b-bedrock-integration-details">Stack B — Bedrock Integration Details</h4>
+<p>Stack B adds these AWS resources (created by <code>terraform/modules/bedrock-integration/</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Resource</th>
+<th>Details</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>VPC Endpoint</td>
+<td><code>com.amazonaws.ap-southeast-2.bedrock-runtime</code>, Interface type, private subnets, private DNS enabled</td>
+</tr>
+<tr>
+<td>IRSA Role</td>
+<td><code>ollama-orchestrator-bedrock</code> — service account: <code>orchestrator:orchestrator-sa</code></td>
+</tr>
+<tr>
+<td>IAM Policy</td>
+<td><code>bedrock:InvokeModel</code> + <code>bedrock:InvokeModelWithResponseStream</code> on <code>anthropic.claude-*</code></td>
+</tr>
+<tr>
+<td>NetworkPolicy</td>
+<td>Orchestrator namespace: egress to Bedrock VPC endpoint only (Stack A blocks all egress)</td>
+</tr>
+<tr>
+<td>Sanitisation</td>
+<td>Two-pass: (1) regex strips IPs, emails, API keys, ARNs, JWTs, SSH keys, connection strings; (2) local Qwen reviews for semantic leakage. Hard stop if raw data detected</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>The orchestrator is a separate product built on top of the Ollama-on-EKS infrastructure — separate repo, Dockerfile, and CI.</p>
+</blockquote>
+<h3 id="request-sequence">Request Sequence</h3>
+<div class="mermaid">sequenceDiagram
+    participant Dev as Developer
+    participant CF as CloudFront + WAF
+    participant APIGW as API Gateway (REST)
+    participant NLB as Internal NLB
+    participant IGW as Istio Gateway
+    participant ZT as ztunnel (Ambient mTLS)
+    participant OLM as Ollama Pod (4x NVIDIA A10G)
+    participant EBS as EBS Volume (200GB gp3)
+
+    Dev->>CF: POST /v1/chat/completions (HTTPS)
+
+    rect rgb(255, 248, 240)
+        Note over CF: WAF rule chain
+        CF->>CF: Rate limit — 100 req/5min per IP
+        CF->>CF: IP allowlist — corporate CIDRs only
+        CF->>CF: Geo-block — AU + US only
+        CF->>CF: SQL/XSS — AWSManagedRulesCommonRuleSet
+    end
+
+    CF->>+APIGW: HTTPS (AWS backbone)
+
+    rect rgb(245, 240, 255)
+        Note over APIGW: API Key Auth
+        APIGW->>APIGW: Validate x-api-key against usage plan
+        APIGW->>APIGW: Check rate limit + quota per key
+    end
+
+    APIGW->>+NLB: VPC Link (private connectivity)
+    NLB->>+IGW: Forward to Istio Gateway pod
+
+    rect rgb(240, 248, 255)
+        Note over IGW,OLM: Istio Ambient mTLS — transparent L4 encryption
+        IGW->>+ZT: Intercepted by ztunnel (no sidecar needed)
+        ZT->>+OLM: Decrypted request to ollama.ollama.svc:11434
+    end
+
+    OLM->>+EBS: Load model weights (if not already in GPU VRAM)
+    EBS-->>-OLM: qwen3.5:122b-a10b from EBS snapshot
+
+    Note over OLM: GPU inference — 4x NVIDIA A10G (96GB VRAM)
+    Note over OLM: Context window: 32K tokens, 4 parallel requests
+
+    OLM-->>-ZT: Streaming response tokens
+    ZT-->>-IGW: mTLS encrypted stream
+    IGW-->>-NLB: HTTP response
+    NLB-->>-APIGW: Forward back through VPC Link
+    APIGW-->>-CF: Response to CloudFront
+    CF-->>Dev: HTTPS streaming response
+</div>
+
+<hr />
+<h2 id="prerequisites">Prerequisites</h2>
+<h3 id="1-cli-tools">1. CLI Tools</h3>
+<pre class="highlight"><code class="language-bash">brew install awscli terraform kubectl helm
+</code></pre>
+
+<h3 id="2-aws-credentials">2. AWS Credentials</h3>
+<pre class="highlight"><code class="language-bash">aws configure
+# Enter: Access Key ID, Secret Key, Region (ap-southeast-2), Output format (json)
+
+aws sts get-caller-identity   # verify
+</code></pre>
+
+<h3 id="3-gpu-instance-quota">3. GPU Instance Quota</h3>
+<p>Check <strong>AWS Console → Service Quotas → EC2 → Running On-Demand G and VT instances</strong>.
+For <code>g5.12xlarge</code> you need at least 48 vCPUs. Request a quota increase if needed.</p>
+<h3 id="4-s3-backend-bootstrap">4. S3 Backend Bootstrap</h3>
+<p>Before running Terraform, create the state backend:</p>
+<pre class="highlight"><code class="language-bash"># Create S3 bucket (replace &lt;ACCOUNT_ID&gt; with your AWS account ID)
+aws s3api create-bucket \
+  --bucket ollama-eks-tfstate-&lt;ACCOUNT_ID&gt; \
+  --region ap-southeast-2 \
+  --create-bucket-configuration LocationConstraint=ap-southeast-2
+
+aws s3api put-bucket-versioning \
+  --bucket ollama-eks-tfstate-&lt;ACCOUNT_ID&gt; \
+  --versioning-configuration Status=Enabled
+
+# Create DynamoDB lock table
+aws dynamodb create-table \
+  --table-name ollama-eks-tfstate-lock \
+  --attribute-definitions AttributeName=LockID,AttributeType=S \
+  --key-schema AttributeName=LockID,KeyType=HASH \
+  --billing-mode PAY_PER_REQUEST \
+  --region ap-southeast-2
+</code></pre>
+
+<hr />
+<h2 id="quick-start">Quick Start</h2>
+<p>The deployment has two phases. Complete each verification before moving on.</p>
+<hr />
+<h3 id="phase-1-deploy-infrastructure-2030-min">Phase 1 — Deploy Infrastructure (~20–30 min)</h3>
+<p><strong>Option A: Automated deployment (recommended)</strong></p>
+<pre class="highlight"><code class="language-bash">./scripts/deploy-stack-a.sh
+</code></pre>
+
+<p>This single script handles everything: validates prerequisites, bootstraps the S3 backend, runs <code>terraform plan</code> + <code>apply</code>, configures <code>kubectl</code>, waits for ArgoCD waves to sync, and runs air-gap verification.</p>
+<p><strong>Option B: Manual step-by-step</strong></p>
+<pre class="highlight"><code class="language-bash">cd terraform
+terraform init
+terraform plan
+terraform apply
+</code></pre>
+
+<p>This provisions VPC, EKS, IAM, LB Controller, API Gateway, CloudFront + WAF, cert-manager, ArgoCD, and observability. ArgoCD then auto-deploys all Kubernetes workloads in sync wave order.</p>
+<p><strong>Step 2: Create EBS model snapshot (first time only)</strong></p>
+<pre class="highlight"><code class="language-bash">./scripts/create-model-snapshot.sh
+</code></pre>
+
+<p>This launches a temporary GPU instance, pulls all 3 model tiers, snapshots the volume, and terminates the instance. Update <code>k8s/nodepools/gpu-ec2nodeclass.yaml</code> with the output snapshot ID.</p>
+<p><strong>Verify before continuing:</strong></p>
+<pre class="highlight"><code class="language-bash"># All ArgoCD apps should be Synced / Healthy
+kubectl get applications -n argocd
+
+# Ollama pod should be Running
+kubectl get pods -n ollama
+
+# Run air-gap verification
+./scripts/verify-airgap.sh
+</code></pre>
+
+<hr />
+<h3 id="phase-2-connect-5-min">Phase 2 — Connect (~5 min)</h3>
+<p><strong>Step 3: Get your API key</strong></p>
+<pre class="highlight"><code class="language-bash"># Retrieve the auto-generated API key from API Gateway
+API_KEY_ID=$(terraform -chdir=terraform output -raw api_key_id)
+API_KEY=$(aws apigateway get-api-key \
+  --api-key $API_KEY_ID \
+  --include-value --query value --output text)
+echo $API_KEY
+
+# Or view it in the Console: API Gateway → API Keys
+</code></pre>
+
+<p><strong>Step 4: Verify end-to-end via CloudFront</strong></p>
+<pre class="highlight"><code class="language-bash"># Get CloudFront domain from Terraform outputs
+CLOUDFRONT_DOMAIN=$(terraform -chdir=terraform output -raw cloudfront_domain)
+
+# Should return model list (requires API key)
+curl -s &quot;https://${CLOUDFRONT_DOMAIN}/api/tags&quot; \
+  -H &quot;x-api-key: ${API_KEY}&quot; | jq '.models[].name'
+
+# Test chat completions
+curl -s &quot;https://${CLOUDFRONT_DOMAIN}/v1/chat/completions&quot; \
+  -H &quot;Content-Type: application/json&quot; \
+  -H &quot;x-api-key: ${API_KEY}&quot; \
+  -d '{&quot;model&quot;:&quot;qwen3.5:122b-a10b&quot;,&quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;Hello&quot;}]}'
+</code></pre>
+
+<p><strong>Step 5: Connect clients</strong></p>
+<pre class="highlight"><code class="language-bash"># OpenAI SDK / Continue.dev / Open WebUI — API key maps to OPENAI_API_KEY
+export OPENAI_API_BASE=https://${CLOUDFRONT_DOMAIN}
+export OPENAI_API_KEY=${API_KEY}
+
+# Or via kubectl port-forward (direct, no API key needed)
+kubectl port-forward -n ollama svc/ollama 11434:11434
+</code></pre>
+
+<hr />
+<h2 id="day-to-day-usage">Day-to-Day Usage</h2>
+<h3 id="model-tier-switching">Model Tier Switching</h3>
+<p>Use the <code>/model</code> command in Claude Code for an interactive picker, or specify directly:</p>
+<pre class="highlight"><code class="language-bash">/model              # interactive — shows tiers and asks which one
+/model 3            # switch to flagship immediately
+/model fallback     # switch to Tier 1
+/model coder        # switch to Tier 2
+
+# Or via shell script directly:
+./switch-model.sh use 3
+</code></pre>
+
+<h3 id="open-webui-browser-based-chat-interface">Open WebUI (Browser-Based Chat Interface)</h3>
+<p>Open WebUI (v0.8.10) provides a ChatGPT-like interface for Ollama. Deployed on EKS system nodes (no GPU needed), air-gapped via NetworkPolicy. Accessible via CloudFront — no port-forwarding needed.</p>
+<p><strong>Authentication:</strong> All login is handled by <strong>AWS Cognito</strong> (OAuth/OIDC). Local login is completely disabled. Users authenticate via Cognito with <strong>mandatory TOTP MFA</strong> (authenticator app). Roles are mapped from Cognito groups to Open WebUI roles automatically.</p>
+<p><strong>Access URL:</strong> <code>https://&lt;CLOUDFRONT_DOMAIN&gt;</code> (e.g., <code>https://d3f4nz5crzf5t8.cloudfront.net</code>)</p>
+<h4 id="user-signup-flow">User Signup Flow</h4>
+<ol>
+<li>User visits CloudFront URL → clicks <strong>"Request Access"</strong></li>
+<li>Redirected to Cognito hosted UI → creates account with email + password</li>
+<li>Sets up TOTP MFA (authenticator app) on first login</li>
+<li>Admin receives email notification via SNS</li>
+<li>Admin adds user to <code>user</code> or <code>admin</code> group in <strong>Cognito Console</strong></li>
+<li>User logs in again → role mapped from Cognito group → access granted</li>
+</ol>
+<blockquote>
+<p><strong>Initial admin:</strong> Bootstrapped via Terraform. Receives temporary password by email. Already in <code>admin</code> group.</p>
+</blockquote>
+<h4 id="roles-and-model-access">Roles and Model Access</h4>
+<table>
+<thead>
+<tr>
+<th>Role</th>
+<th>Model Access</th>
+<th>How to Assign</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Admin</strong></td>
+<td>All 3 tiers visible in model selector</td>
+<td>Add to <code>admin</code> group in Cognito Console</td>
+</tr>
+<tr>
+<td><strong>User</strong></td>
+<td>Flagship only (<code>qwen3.5:122b-a10b</code>)</td>
+<td>Add to <code>user</code> group in Cognito Console</td>
+</tr>
+</tbody>
+</table>
+<p>Model switching is <strong>restricted to admins only</strong> — regular users see only the default flagship model, preventing accidental model swaps that would spin up additional GPU nodes.</p>
+<h4 id="managing-users-cognito-console">Managing Users (Cognito Console)</h4>
+<table>
+<thead>
+<tr>
+<th>Action</th>
+<th>How</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>View users</td>
+<td>AWS Console → Cognito → User Pools → <code>ollama-webui</code></td>
+</tr>
+<tr>
+<td>Approve new user</td>
+<td>Cognito Console → Users → select user → Groups → Add to <code>user</code> or <code>admin</code></td>
+</tr>
+<tr>
+<td>Promote to admin</td>
+<td>Cognito Console → Users → select user → Groups → Add to <code>admin</code></td>
+</tr>
+<tr>
+<td>Reset password/MFA</td>
+<td>Cognito Console → Users → select user → Actions</td>
+</tr>
+<tr>
+<td>Disable user</td>
+<td>Cognito Console → Users → select user → Disable</td>
+</tr>
+</tbody>
+</table>
+<p>To change the locked model for regular users, update <code>MODEL_FILTER_LIST</code> in <code>k8s/open-webui/deployment.yaml</code> and redeploy. Admins can also switch the cluster-wide default via <code>./switch-model.sh use &lt;tier&gt;</code>.</p>
+<h3 id="observability-prometheus-grafana">Observability (Prometheus + Grafana)</h3>
+<p>Self-managed, air-gapped monitoring — no AWS managed services (AMP/AMG). GPU metrics stay in-cluster alongside the workloads they monitor.</p>
+<pre class="highlight"><code class="language-bash">kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
+# Open http://localhost:3000
+</code></pre>
+
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>What It Monitors</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Prometheus (kube-prometheus-stack)</td>
+<td>Cluster-wide metrics collection and alerting</td>
+</tr>
+<tr>
+<td>Grafana (4 dashboards)</td>
+<td>GPU metrics, Ollama API metrics, Karpenter node lifecycle, FinOps showback</td>
+</tr>
+<tr>
+<td>DCGM Exporter (DaemonSet)</td>
+<td>NVIDIA GPU metrics — temperature, utilisation, memory</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Alert Rules (6 configured):</strong></p>
+<table>
+<thead>
+<tr>
+<th>Alert</th>
+<th>Threshold</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GPU temperature</td>
+<td>&gt; 85°C</td>
+</tr>
+<tr>
+<td>GPU memory usage</td>
+<td>&gt; 90%</td>
+</tr>
+<tr>
+<td>Ollama pod restarts</td>
+<td>Any restart</td>
+</tr>
+<tr>
+<td>Node not ready</td>
+<td>Node leaves Ready state</td>
+</tr>
+<tr>
+<td>High API error rate</td>
+<td>Elevated 5xx responses</td>
+</tr>
+<tr>
+<td>PV usage</td>
+<td>&gt; 80% capacity</td>
+</tr>
+</tbody>
+</table>
+<p>The monitoring namespace has its own air-gapped NetworkPolicy (<code>k8s/monitoring-networkpolicy.yaml</code>). Grafana has a scoped HTTPS exception for CloudWatch API access (FinOps dashboard).</p>
+<h3 id="finops-showback-dashboard">FinOps Showback Dashboard</h3>
+<p>A 4th Grafana dashboard (<code>FinOps Showback Report</code>) provides per-API-key cost attribution for internal showback. It combines API Gateway metrics from CloudWatch with GPU metrics from Prometheus.</p>
+<pre class="highlight"><code class="language-bash">kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
+# Open http://localhost:3000 → Dashboards → FinOps Showback Report
+</code></pre>
+
+<p>The dashboard is structured so you see the <strong>total cost at a glance</strong>, then drill into the breakdown:</p>
+<table>
+<thead>
+<tr>
+<th>Section</th>
+<th>What You See</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Total Estimated Cost</strong> (always visible)</td>
+<td>Total Cost stat (GPU + Infra combined), GPU Cost (green), Shared Infra (purple), Total Requests, Avg Latency, legend</td>
+</tr>
+<tr>
+<td><strong>GPU Compute Cost</strong> (collapsed — click to expand)</td>
+<td>GPU Hours stat, GPU Node Uptime timeline (= billing hours)</td>
+</tr>
+<tr>
+<td><strong>Shared Infra Cost</strong> (collapsed — click to expand)</td>
+<td>Component breakdown table (EKS $73, Idle $16, EBS $10, CF/WAF $6, gp3 $4 = $109), cost attribution formula</td>
+</tr>
+<tr>
+<td><strong>Per-API-Key Showback</strong> (always visible)</td>
+<td>GPU Cost Share donut (by inference time), Infra Cost Share donut (by request count), Errors per key, Requests over time, Latency per key</td>
+</tr>
+<tr>
+<td><strong>GPU Utilisation</strong> (always visible)</td>
+<td>GPU utilisation %, GPU memory (VRAM) usage</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Cost attribution formula</strong> (shown on the dashboard):</p>
+<ul>
+<li><strong>Per-key GPU cost</strong> = (key's IntegrationLatency / total IntegrationLatency) × GPU spend</li>
+<li><strong>Per-key shared infra</strong> = (key's request count / total requests) × $109/mo fixed</li>
+<li><strong>Per-key total</strong> = GPU cost + shared infra</li>
+</ul>
+<p>Dashboard variables let you adjust the GPU spot rate ($0.35/hr for g5.xlarge, $1.90/hr for g5.12xlarge) and shared infra monthly cost ($109 default).</p>
+<blockquote>
+<p><strong>Prerequisite:</strong> Grafana uses IRSA to access CloudWatch (role: <code>ollama-eks-grafana-cloudwatch</code>). This is auto-provisioned by the observability Terraform module.</p>
+</blockquote>
+<hr />
+<h2 id="cost-management">Cost Management</h2>
+<h3 id="gpu-instance-options">GPU Instance Options</h3>
+<table>
+<thead>
+<tr>
+<th>Instance</th>
+<th>GPUs</th>
+<th>VRAM</th>
+<th>Models</th>
+<th>Spot Cost/hr</th>
+<th>On-Demand/hr</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>g5.xlarge</code></td>
+<td>1x A10G</td>
+<td>24GB</td>
+<td>Tier 1 + 2</td>
+<td>~$0.35</td>
+<td>~$1.01</td>
+</tr>
+<tr>
+<td><code>g5.2xlarge</code></td>
+<td>1x A10G</td>
+<td>24GB</td>
+<td>Tier 1 + 2</td>
+<td>~$0.42</td>
+<td>~$1.21</td>
+</tr>
+<tr>
+<td><code>g5.12xlarge</code></td>
+<td>4x A10G</td>
+<td>96GB</td>
+<td>All tiers (flagship)</td>
+<td>~$1.90</td>
+<td>~$5.67</td>
+</tr>
+</tbody>
+</table>
+<h3 id="monthly-cost-summary">Monthly Cost Summary</h3>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Monthly Cost</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GPU compute (flagship, 8hrs/day weekdays, spot)</td>
+<td>~$304</td>
+</tr>
+<tr>
+<td>30-min idle window overhead</td>
+<td>~$16</td>
+</tr>
+<tr>
+<td>EBS snapshot storage (200GB)</td>
+<td>~$10</td>
+</tr>
+<tr>
+<td>gp3 throughput upgrade (400 MB/s)</td>
+<td>~$4</td>
+</tr>
+<tr>
+<td>EKS control plane</td>
+<td>$73</td>
+</tr>
+<tr>
+<td>CloudFront + WAF + API Gateway</td>
+<td>~$6</td>
+</tr>
+<tr>
+<td>AWS Managed Grafana + AMP (optional)</td>
+<td>~$9-14</td>
+</tr>
+<tr>
+<td><strong>Total</strong></td>
+<td><strong>~$413/mo</strong> (or ~$427/mo with AMG)</td>
+</tr>
+</tbody>
+</table>
+<p>Down from $4,155/mo (24/7 on-demand + Kong) — 90% reduction.</p>
+<h3 id="response-time-expectations">Response Time Expectations</h3>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Wait Time</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Warm node (within 30-min idle window)</td>
+<td>4-6s to first token (flagship)</td>
+</tr>
+<tr>
+<td>Back from &lt;30 min break</td>
+<td>0s (node still warm)</td>
+</tr>
+<tr>
+<td>First request of the day / after 30+ min idle</td>
+<td>~3 min cold start, then 4-6s</td>
+</tr>
+<tr>
+<td>Spot instance reclaimed mid-session</td>
+<td>~2-3 min interruption (auto-recovery)</td>
+</tr>
+</tbody>
+</table>
+<p>Token generation: flagship produces 30-50 tok/s. A 500-token response takes ~10-17s.</p>
+<h3 id="scale-to-zero-stop-gpu-billing">Scale to Zero (Stop GPU Billing)</h3>
+<pre class="highlight"><code class="language-bash">kubectl scale deployment ollama -n ollama --replicas=0
+</code></pre>
+
+<h3 id="resume-next-session">Resume Next Session</h3>
+<p>The EBS snapshot has your models pre-loaded — no re-download needed. Karpenter auto-provisions a new GPU node when the pod is scaled back up:</p>
+<pre class="highlight"><code class="language-bash">kubectl scale deployment ollama -n ollama --replicas=1
+# Wait ~3 min for node provision + model load from snapshot
+</code></pre>
+
+<hr />
+<h2 id="argocd-gitops-pipeline">ArgoCD GitOps Pipeline</h2>
+<p>Terraform provisions ArgoCD during <code>terraform apply</code>. ArgoCD then auto-syncs all Kubernetes workloads from Git using sync waves — no manual <code>kubectl apply</code> needed. Drift is continuously reconciled.</p>
+<h3 id="sync-wave-ordering">Sync Wave Ordering</h3>
+<table>
+<thead>
+<tr>
+<th>Wave</th>
+<th>Application</th>
+<th>What Gets Deployed</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>-2</td>
+<td><code>gateway-api-crds</code></td>
+<td><code>Gateway</code>, <code>HTTPRoute</code>, <code>GRPCRoute</code> CRDs v1.2.0</td>
+</tr>
+<tr>
+<td>-1</td>
+<td><code>istio-base</code></td>
+<td>Istio CRDs and cluster-wide resources</td>
+</tr>
+<tr>
+<td>0</td>
+<td><code>istiod</code>, <code>istio-cni</code>, <code>ztunnel</code>, <code>nvidia-device-plugin</code></td>
+<td>Ambient mesh + GPU plugin</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>namespaces</code></td>
+<td><code>ollama</code>, <code>istio-system</code> namespaces with ambient mesh label</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>ollama-storage</code></td>
+<td>StorageClass <code>gp3</code> (Retain, WaitForFirstConsumer) + PVC 200Gi</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>ollama</code></td>
+<td>Deployment (4 GPUs, <code>strategy: Recreate</code>), Service, NetworkPolicy</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>model-loader</code></td>
+<td>Job: pulls models to EBS PVC</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>gateway</code></td>
+<td>Istio Gateway → AWS LB Controller provisions internal NLB</td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>httproutes</code></td>
+<td>HTTPRoute: <code>/*</code> → <code>ollama.ollama.svc.cluster.local:11434</code></td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>open-webui</code></td>
+<td>Open WebUI v0.8.10, Cognito OAuth/OIDC, model locked to admins</td>
+</tr>
+</tbody>
+</table>
+<div class="mermaid">flowchart LR
+    subgraph W0["Wave -2 to 0"]
+        CRD["Gateway API CRDs"]
+        ISTIO["Istio Base + Istiod\nCNI + ztunnel"]
+        NV["NVIDIA Device Plugin"]
+    end
+
+    subgraph W1["Waves 1-2"]
+        NS["Namespaces\n+ Ambient Labels"]
+        ST["StorageClass gp3\n+ PVC 200Gi"]
+    end
+
+    subgraph W2["Waves 3-4"]
+        OLM["Ollama Deployment\nService + NetworkPolicy"]
+        ML["Model Loader Job"]
+    end
+
+    subgraph W3["Waves 5-7"]
+        GW["Istio Gateway\n→ Internal NLB"]
+        HR["HTTPRoutes"]
+        WUI["Open WebUI"]
+    end
+
+    CRD --> ISTIO --> NV --> NS --> ST --> OLM --> ML --> GW --> HR --> WUI
+
+    style W0 fill:#e8eaf6,stroke:#3f51b5,stroke-width:2px
+    style W1 fill:#e0f7fa,stroke:#00bcd4,stroke-width:2px
+    style W2 fill:#fff3e0,stroke:#ff9800,stroke-width:2px
+    style W3 fill:#e8f5e9,stroke:#4caf50,stroke-width:2px
+</div>
+
+<hr />
+<h2 id="security">Security</h2>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Protection</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>CloudFront + WAF</strong></td>
+<td>Rate limiting (100/5min), IP allowlist, geo-blocking (AU/US), SQL/XSS rules, DDoS protection (Shield Standard)</td>
+</tr>
+<tr>
+<td><strong>Origin Lockdown</strong></td>
+<td>CloudFront sends a shared secret via <code>Referer</code> header; API Gateway resource policy denies requests without it — blocks direct API Gateway access</td>
+</tr>
+<tr>
+<td><strong>API Gateway + API Key</strong></td>
+<td>x-api-key header required (native usage plans + API keys, managed via Console), REST API with VPC Link — no public NLB exposure</td>
+</tr>
+<tr>
+<td><strong>VPC Link</strong></td>
+<td>Private connectivity from API Gateway to internal NLB</td>
+</tr>
+<tr>
+<td><strong>Internal NLB</strong></td>
+<td>Not internet-facing — only reachable via VPC Link</td>
+</tr>
+<tr>
+<td><strong>Istio Ambient</strong></td>
+<td>Automatic L4 mTLS between all pods</td>
+</tr>
+<tr>
+<td><strong>Ollama Service</strong></td>
+<td><code>ClusterIP</code> — never directly exposed outside the cluster</td>
+</tr>
+<tr>
+<td><strong>NetworkPolicy</strong></td>
+<td>Air-gap enforced: ingress from <code>istio-system</code> and <code>istio-ingress</code> on port 11434; egress DNS + intra-cluster only</td>
+</tr>
+<tr>
+<td><strong>AWS VPC</strong></td>
+<td>Nodes in private subnets, NAT for outbound only</td>
+</tr>
+<tr>
+<td><strong>Node Isolation</strong></td>
+<td>System nodes tainted <code>CriticalAddonsOnly</code>, GPU nodes tainted <code>nvidia.com/gpu</code></td>
+</tr>
+<tr>
+<td><strong>EBS Snapshot</strong></td>
+<td>Pre-loaded models — no internet needed for model loading</td>
+</tr>
+<tr>
+<td><strong>Cognito (Open WebUI)</strong></td>
+<td>OAuth/OIDC with mandatory TOTP MFA, role mapping from Cognito groups, admin approval for new signups, no local passwords</td>
+</tr>
+<tr>
+<td><strong>IRSA</strong></td>
+<td>EBS CSI + LB Controller + Bedrock (Stack B) use least-privilege IAM roles via OIDC</td>
+</tr>
+<tr>
+<td><strong>cert-manager</strong></td>
+<td>Automated TLS certificate lifecycle (90d duration, 30d auto-renewal)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="api-key-authentication">API Key Authentication</h3>
+<p>Every request to the Ollama API requires an <code>x-api-key</code> header — same pattern as the Claude API. Keys are managed natively by API Gateway via usage plans, directly from the AWS Console.</p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Details</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Header</td>
+<td><code>x-api-key</code> (required on all routes)</td>
+</tr>
+<tr>
+<td>Management</td>
+<td>AWS Console → API Gateway → Usage Plans → <code>ollama-standard</code> → API Keys</td>
+</tr>
+<tr>
+<td>Validation</td>
+<td>Native API Gateway key validation (no Lambda, no external dependency)</td>
+</tr>
+<tr>
+<td>Per-key features</td>
+<td>Enable/disable, per-key usage metrics, per-plan rate limits + quotas</td>
+</tr>
+<tr>
+<td>Initial key</td>
+<td>Auto-created by Terraform on first deploy</td>
+</tr>
+<tr>
+<td>Disable auth</td>
+<td><code>terraform apply -var="api_key_required=false"</code> removes all key resources</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Managing keys from the Console:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Action</th>
+<th>How</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>View existing keys</td>
+<td>Console → API Gateway → API Keys</td>
+</tr>
+<tr>
+<td>Create new key</td>
+<td>Console → API Gateway → API Keys → Create API Key → Add to <code>ollama-standard</code> usage plan</td>
+</tr>
+<tr>
+<td>Disable a key</td>
+<td>Console → API Gateway → API Keys → Select key → Disable (takes effect immediately)</td>
+</tr>
+<tr>
+<td>Delete a key</td>
+<td>Console → API Gateway → API Keys → Select key → Delete</td>
+</tr>
+<tr>
+<td>View per-key usage</td>
+<td>Console → API Gateway → Usage Plans → <code>ollama-standard</code> → Usage tab</td>
+</tr>
+<tr>
+<td>Set daily/monthly quota</td>
+<td>Console → API Gateway → Usage Plans → <code>ollama-standard</code> → Edit → Quota</td>
+</tr>
+</tbody>
+</table>
+<pre class="highlight"><code class="language-bash"># Retrieve your API key via CLI
+API_KEY=$(aws apigateway get-api-key \
+  --api-key $(terraform output -raw api_key_id) \
+  --include-value --query value --output text)
+
+# Use with OpenAI SDK / Continue.dev
+export OPENAI_API_BASE=https://&lt;CLOUDFRONT_DOMAIN&gt;
+export OPENAI_API_KEY=$API_KEY
+
+# Use with curl
+curl https://&lt;CLOUDFRONT_DOMAIN&gt;/v1/chat/completions \
+  -H &quot;Content-Type: application/json&quot; \
+  -H &quot;x-api-key: $API_KEY&quot; \
+  -d '{&quot;model&quot;:&quot;qwen3.5:122b-a10b&quot;,&quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;Hello&quot;}]}'
+</code></pre>
+
+<blockquote>
+<p><strong>Note:</strong> <code>kubectl port-forward</code> bypasses CloudFront/API Gateway entirely, so no API key is needed for direct cluster access.</p>
+</blockquote>
+<h3 id="key-rotation">Key Rotation</h3>
+<p>Create a new key and disable the old one — zero downtime:</p>
+<pre class="highlight"><code class="language-bash"># Create a new key via CLI (or do this in the Console)
+NEW_KEY_ID=$(aws apigateway create-api-key \
+  --name &quot;ollama-$(date +%Y%m%d)&quot; \
+  --enabled \
+  --query id --output text)
+
+# Add it to the usage plan
+USAGE_PLAN_ID=$(terraform output -raw usage_plan_id)
+aws apigateway create-usage-plan-key \
+  --usage-plan-id $USAGE_PLAN_ID \
+  --key-id $NEW_KEY_ID \
+  --key-type API_KEY
+
+# Get the new key value
+aws apigateway get-api-key --api-key $NEW_KEY_ID --include-value --query value --output text
+
+# Disable the old key (or delete it)
+OLD_KEY_ID=$(terraform output -raw api_key_id)
+aws apigateway update-api-key --api-key $OLD_KEY_ID --patch-operations op=replace,path=/enabled,value=false
+</code></pre>
+
+<hr />
+<h2 id="terraform-cicd">Terraform CI/CD</h2>
+<p>Two GitHub Actions workflows with OIDC federation (no long-lived credentials):</p>
+<table>
+<thead>
+<tr>
+<th>Workflow</th>
+<th>Trigger</th>
+<th>What It Does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>terraform-plan.yml</code></td>
+<td>PR to <code>terraform/**</code></td>
+<td>Runs <code>terraform plan</code>, posts output as PR comment</td>
+</tr>
+<tr>
+<td><code>terraform-apply.yml</code></td>
+<td>Push to main for <code>terraform/**</code></td>
+<td>Runs <code>terraform apply</code> with manual approval (GitHub Environment "production"), then runs <code>verify-airgap.sh</code></td>
+</tr>
+</tbody>
+</table>
+<p>Prerequisites: S3 backend bootstrapped, OIDC federation configured between GitHub and AWS.</p>
+<hr />
+<h2 id="repo-structure">Repo Structure</h2>
+<pre class="highlight"><code>terraform/
+  main.tf                          # Main config — all modules wired together
+  variables.tf                     # All variables with defaults
+  outputs.tf                       # Cluster info, CloudFront domain, commands
+  backend.tf                       # S3 + DynamoDB state locking
+  modules/
+    vpc/                           # VPC, subnets, NAT, IGW
+    iam/                           # Cluster + node IAM roles, IRSA
+    eks/                           # EKS cluster, node groups, addons
+    argocd/                        # ArgoCD Helm + root Application
+    lb-controller/                 # AWS Load Balancer Controller
+    observability/                 # Prometheus + Grafana + DCGM Exporter
+    api-gateway/                   # REST API Gateway + VPC Link + API Keys + origin lockdown
+    cdn-waf/                       # CloudFront + WAFv2 (5 rules) + origin lockdown header
+    cert-manager/                  # cert-manager Helm release
+    cognito/                       # Cognito User Pool, OAuth, MFA, groups, pre-signup Lambda
+    managed-grafana/               # Optional: AMG + AMP (replaces in-cluster Grafana)
+    bedrock-integration/           # Stack B: VPC endpoint + IRSA for Bedrock
+
+k8s/
+  ollama/                          # Deployment, Service, NetworkPolicy (air-gapped)
+  model-loader/                    # Job to pull models
+  nodepools/                       # Karpenter NodePool + EC2NodeClass
+  cert-manager/                    # ClusterIssuer + Certificate
+  open-webui/                      # Open WebUI — Cognito auth, model locked to admins
+  gateway.yaml                     # Istio Gateway
+  httproutes.yaml                  # HTTPRoutes to Ollama
+  monitoring-networkpolicy.yaml    # Monitoring namespace air-gap
+
+argocd/apps/                       # Wave-based Application manifests
+
+scripts/
+  deploy-stack-a.sh                # End-to-end Stack A deployment automation
+  verify-airgap.sh                 # Air-gap compliance verification
+  create-model-snapshot.sh         # EBS snapshot with pre-loaded models
+  generate-readme-html.py          # README.md → README.html converter
+  01-setup.sh                      # Post-terraform cluster setup
+  04-post-setup.sh                 # NLB discovery + endpoint verification
+  scale-up.sh / scale-down.sh      # GPU node scaling helpers
+  test-ollama-stack.sh             # Integration tests
+
+.github/workflows/
+  terraform-plan.yml               # PR → plan → comment
+  terraform-apply.yml              # Merge → apply → verify air-gap
+
+switch-model.sh                    # Model tier switching (repo root)
+
+.claude/skills/
+  readme-sync/SKILL.md             # Skill: keep README + HTML + architecture diagrams in sync
+  model-switch/SKILL.md            # Skill: /model command for interactive tier switching
+</code></pre>
+
+<blockquote>
+<p><strong>Implementation status:</strong> All Terraform modules, K8s manifests, scripts, and workflows listed above are implemented. Stack A (air-gapped) is the default deployment. Set <code>enable_bedrock=true</code> in <code>terraform.tfvars</code> for Stack B (hybrid).</p>
+</blockquote>
+<hr />
+<h2 id="troubleshooting">Troubleshooting</h2>
+<table>
+<thead>
+<tr>
+<th>Problem</th>
+<th>Diagnosis</th>
+<th>Fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Pod stuck in <code>Pending</code></td>
+<td><code>kubectl describe pod -n ollama</code></td>
+<td>GPU node not ready — wait for Karpenter to provision</td>
+</tr>
+<tr>
+<td><code>Insufficient nvidia.com/gpu</code></td>
+<td>NVIDIA device plugin not ready</td>
+<td><code>kubectl get ds -n kube-system</code> — wait for DaemonSet rollout</td>
+</tr>
+<tr>
+<td>Model pull fails</td>
+<td><code>kubectl exec -n ollama deploy/ollama -- df -h</code></td>
+<td>Disk full — check EBS snapshot volume</td>
+</tr>
+<tr>
+<td>Air-gap test fails</td>
+<td><code>curl</code> from pod reaches internet</td>
+<td>Check <code>k8s/ollama/networkpolicy.yaml</code> — should block all egress except DNS</td>
+</tr>
+<tr>
+<td>NLB not provisioning</td>
+<td><code>kubectl get gateway -n istio-system</code></td>
+<td>Check LB Controller logs</td>
+</tr>
+<tr>
+<td>Cold start slow</td>
+<td>Node provisioning takes &gt;5 min</td>
+<td>Verify EBS snapshot ID in EC2NodeClass, check gp3 throughput settings</td>
+</tr>
+<tr>
+<td>Spot reclaimed</td>
+<td>Pod evicted mid-session</td>
+<td>Karpenter auto-provisions replacement — ~2-3 min recovery</td>
+</tr>
+<tr>
+<td>Ollama returns 500</td>
+<td>Model failed to load</td>
+<td>Check <code>OLLAMA_CONTEXT_LENGTH</code> is set to <code>32768</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="debug-commands">Debug Commands</h3>
+<pre class="highlight"><code class="language-bash"># ArgoCD status
+kubectl get applications -n argocd
+
+# Ollama pod logs
+kubectl logs -n ollama deploy/ollama -f
+
+# GPU utilisation
+kubectl exec -n ollama deploy/ollama -- nvidia-smi
+
+# Grafana dashboards
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
+
+# Verify air-gap
+kubectl exec -n ollama deploy/ollama -- curl -s --max-time 5 https://google.com
+</code></pre>
+
+<hr />
+<h2 id="tear-down">Tear Down</h2>
+<pre class="highlight"><code class="language-bash">cd terraform
+terraform destroy
+</code></pre>
+
+<blockquote>
+<p><strong>Note:</strong> EBS snapshots are retained by default. Delete manually if not needed: <code>aws ec2 delete-snapshot --snapshot-id snap-xxx</code></p>
+</blockquote>
+<hr />
+<h2 id="working-conventions">Working Conventions</h2>
+<table>
+<thead>
+<tr>
+<th>Convention</th>
+<th>Details</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Terraform modules</td>
+<td>Each follows: <code>main.tf</code>, <code>variables.tf</code>, <code>outputs.tf</code>, <code>versions.tf</code></td>
+</tr>
+<tr>
+<td>ArgoCD waves</td>
+<td>Respect wave numbering when adding new resources</td>
+</tr>
+<tr>
+<td>NetworkPolicy</td>
+<td>Mandatory for any new namespace — default-deny egress, allow only required traffic</td>
+</tr>
+<tr>
+<td>Air-gap principle</td>
+<td>No pod should reach the internet unless explicitly justified. Verify with <code>verify-airgap.sh</code></td>
+</tr>
+<tr>
+<td>Branch strategy</td>
+<td>Feature branches per sprint, PR to main with Terraform plan output</td>
+</tr>
+<tr>
+<td>Image tags</td>
+<td>Always pin to specific version + digest. Never use <code>:latest</code></td>
+</tr>
+<tr>
+<td>Region</td>
+<td><code>ap-southeast-2</code> (Sydney) throughout. All resources in this region</td>
+</tr>
+<tr>
+<td>Cluster name</td>
+<td><code>ollama-eks</code></td>
+</tr>
+<tr>
+<td>Naming convention</td>
+<td>Resources prefixed with <code>ollama-eks-</code> or <code>ollama-</code> for easy identification</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="companion-documents">Companion Documents</h2>
+<ul>
+<li><strong>Ollama-EKS-Report.html</strong> — Full visual report with architecture diagrams, cost tables, and implementation details</li>
+<li><strong>RECOMMENDATIONS-Ollama-EKS-Improvements.md</strong> — Detailed recommendations for each improvement area</li>
+<li><strong>CLAUDE.md</strong> — Project context file for Claude Code implementation</li>
+<li><strong>switch-model.sh</strong> — Model tier switching script</li>
+</ul>
+<hr />
+<h2 id="more-information">More Information</h2>
+<ul>
+<li><strong>GitHub:</strong> <a href="https://github.com/shanaka-versent/Ollama-on-EKS">shanaka-versent/Ollama-on-EKS</a></li>
+</ul>
+<div class="generated-at">
+  Auto-generated from <code>README.md</code> &mdash; keep in sync using the <code>readme-sync</code> skill.
+</div>
+</body>
+</html>
