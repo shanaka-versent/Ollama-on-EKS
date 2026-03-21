@@ -473,6 +473,7 @@ module "observability" {
   grafana_storage_size      = var.grafana_storage_size
   eks_oidc_provider_arn    = module.eks.oidc_provider_arn
   eks_oidc_issuer_url      = module.eks.oidc_issuer_url
+  enable_grafana           = !var.enable_managed_grafana
 
   tags = var.tags
 

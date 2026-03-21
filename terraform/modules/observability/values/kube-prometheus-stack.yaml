@@ -37,9 +37,10 @@ prometheus:
         effect: NoSchedule
 
 # ──────────────────────────────────────────────────────────────────────
-# Grafana
+# Grafana (disabled when using AWS Managed Grafana)
 # ──────────────────────────────────────────────────────────────────────
 grafana:
+%{ if enable_grafana }
   adminPassword: "${grafana_admin_password}"
 
   tolerations:
@@ -98,6 +99,9 @@ grafana:
       provider: ""
     unified_alerting:
       enabled: true
+%{ else }
+  enabled: false
+%{ endif }
 
 # ──────────────────────────────────────────────────────────────────────
 # Alertmanager

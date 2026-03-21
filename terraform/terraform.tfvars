@@ -74,6 +74,11 @@ waf_rate_limit        = 100
 waf_geo_countries     = ["AU", "US"]
 waf_enable_bot_control = false
 
+# Observability — AWS Managed Grafana (replaces in-cluster Grafana)
+# Requires IAM Identity Center (AWS SSO) to be enabled in the account.
+# When true: creates AMG workspace + AMP, disables in-cluster Grafana pod.
+enable_managed_grafana = true
+
 # ArgoCD GitOps
 # ArgoCD watches argocd/apps/ in the Git repo and deploys everything automatically.
 git_repo_url         = "https://github.com/shanaka-versent/Ollama-on-EKS"

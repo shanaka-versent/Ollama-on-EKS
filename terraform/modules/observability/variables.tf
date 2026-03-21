@@ -51,6 +51,12 @@ variable "eks_oidc_issuer_url" {
   default     = ""
 }
 
+variable "enable_grafana" {
+  description = "Enable in-cluster Grafana. Set false when using AWS Managed Grafana."
+  type        = bool
+  default     = true
+}
+
 variable "tags" {
   description = "Tags to apply to resources"
   type        = map(string)
