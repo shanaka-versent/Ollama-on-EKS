@@ -513,6 +513,39 @@ module "managed_grafana" {
 }
 
 # ==============================================================================
+# COGNITO AUTHENTICATION (Open WebUI — MFA + OAuth)
+# ==============================================================================
+# Centralized auth for Open WebUI: Cognito handles signup, login, MFA.
+# Users self-register, admin approves by adding to Cognito group.
+# Roles (admin/user) mapped from Cognito groups to Open WebUI roles.
+
+module "cognito" {
+  source = "./modules/cognito"
+
+  project_name       = var.project_name
+  cloudfront_domain  = module.cdn_waf.cloudfront_domain
+  admin_email        = var.cognito_admin_email
+  notification_email = var.cognito_notification_email
+  tags               = var.tags
+}
+
+# Kubernetes Secret for Open WebUI OAuth credentials
+resource "kubernetes_secret" "webui_oauth" {
+  metadata {
+    name      = "webui-oauth-cognito"
+    namespace = "open-webui"
+  }
+
+  data = {
+    OAUTH_CLIENT_ID       = module.cognito.client_id
+    OAUTH_CLIENT_SECRET   = module.cognito.client_secret
+    OPENID_PROVIDER_URL   = module.cognito.openid_config_url
+  }
+
+  depends_on = [module.cognito]
+}
+
+# ==============================================================================
 # BEDROCK INTEGRATION (Stack B — Hybrid Mode Only)
 # ==============================================================================
 # Deploy with: terraform apply -var="enable_bedrock=true"

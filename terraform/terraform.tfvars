@@ -79,6 +79,12 @@ waf_enable_bot_control = false
 # When true: creates AMG workspace + AMP, disables in-cluster Grafana pod.
 enable_managed_grafana = true
 
+# Cognito Authentication (Open WebUI)
+# Cognito handles all user management: signup, login, MFA, role assignment.
+# Initial admin receives temporary password via email.
+cognito_admin_email        = "shanaka.jayasundera@versent.com.au"
+cognito_notification_email = "shanaka.jayasundera@versent.com.au"
+
 # ArgoCD GitOps
 # ArgoCD watches argocd/apps/ in the Git repo and deploys everything automatically.
 git_repo_url         = "https://github.com/shanaka-versent/Ollama-on-EKS"

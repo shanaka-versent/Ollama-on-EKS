@@ -113,7 +113,7 @@ grafana:
       check_for_plugin_updates: false
       reporting_enabled: false
     server:
-      root_url: "%(protocol)s://%(domain)s:%(http_port)s/grafana/"
+      root_url: "%(protocol)s://%(domain)s:%(http_port)s/"
     # Disable external calls
     external_image_storage:
       provider: ""

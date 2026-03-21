@@ -146,7 +146,7 @@ output "bedrock_irsa_role_arn" {
 
 output "grafana_port_forward_command" {
   description = "Command to access Grafana dashboards (in-cluster, when managed Grafana is disabled)"
-  value       = var.enable_managed_grafana ? "Managed Grafana enabled — use the URL below instead" : "kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80"
+  value       = "kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80"
 }
 
 output "managed_grafana_url" {
