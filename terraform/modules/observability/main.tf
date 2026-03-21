@@ -17,6 +17,8 @@ resource "helm_release" "kube_prometheus_stack" {
     cluster_name                  = var.eks_cluster_name
     grafana_cloudwatch_role_arn   = var.enable_grafana ? aws_iam_role.grafana_cloudwatch[0].arn : ""
     enable_grafana                = var.enable_grafana
+    amp_remote_write_endpoint     = var.amp_remote_write_endpoint
+    amp_remote_write_role_arn     = var.amp_remote_write_role_arn
   })]
 
   # Wait for CRDs to be ready before DCGM exporter creates ServiceMonitors

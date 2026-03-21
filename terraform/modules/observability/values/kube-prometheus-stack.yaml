@@ -36,6 +36,26 @@ prometheus:
         operator: Exists
         effect: NoSchedule
 
+%{ if amp_remote_write_endpoint != "" }
+    # Remote write to AMP — all metrics forwarded to AWS Managed Prometheus
+    # AMG reads from AMP, so this bridges in-cluster metrics to the managed dashboard
+    remoteWrite:
+      - url: "${amp_remote_write_endpoint}"
+        sigv4:
+          region: ap-southeast-2
+        queueConfig:
+          maxSamplesPerSend: 1000
+          maxShards: 200
+          capacity: 2500
+%{ endif }
+
+%{ if amp_remote_write_role_arn != "" }
+  # IRSA for Prometheus service account — allows remote write to AMP
+  serviceAccount:
+    annotations:
+      eks.amazonaws.com/role-arn: "${amp_remote_write_role_arn}"
+%{ endif }
+
 # ──────────────────────────────────────────────────────────────────────
 # Grafana (disabled when using AWS Managed Grafana)
 # ──────────────────────────────────────────────────────────────────────

@@ -475,6 +475,10 @@ module "observability" {
   eks_oidc_issuer_url      = module.eks.oidc_issuer_url
   enable_grafana           = !var.enable_managed_grafana
 
+  # AMP integration: when managed Grafana is enabled, Prometheus remote-writes to AMP
+  amp_remote_write_endpoint = var.enable_managed_grafana ? module.managed_grafana[0].amp_remote_write_endpoint : ""
+  amp_remote_write_role_arn = var.enable_managed_grafana ? module.managed_grafana[0].prometheus_remote_write_role_arn : ""
+
   tags = var.tags
 
   depends_on = [

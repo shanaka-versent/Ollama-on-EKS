@@ -57,6 +57,18 @@ variable "enable_grafana" {
   default     = true
 }
 
+variable "amp_remote_write_endpoint" {
+  description = "AMP remote write endpoint. When set, Prometheus sends all metrics to AMP for AMG to read."
+  type        = string
+  default     = ""
+}
+
+variable "amp_remote_write_role_arn" {
+  description = "IRSA role ARN for Prometheus remote write to AMP."
+  type        = string
+  default     = ""
+}
+
 variable "tags" {
   description = "Tags to apply to resources"
   type        = map(string)
