@@ -1,0 +1,18 @@
+# Open WebUI — ClusterIP Service
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+apiVersion: v1
+kind: Service
+metadata:
+  name: open-webui
+  namespace: open-webui
+  labels:
+    app: open-webui
+spec:
+  type: ClusterIP
+  selector:
+    app: open-webui
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      protocol: TCP

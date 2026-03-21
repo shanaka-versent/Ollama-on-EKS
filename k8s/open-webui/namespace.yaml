@@ -1,0 +1,9 @@
+# Open WebUI Namespace
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: open-webui
+  labels:
+    app.kubernetes.io/part-of: ollama-private-llm
+    istio.io/dataplane-mode: ambient

@@ -20,6 +20,11 @@ output "public_subnet_ids" {
   value       = module.vpc.public_subnet_ids
 }
 
+output "vpc_cidr" {
+  description = "VPC CIDR block"
+  value       = module.vpc.vpc_cidr
+}
+
 # ==============================================================================
 # LAYER 2: EKS CLUSTER
 # ==============================================================================
@@ -55,7 +60,7 @@ output "gpu_node_group_name" {
 }
 
 # ==============================================================================
-# LAYER 2: ARGOCD BOOTSTRAP + LAYER 3/4: OLLAMA (managed by ArgoCD GitOps)
+# ARGOCD BOOTSTRAP
 # ==============================================================================
 
 output "argocd_admin_password_command" {
@@ -73,6 +78,10 @@ output "argocd_check_apps" {
   value       = "kubectl get applications -n argocd"
 }
 
+# ==============================================================================
+# OLLAMA
+# ==============================================================================
+
 output "ollama_namespace" {
   description = "Ollama Kubernetes namespace (managed by ArgoCD)"
   value       = var.ollama_namespace
@@ -89,53 +98,55 @@ output "ollama_port_forward_command" {
 }
 
 # ==============================================================================
-# KONG CLOUD AI GATEWAY (Transit Gateway)
+# CLOUDFRONT + WAF + API GATEWAY
 # ==============================================================================
 
-output "vpc_cidr" {
-  description = "VPC CIDR block"
-  value       = module.vpc.vpc_cidr
+output "cloudfront_domain" {
+  description = "CloudFront distribution domain name — use this as the Ollama API endpoint"
+  value       = module.cdn_waf.cloudfront_domain
 }
 
-output "transit_gateway_id" {
-  description = "Transit Gateway ID — provide to Konnect when attaching Cloud Gateway network"
-  value       = var.enable_kong ? aws_ec2_transit_gateway.kong[0].id : null
+output "api_gateway_endpoint" {
+  description = "API Gateway invoke URL (fronted by CloudFront)"
+  value       = module.api_gateway.api_endpoint
 }
 
-output "transit_gateway_arn" {
-  description = "Transit Gateway ARN"
-  value       = var.enable_kong ? aws_ec2_transit_gateway.kong[0].arn : null
+output "api_key_retrieve_command" {
+  description = "Command to retrieve the API key"
+  value       = var.api_key_required ? "aws apigateway get-api-key --api-key ${module.api_gateway.api_key_id} --include-value --query value --output text" : "API key auth disabled"
 }
 
-output "ram_share_arn" {
-  description = "RAM Resource Share ARN — provide to Konnect for Transit Gateway attachment"
-  value       = var.enable_kong ? aws_ram_resource_share.kong_tgw[0].arn : null
+output "api_key_id" {
+  description = "ID of the initial API key"
+  value       = module.api_gateway.api_key_id
 }
 
-output "kong_cloud_gateway_setup_command" {
-  description = "Post-terraform steps to finish Kong Cloud AI Gateway setup"
-  value = (var.enable_kong ? <<-EOT
-    # ArgoCD automatically installs Istio + deploys Ollama after terraform apply.
-    # Monitor progress:
-    kubectl get applications -n argocd
+output "usage_plan_id" {
+  description = "Usage plan ID (add keys via Console: API Gateway → Usage Plans)"
+  value       = module.api_gateway.usage_plan_id
+}
 
-    # 1. Generate TLS certs for Istio Gateway (run once after terraform apply):
-    ./scripts/02-generate-certs.sh
+# ==============================================================================
+# BEDROCK INTEGRATION (Stack B Only)
+# ==============================================================================
 
-    # 2. Set up Kong Konnect Cloud AI Gateway:
-    #    (ensure .env has KONNECT_REGION and KONNECT_TOKEN)
-    ./scripts/03-setup-cloud-gateway.sh
+output "bedrock_vpc_endpoint_id" {
+  description = "Bedrock VPC endpoint ID (Stack B only)"
+  value       = var.enable_bedrock ? module.bedrock_integration[0].vpc_endpoint_id : null
+}
 
-    # 3. Discover NLB endpoint + configure Kong routes:
-    ./scripts/04-post-setup.sh
+output "bedrock_irsa_role_arn" {
+  description = "IRSA role ARN for orchestrator Bedrock access (Stack B only)"
+  value       = var.enable_bedrock ? module.bedrock_integration[0].irsa_role_arn : null
+}
 
-    # Auto-populated from Terraform:
-    #   TRANSIT_GATEWAY_ID = ${aws_ec2_transit_gateway.kong[0].id}
-    #   RAM_SHARE_ARN      = ${aws_ram_resource_share.kong_tgw[0].arn}
-    #   EKS_VPC_CIDR       = ${module.vpc.vpc_cidr}
-  EOT
-    : "Kong not enabled"
-  )
+# ==============================================================================
+# OBSERVABILITY
+# ==============================================================================
+
+output "grafana_port_forward_command" {
+  description = "Command to access Grafana dashboards"
+  value       = "kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80"
 }
 
 # ==============================================================================
@@ -143,25 +154,24 @@ output "kong_cloud_gateway_setup_command" {
 # ==============================================================================
 
 output "connect_to_ollama" {
-  description = "Steps to connect Claude Code to your private Ollama"
+  description = "Steps to connect to your private Ollama"
   value       = <<-EOT
 
     ================================================
-    Connect Claude Code to Private EKS Ollama
+    Connect to Private EKS Ollama via CloudFront
     ================================================
 
-    1. Get cluster credentials:
-       ${module.eks.cluster_name != "" ? "aws eks update-kubeconfig --region ${var.region} --name ${module.eks.cluster_name}" : ""}
+    ${var.api_key_required ? "0. Get your API key:\n       API_KEY=$(aws apigateway get-api-key --api-key ${module.api_gateway.api_key_id} --include-value --query value --output text)\n" : ""}
+    1. Via CloudFront (recommended):
+       curl https://${module.cdn_waf.cloudfront_domain}/v1/chat/completions \
+         -H "Content-Type: application/json" \
+         ${var.api_key_required ? "-H \"x-api-key: $API_KEY\" \\\n         " : ""}-d '{"model": "${var.ollama_model}", "messages": [{"role": "user", "content": "Hello"}]}'
 
-    2. Start the tunnel (keep this terminal open):
+    2. Via kubectl port-forward (direct, no API key needed):
        kubectl port-forward -n ${var.ollama_namespace} svc/ollama 11434:11434
-
-    3. In another terminal, run Claude Code:
-       ANTHROPIC_BASE_URL=http://localhost:11434 \
-       ANTHROPIC_AUTH_TOKEN=ollama \
-       ANTHROPIC_API_KEY="" \
-       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
-       claude --model ${var.ollama_model}
+       curl http://localhost:11434/v1/chat/completions \
+         -H "Content-Type: application/json" \
+         -d '{"model": "${var.ollama_model}", "messages": [{"role": "user", "content": "Hello"}]}'
 
     ================================================
     Cost Management
@@ -169,16 +179,8 @@ output "connect_to_ollama" {
 
     Scale GPU to 0 (stop billing):
        kubectl scale deployment ollama -n ${var.ollama_namespace} --replicas=0
-       aws eks update-nodegroup-config --cluster-name ${module.eks.cluster_name} \
-         --nodegroup-name ${module.eks.node_group_gpu_name != null ? module.eks.node_group_gpu_name : "gpu-nodes"} \
-         --scaling-config minSize=0,maxSize=2,desiredSize=0 \
-         --region ${var.region}
 
     Scale GPU back up:
-       aws eks update-nodegroup-config --cluster-name ${module.eks.cluster_name} \
-         --nodegroup-name ${module.eks.node_group_gpu_name != null ? module.eks.node_group_gpu_name : "gpu-nodes"} \
-         --scaling-config minSize=0,maxSize=2,desiredSize=1 \
-         --region ${var.region}
        kubectl scale deployment ollama -n ${var.ollama_namespace} --replicas=1
 
   EOT

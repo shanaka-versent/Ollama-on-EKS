@@ -4,7 +4,7 @@
 # Creates internal NLB for Istio Gateway.
 # The Istio Gateway resource creates a Service type: LoadBalancer
 # with internal NLB annotations. The LB Controller reconciles this
-# into an AWS internal NLB that Kong Cloud Gateway reaches via Transit Gateway.
+# into an AWS internal NLB that API Gateway reaches via VPC Link.
 
 resource "helm_release" "aws_load_balancer_controller" {
   name       = "aws-load-balancer-controller"

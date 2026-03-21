@@ -12,7 +12,6 @@
 #   - OIDC Provider for IRSA
 #   - EKS Addons (VPC-CNI, CoreDNS, kube-proxy, EBS CSI)
 #   - AWS Load Balancer Controller (creates internal NLB from Gateway API resources)
-#   - Transit Gateway (Kong Cloud Gateway <-> EKS private connectivity)
 #
 # Layer 3: GitOps Bootstrap (Terraform)
 #   - ArgoCD installed via Helm (runs on system nodes)
@@ -20,20 +19,21 @@
 #   - ArgoCD auto-deploys in sync wave order:
 #       Wave -2/-1:  Gateway API CRDs + Istio CRDs
 #       Wave 0:      Istiod + Istio CNI + ztunnel + NVIDIA Device Plugin
-#       Wave 1:      Namespaces (ollama, istio-ingress) with ambient mesh label
+#       Wave 1:      Namespaces (ollama, istio-system) with ambient mesh label
 #       Wave 2:      StorageClass + PVC (200Gi EBS gp3)
 #       Wave 3:      Ollama Deployment + Service + NetworkPolicy
-#       Wave 4:      Model Loader Job (pulls qwen3.5:122b)
+#       Wave 4:      Model Loader Job (pulls qwen3.5:122b-a10b)
 #       Wave 5:      Istio Gateway (creates internal NLB)
 #       Wave 6:      HTTPRoutes (routing to Ollama :11434)
 #
-# Layer 4: Kong Cloud Gateway (Scripts + decK)
-#   - TLS certs for Istio Gateway (scripts/02-generate-certs.sh)
-#   - Kong Konnect Cloud Gateway setup (scripts/03-setup-cloud-gateway.sh)
-#   - Kong routes, plugins, consumers (scripts/04-post-setup.sh + deck/kong.yaml)
+# Layer 4: CloudFront + WAF + API Gateway (Terraform)
+#   - API Gateway (HTTP API) → VPC Link → Internal NLB → Istio Gateway → Ollama
+#   - CloudFront (HTTPS only, cache disabled for POST)
+#   - WAFv2 (rate limit, IP allowlist, geo-block, SQL/XSS, optional bot control)
+#   - cert-manager for automated TLS certificate management
 #
 # Traffic Flow:
-# Client --> Kong Cloud GW (Kong's infra) --[Transit GW]--> Internal NLB --> Istio Gateway --> Ollama
+# Client → CloudFront (WAF) → API Gateway (HTTP API) → VPC Link → NLB → Istio → Ollama
 
 locals {
   name_prefix  = "${var.project_name}-${var.environment}"
@@ -132,14 +132,12 @@ resource "aws_eks_addon" "ebs_csi" {
 # ==============================================================================
 # AWS LOAD BALANCER CONTROLLER (creates internal NLB for Istio Gateway)
 # ==============================================================================
-# The Istio Gateway resource (deployed by scripts/01-install-istio.sh) creates
-# a Service type: LoadBalancer with internal NLB annotations. The LB Controller
-# reconciles this into an AWS internal NLB that Kong Cloud Gateway reaches via
-# Transit Gateway.
+# The Istio Gateway resource creates a Service type: LoadBalancer with internal
+# NLB annotations. The LB Controller reconciles this into an AWS internal NLB
+# that API Gateway reaches via VPC Link.
 
 # LB Controller IAM Policy
 resource "aws_iam_policy" "lb_controller" {
-  count       = var.enable_kong ? 1 : 0
   name        = "policy-aws-lb-controller-${local.name_prefix}"
   description = "IAM policy for AWS Load Balancer Controller"
 
@@ -326,8 +324,7 @@ resource "aws_iam_policy" "lb_controller" {
 
 # LB Controller IRSA Role
 resource "aws_iam_role" "lb_controller" {
-  count = var.enable_kong ? 1 : 0
-  name  = "role-aws-lb-controller-${local.name_prefix}"
+  name = "role-aws-lb-controller-${local.name_prefix}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -350,18 +347,16 @@ resource "aws_iam_role" "lb_controller" {
 }
 
 resource "aws_iam_role_policy_attachment" "lb_controller" {
-  count      = var.enable_kong ? 1 : 0
-  policy_arn = aws_iam_policy.lb_controller[0].arn
-  role       = aws_iam_role.lb_controller[0].name
+  policy_arn = aws_iam_policy.lb_controller.arn
+  role       = aws_iam_role.lb_controller.name
 }
 
 # LB Controller Helm Release
 module "lb_controller" {
-  count  = var.enable_kong ? 1 : 0
   source = "./modules/lb-controller"
 
   cluster_name       = module.eks.cluster_name
-  iam_role_arn       = aws_iam_role.lb_controller[0].arn
+  iam_role_arn       = aws_iam_role.lb_controller.arn
   region             = var.region
   vpc_id             = module.vpc.vpc_id
   cluster_dependency = module.eks.cluster_name
@@ -369,90 +364,8 @@ module "lb_controller" {
 
 # Wait for LB Controller to be ready before ArgoCD tries to create the NLB via Gateway
 resource "time_sleep" "wait_for_lb_controller" {
-  count           = var.enable_kong ? 1 : 0
   depends_on      = [module.lb_controller]
   create_duration = "60s"
-}
-
-# ==============================================================================
-# TRANSIT GATEWAY -- Kong Cloud Gateway <-> EKS Private Connectivity
-# ==============================================================================
-# Creates an AWS Transit Gateway and shares it via RAM so Kong's Cloud Gateway
-# can establish private network connectivity to the EKS VPC.
-# Kong Cloud Gateway sends all traffic to the Istio Gateway NLB via this TGW.
-#
-# After terraform apply, ArgoCD automatically installs Istio + deploys Ollama.
-# Then run: scripts/02-generate-certs.sh + scripts/03-setup-cloud-gateway.sh
-# Note: auto_accept_shared_attachments is enabled — no manual acceptance needed
-
-resource "aws_ec2_transit_gateway" "kong" {
-  count       = var.enable_kong ? 1 : 0
-  description = "Transit Gateway for Kong Cloud Gateway connectivity"
-
-  amazon_side_asn                 = 64512
-  auto_accept_shared_attachments  = "enable"
-  default_route_table_association = "enable"
-  default_route_table_propagation = "enable"
-  dns_support                     = "enable"
-  vpn_ecmp_support                = "enable"
-
-  tags = merge(var.tags, {
-    Name = "${local.name_prefix}-kong-tgw"
-  })
-}
-
-# Attach EKS VPC to Transit Gateway
-resource "aws_ec2_transit_gateway_vpc_attachment" "eks" {
-  count              = var.enable_kong ? 1 : 0
-  subnet_ids         = module.vpc.private_subnet_ids
-  transit_gateway_id = aws_ec2_transit_gateway.kong[0].id
-  vpc_id             = module.vpc.vpc_id
-
-  dns_support = "enable"
-
-  tags = merge(var.tags, {
-    Name = "${local.name_prefix}-eks-tgw-attachment"
-  })
-}
-
-# Route Kong Cloud Gateway CIDR (192.168.0.0/16) through Transit Gateway
-resource "aws_route" "kong_cloud_gw" {
-  count = var.enable_kong ? length(module.vpc.private_route_table_ids) : 0
-
-  route_table_id         = module.vpc.private_route_table_ids[count.index]
-  destination_cidr_block = var.kong_cloud_gateway_cidr
-  transit_gateway_id     = aws_ec2_transit_gateway.kong[0].id
-
-  depends_on = [aws_ec2_transit_gateway_vpc_attachment.eks]
-}
-
-# Share Transit Gateway with Kong's AWS account via RAM
-resource "aws_ram_resource_share" "kong_tgw" {
-  count                     = var.enable_kong ? 1 : 0
-  name                      = "${local.name_prefix}-kong-tgw-share"
-  allow_external_principals = true
-
-  tags = merge(var.tags, {
-    Name = "${local.name_prefix}-kong-tgw-share"
-  })
-}
-
-resource "aws_ram_resource_association" "kong_tgw" {
-  count              = var.enable_kong ? 1 : 0
-  resource_arn       = aws_ec2_transit_gateway.kong[0].arn
-  resource_share_arn = aws_ram_resource_share.kong_tgw[0].arn
-}
-
-# Security Group rule: Allow inbound from Kong Cloud Gateway CIDR
-resource "aws_security_group_rule" "allow_kong_cloud_gw" {
-  count             = var.enable_kong ? 1 : 0
-  type              = "ingress"
-  from_port         = 0
-  to_port           = 65535
-  protocol          = "tcp"
-  cidr_blocks       = [var.kong_cloud_gateway_cidr]
-  security_group_id = module.eks.cluster_security_group_id
-  description       = "Allow inbound from Kong Cloud Gateway via Transit Gateway"
 }
 
 # ==============================================================================
@@ -476,4 +389,105 @@ module "argocd" {
     aws_eks_addon.ebs_csi,
     time_sleep.wait_for_lb_controller,
   ]
+}
+
+# ==============================================================================
+# LAYER 4: CLOUDFRONT + WAF + API GATEWAY
+# ==============================================================================
+# Replaces Kong Cloud Gateway — 99% cost reduction ($756/mo → $6/mo).
+# Client → CloudFront (WAF) → API Gateway → VPC Link → NLB → Istio → Ollama
+
+# us-east-1 provider for WAFv2 (CloudFront scope requires us-east-1)
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
+}
+
+module "api_gateway" {
+  source = "./modules/api-gateway"
+
+  project_name     = var.project_name
+  nlb_arn          = var.nlb_arn
+  nlb_dns_name     = var.nlb_dns_name
+  api_key_required = var.api_key_required
+  throttle_rate    = var.throttle_rate
+  throttle_burst   = var.throttle_burst
+  tags             = var.tags
+}
+
+module "cdn_waf" {
+  source = "./modules/cdn-waf"
+
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+  }
+
+  project_name         = var.project_name
+  api_gateway_endpoint = module.api_gateway.api_endpoint
+  allowed_ips          = var.waf_allowed_ips
+  rate_limit           = var.waf_rate_limit
+  geo_countries        = var.waf_geo_countries
+  enable_bot_control   = var.waf_enable_bot_control
+  tags                 = var.tags
+}
+
+# ==============================================================================
+# CERT-MANAGER (Automated TLS — replaces manual openssl certs)
+# ==============================================================================
+
+module "cert_manager" {
+  source = "./modules/cert-manager"
+
+  eks_cluster_endpoint = module.eks.cluster_endpoint
+
+  depends_on = [
+    module.eks,
+    module.argocd,
+  ]
+}
+
+# ==============================================================================
+# OBSERVABILITY (Prometheus + Grafana + DCGM Exporter)
+# ==============================================================================
+# Self-managed, air-gapped — no AWS managed services (AMP/AMG).
+# GPU metrics stay in-cluster alongside the workloads they monitor.
+
+module "observability" {
+  source = "./modules/observability"
+
+  eks_cluster_name         = module.eks.cluster_name
+  grafana_admin_password   = var.grafana_admin_password
+  prometheus_retention_days = var.prometheus_retention_days
+  prometheus_storage_size   = var.prometheus_storage_size
+  grafana_storage_size      = var.grafana_storage_size
+  eks_oidc_provider_arn    = module.eks.oidc_provider_arn
+  eks_oidc_issuer_url      = module.eks.oidc_issuer_url
+
+  tags = var.tags
+
+  depends_on = [
+    module.eks,
+    aws_eks_addon.ebs_csi,
+    module.argocd,
+  ]
+}
+
+# ==============================================================================
+# BEDROCK INTEGRATION (Stack B — Hybrid Mode Only)
+# ==============================================================================
+# Deploy with: terraform apply -var="enable_bedrock=true"
+# Stack A (air-gapped): set enable_bedrock=false (default)
+# Stack B (hybrid):     set enable_bedrock=true
+
+module "bedrock_integration" {
+  count  = var.enable_bedrock ? 1 : 0
+  source = "./modules/bedrock-integration"
+
+  project_name         = var.project_name
+  vpc_id               = module.vpc.vpc_id
+  private_subnet_ids   = module.vpc.private_subnet_ids
+  private_subnet_cidrs = module.vpc.private_subnet_cidrs
+  eks_oidc_provider_arn = module.eks.oidc_provider_arn
+  tags                 = var.tags
 }

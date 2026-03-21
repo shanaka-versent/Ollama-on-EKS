@@ -1,0 +1,87 @@
+# Terraform Plan — Runs on PRs touching terraform/**
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# Uses OIDC federation (no long-lived credentials).
+# Posts plan output as a PR comment for review.
+
+name: Terraform Plan
+
+on:
+  pull_request:
+    paths:
+      - 'terraform/**'
+    branches:
+      - main
+
+permissions:
+  id-token: write   # OIDC federation
+  contents: read
+  pull-requests: write  # Post plan as PR comment
+
+env:
+  TF_DIR: terraform
+  AWS_REGION: ap-southeast-2
+
+jobs:
+  plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::role/github-actions-terraform
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.9"
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform init -no-color
+
+      - name: Terraform Validate
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform validate -no-color
+
+      - name: Terraform Plan
+        id: plan
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform plan -no-color -out=tfplan 2>&1 | tee plan-output.txt
+        continue-on-error: true
+
+      - name: Post Plan to PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const planOutput = fs.readFileSync('${{ env.TF_DIR }}/plan-output.txt', 'utf8');
+            const maxLength = 60000; // GitHub comment limit is 65536
+            const truncated = planOutput.length > maxLength
+              ? planOutput.substring(0, maxLength) + '\n\n... (truncated)'
+              : planOutput;
+
+            const body = `### Terraform Plan Output
+            \`\`\`
+            ${truncated}
+            \`\`\`
+
+            **Plan exit code:** ${{ steps.plan.outcome }}
+            `;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+      - name: Plan Status
+        if: steps.plan.outcome == 'failure'
+        run: exit 1

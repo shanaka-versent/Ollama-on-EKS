@@ -1,18 +1,21 @@
-# Ollama on EKS - Default Configuration
+# Ollama on EKS - Stack A (Air-Gapped) Configuration
 # @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# Stack A: Fully air-gapped — all inference runs on local Ollama/Qwen.
+#          Zero external API calls. No Bedrock. No internet egress from pods.
+#          Best for defence, healthcare, government engagements.
 #
 # GPU Instance Options:
 # ┌──────────────────┬──────────┬──────────┬───────────────────┬──────────┐
 # │ Instance         │ GPUs     │ VRAM     │ Best For          │ Cost/hr  │
 # ├──────────────────┼──────────┼──────────┼───────────────────┼──────────┤
-# │ g5.xlarge        │ 1x A10G  │ 24GB     │ 7B models         │ ~$1.01   │
-# │ g5.2xlarge       │ 1x A10G  │ 24GB     │ 7B-14B models     │ ~$1.21   │
-# │ g5.12xlarge      │ 4x A10G  │ 96GB     │ 32B-70B models    │ ~$5.67   │
-# │ p4d.24xlarge     │ 8x A100  │ 320GB    │ 70B+ models       │ ~$32.77  │
+# │ g5.xlarge        │ 1x A10G  │ 24GB     │ Tier 1/2 models   │ ~$1.01   │
+# │ g5.2xlarge       │ 1x A10G  │ 24GB     │ Tier 1/2 models   │ ~$1.21   │
+# │ g5.12xlarge      │ 4x A10G  │ 96GB     │ Tier 3 flagship   │ ~$5.67   │
 # └──────────────────┴──────────┴──────────┴───────────────────┴──────────┘
 
 # General
-region       = "us-west-2"
+region       = "ap-southeast-2"
 environment  = "dev"
 project_name = "ollama"
 
@@ -31,7 +34,7 @@ system_node_instance_type = "t3.medium"
 system_node_min_count     = 1
 system_node_max_count     = 3
 
-# GPU Nodes (g5.12xlarge = 4x NVIDIA A10G, 96GB VRAM — runs up to 122B MoE models)
+# GPU Nodes (g5.12xlarge = 4x NVIDIA A10G, 96GB VRAM — runs qwen3.5:122b-a10b)
 enable_gpu_node_pool   = true
 gpu_node_count         = 1
 gpu_node_instance_type = "g5.12xlarge"
@@ -40,9 +43,9 @@ gpu_node_min_count     = 0
 gpu_node_max_count     = 2
 gpu_capacity_type      = "ON_DEMAND"
 
-# Ollama
+# Ollama — Flagship model (Tier 3)
 ollama_namespace         = "ollama"
-ollama_model             = "qwen3.5:122b"
+ollama_model             = "qwen3.5:122b-a10b"
 model_storage_size       = "200Gi"
 gpu_count                = 4
 ollama_memory_limit      = "96Gi"
@@ -50,16 +53,22 @@ ollama_memory_request    = "64Gi"
 ollama_cpu_limit         = 16
 ollama_cpu_request       = 8
 ollama_keep_alive        = "24h"
-ollama_num_parallel      = 2
+ollama_num_parallel      = 4
 ollama_max_loaded_models = 1
 auto_pull_model          = true
 
-# Kong Cloud AI Gateway
-# Exposes Ollama via Kong Konnect Dedicated Cloud Gateway with Transit Gateway.
-# After terraform apply, ArgoCD auto-deploys Istio + Ollama.
-# Then run: scripts/02-generate-certs.sh + scripts/03-setup-cloud-gateway.sh
-enable_kong               = true
-kong_cloud_gateway_cidr   = "192.168.0.0/16"
+# Bedrock Integration — DISABLED for Stack A (air-gapped)
+# Set to true only for Stack B (hybrid mode with sanitised Bedrock calls)
+enable_bedrock = false
+
+# CloudFront + WAF + API Gateway
+# Client → CloudFront (WAF) → API Gateway → VPC Link → NLB → Istio → Ollama
+api_key_required      = true
+throttle_rate         = 10
+throttle_burst        = 20
+waf_rate_limit        = 100
+waf_geo_countries     = ["AU", "US"]
+waf_enable_bot_control = false
 
 # ArgoCD GitOps
 # ArgoCD watches argocd/apps/ in the Git repo and deploys everything automatically.
@@ -70,5 +79,6 @@ argocd_chart_version = "7.7.16"
 tags = {
   Project   = "Ollama-Private-LLM"
   Purpose   = "Private-LLM-on-EKS"
+  Stack     = "A-AirGapped"
   ManagedBy = "Terraform"
 }

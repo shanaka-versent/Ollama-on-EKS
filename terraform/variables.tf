@@ -8,7 +8,7 @@
 variable "region" {
   description = "AWS region"
   type        = string
-  default     = "us-west-2"
+  default     = "ap-southeast-2"
 }
 
 variable "environment" {
@@ -140,9 +140,9 @@ variable "ollama_namespace" {
 }
 
 variable "ollama_model" {
-  description = "Model to auto-pull (e.g., qwen3.5:122b, qwen3-coder:30b, llama3.1:70b)"
+  description = "Model to auto-pull (e.g., qwen3.5:122b-a10b, qwen3-coder:30b-a3b, qwen3.5:27b)"
   type        = string
-  default     = "qwen3.5:122b"
+  default     = "qwen3.5:122b-a10b"
 }
 
 variable "model_storage_size" {
@@ -196,7 +196,7 @@ variable "ollama_num_parallel" {
 variable "ollama_max_loaded_models" {
   description = "Maximum models loaded simultaneously"
   type        = number
-  default     = 2
+  default     = 1
 }
 
 variable "auto_pull_model" {
@@ -206,19 +206,75 @@ variable "auto_pull_model" {
 }
 
 # ==============================================================================
-# KONG CLOUD AI GATEWAY
+# API GATEWAY
 # ==============================================================================
 
-variable "enable_kong" {
-  description = "Enable Kong Cloud AI Gateway (Transit Gateway, LB Controller, Istio prereqs)"
+variable "nlb_arn" {
+  description = "ARN of the internal NLB (created by Istio Gateway via LB Controller, used for REST API VPC Link)"
+  type        = string
+  default     = ""
+}
+
+variable "nlb_dns_name" {
+  description = "DNS name of the internal NLB"
+  type        = string
+  default     = ""
+}
+
+variable "api_key_required" {
+  description = "Require x-api-key header — enables native usage plans + API key management via Console"
   type        = bool
   default     = true
 }
 
-variable "kong_cloud_gateway_cidr" {
-  description = "Kong Cloud Gateway CIDR block (do not change unless Kong changes their network)"
-  type        = string
-  default     = "192.168.0.0/16"
+variable "throttle_rate" {
+  description = "API Gateway requests per second rate limit"
+  type        = number
+  default     = 10
+}
+
+variable "throttle_burst" {
+  description = "API Gateway burst limit for requests"
+  type        = number
+  default     = 20
+}
+
+# ==============================================================================
+# CLOUDFRONT + WAF
+# ==============================================================================
+
+variable "waf_allowed_ips" {
+  description = "CIDR ranges allowed through WAF IP allowlist (corporate IPs)"
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+}
+
+variable "waf_rate_limit" {
+  description = "WAF rate limit — requests per 5-minute window per IP"
+  type        = number
+  default     = 100
+}
+
+variable "waf_geo_countries" {
+  description = "Allowed country codes for WAF geo-blocking"
+  type        = list(string)
+  default     = ["AU", "US"]
+}
+
+variable "waf_enable_bot_control" {
+  description = "Enable AWS Bot Control managed rule group (~$10/mo)"
+  type        = bool
+  default     = false
+}
+
+# ==============================================================================
+# BEDROCK INTEGRATION (Stack B — Hybrid Mode Only)
+# ==============================================================================
+
+variable "enable_bedrock" {
+  description = "Enable Bedrock integration (Stack B hybrid mode). Set false for Stack A (air-gapped)."
+  type        = bool
+  default     = false
 }
 
 # ==============================================================================
@@ -235,6 +291,34 @@ variable "argocd_chart_version" {
   description = "ArgoCD Helm chart version (argo-cd chart from argoproj.github.io/argo-helm)"
   type        = string
   default     = "7.7.16"
+}
+
+# ==============================================================================
+# OBSERVABILITY
+# ==============================================================================
+
+variable "grafana_admin_password" {
+  description = "Admin password for Grafana"
+  type        = string
+  sensitive   = true
+}
+
+variable "prometheus_retention_days" {
+  description = "Number of days to retain Prometheus data"
+  type        = number
+  default     = 15
+}
+
+variable "prometheus_storage_size" {
+  description = "Size of Prometheus persistent volume"
+  type        = string
+  default     = "50Gi"
+}
+
+variable "grafana_storage_size" {
+  description = "Size of Grafana persistent volume"
+  type        = string
+  default     = "10Gi"
 }
 
 # ==============================================================================

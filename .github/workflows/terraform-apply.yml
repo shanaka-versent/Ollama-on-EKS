@@ -1,0 +1,65 @@
+# Terraform Apply — Runs on push to main for terraform/**
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# Uses OIDC federation (no long-lived credentials).
+# Requires manual approval via GitHub Environment "production".
+# Runs verify-airgap.sh after apply to confirm air-gap integrity.
+
+name: Terraform Apply
+
+on:
+  push:
+    paths:
+      - 'terraform/**'
+    branches:
+      - main
+
+permissions:
+  id-token: write   # OIDC federation
+  contents: read
+
+env:
+  TF_DIR: terraform
+  AWS_REGION: ap-southeast-2
+
+jobs:
+  apply:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+    environment: production  # Requires manual approval
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::role/github-actions-terraform
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.9"
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform init -no-color
+
+      - name: Terraform Apply
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform apply -auto-approve -no-color
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig --name ollama-eks --region ${{ env.AWS_REGION }}
+
+      - name: Verify Air-Gap Integrity
+        run: |
+          if [ -f scripts/verify-airgap.sh ]; then
+            chmod +x scripts/verify-airgap.sh
+            ./scripts/verify-airgap.sh
+          else
+            echo "WARNING: verify-airgap.sh not found — skipping air-gap verification"
+          fi
