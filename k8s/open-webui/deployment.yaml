@@ -65,7 +65,7 @@ spec:
               value: "qwen3.5:122b-a10b"
             # Disable signup after first user (security)
             - name: ENABLE_SIGNUP
-              value: "false"
+              value: "true"
           resources:
             requests:
               cpu: "250m"
