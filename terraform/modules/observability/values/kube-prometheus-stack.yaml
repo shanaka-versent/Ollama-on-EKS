@@ -30,11 +30,22 @@ prometheus:
     scrapeInterval: "15s"
     evaluationInterval: "15s"
 
+    # Tolerate CriticalAddonsOnly taint on system nodes
+    tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+        effect: NoSchedule
+
 # ──────────────────────────────────────────────────────────────────────
 # Grafana
 # ──────────────────────────────────────────────────────────────────────
 grafana:
   adminPassword: "${grafana_admin_password}"
+
+  tolerations:
+    - key: CriticalAddonsOnly
+      operator: Exists
+      effect: NoSchedule
 
   serviceAccount:
     annotations:
@@ -61,26 +72,18 @@ grafana:
       cpu: "500m"
       memory: "512Mi"
 
-  # Datasources: Prometheus (in-cluster) + CloudWatch (for API Gateway metrics)
-  datasources:
-    datasources.yaml:
-      apiVersion: 1
-      datasources:
-        - name: Prometheus
-          type: prometheus
-          uid: prometheus
-          url: http://kube-prometheus-stack-prometheus.monitoring:9090
-          access: proxy
-          isDefault: true
-          editable: false
-        - name: CloudWatch
-          type: cloudwatch
-          uid: cloudwatch
-          access: proxy
-          editable: false
-          jsonData:
-            authType: default
-            defaultRegion: ${cluster_name == "ollama-eks" ? "ap-southeast-2" : "ap-southeast-2"}
+  # Additional datasource: CloudWatch (for API Gateway metrics)
+  # Note: Prometheus datasource is auto-configured by the chart — do not re-declare
+  additionalDataSources:
+    - name: CloudWatch
+      type: cloudwatch
+      uid: cloudwatch
+      access: proxy
+      isDefault: false
+      editable: false
+      jsonData:
+        authType: default
+        defaultRegion: ap-southeast-2
 
   # Grafana.ini overrides for air-gapped mode
   grafana.ini:
@@ -101,6 +104,10 @@ grafana:
 # ──────────────────────────────────────────────────────────────────────
 alertmanager:
   alertmanagerSpec:
+    tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+        effect: NoSchedule
     resources:
       requests:
         cpu: "100m"
@@ -183,6 +190,36 @@ additionalPrometheusRulesMap:
 # ──────────────────────────────────────────────────────────────────────
 # Disable components we don't need
 # ──────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────
+# Tolerations for operator and sub-charts
+# ──────────────────────────────────────────────────────────────────────
+prometheusOperator:
+  tolerations:
+    - key: CriticalAddonsOnly
+      operator: Exists
+      effect: NoSchedule
+  admissionWebhooks:
+    patch:
+      tolerations:
+        - key: CriticalAddonsOnly
+          operator: Exists
+          effect: NoSchedule
+
+kube-state-metrics:
+  tolerations:
+    - key: CriticalAddonsOnly
+      operator: Exists
+      effect: NoSchedule
+
+prometheus-node-exporter:
+  tolerations:
+    - key: CriticalAddonsOnly
+      operator: Exists
+      effect: NoSchedule
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+
 kubeEtcd:
   enabled: false  # Not accessible on EKS managed control plane
 

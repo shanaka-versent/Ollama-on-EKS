@@ -28,11 +28,11 @@ enable_nat_gateway = true
 kubernetes_version = "1.31"
 enable_logging     = false
 
-# System Nodes
-system_node_count         = 2
+# System Nodes (3 nodes needed for ArgoCD + cert-manager + monitoring stack)
+system_node_count         = 3
 system_node_instance_type = "t3.medium"
-system_node_min_count     = 1
-system_node_max_count     = 3
+system_node_min_count     = 2
+system_node_max_count     = 4
 
 # GPU Nodes (g5.12xlarge = 4x NVIDIA A10G, 96GB VRAM — runs qwen3.5:122b-a10b)
 enable_gpu_node_pool   = true
@@ -60,6 +60,10 @@ auto_pull_model          = true
 # Bedrock Integration — DISABLED for Stack A (air-gapped)
 # Set to true only for Stack B (hybrid mode with sanitised Bedrock calls)
 enable_bedrock = false
+
+# NLB (created by Istio Gateway via ArgoCD — set after first deploy)
+nlb_arn      = "arn:aws:elasticloadbalancing:ap-southeast-2:695418593935:loadbalancer/net/k8s-istioing-ollamaga-d67dab2c37/8a64fd762757025b"
+nlb_dns_name = "k8s-istioing-ollamaga-d67dab2c37-8a64fd762757025b.elb.ap-southeast-2.amazonaws.com"
 
 # CloudFront + WAF + API Gateway
 # Client → CloudFront (WAF) → API Gateway → VPC Link → NLB → Istio → Ollama

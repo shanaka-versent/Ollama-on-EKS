@@ -4,6 +4,14 @@
 # REST API (v1) with native usage plans and API keys — managed via AWS Console.
 # Proxies POST /v1/chat/completions and GET /api/tags to internal NLB via VPC Link.
 # API key authentication via x-api-key header, same pattern as the Claude API.
+#
+# Note: VPC Link + integrations require the NLB ARN, which is created by ArgoCD
+# after the first terraform apply. Run terraform apply again after the NLB is up
+# to wire up the API Gateway routes.
+
+locals {
+  nlb_available = var.nlb_arn != ""
+}
 
 # ==============================================================================
 # REST API
@@ -21,10 +29,11 @@ resource "aws_api_gateway_rest_api" "ollama" {
 }
 
 # ==============================================================================
-# VPC LINK to Internal NLB
+# VPC LINK to Internal NLB (created on second apply, after NLB exists)
 # ==============================================================================
 
 resource "aws_api_gateway_vpc_link" "ollama" {
+  count       = local.nlb_available ? 1 : 0
   name        = "${var.project_name}-vpc-link"
   target_arns = [var.nlb_arn]
 
@@ -66,17 +75,31 @@ resource "aws_api_gateway_method" "chat_completions" {
 }
 
 resource "aws_api_gateway_integration" "chat_completions" {
+  count       = local.nlb_available ? 1 : 0
   rest_api_id = aws_api_gateway_rest_api.ollama.id
   resource_id = aws_api_gateway_resource.completions.id
   http_method = aws_api_gateway_method.chat_completions.http_method
 
   type                    = "HTTP_PROXY"
   integration_http_method = "POST"
-  uri                     = "http://${var.nlb_dns_name}:11434/v1/chat/completions"
+  uri                     = "http://${var.nlb_dns_name}/v1/chat/completions"
   connection_type         = "VPC_LINK"
-  connection_id           = aws_api_gateway_vpc_link.ollama.id
+  connection_id           = aws_api_gateway_vpc_link.ollama[0].id
 
-  timeout_milliseconds = 120000 # 2 min — LLM inference can be slow
+  timeout_milliseconds = 29000 # 29s — API Gateway max (LLM streams responses)
+}
+
+# Mock integration when NLB not yet available
+resource "aws_api_gateway_integration" "chat_completions_mock" {
+  count       = local.nlb_available ? 0 : 1
+  rest_api_id = aws_api_gateway_rest_api.ollama.id
+  resource_id = aws_api_gateway_resource.completions.id
+  http_method = aws_api_gateway_method.chat_completions.http_method
+  type        = "MOCK"
+
+  request_templates = {
+    "application/json" = "{\"statusCode\": 503}"
+  }
 }
 
 # --- /api ---
@@ -103,17 +126,31 @@ resource "aws_api_gateway_method" "api_tags" {
 }
 
 resource "aws_api_gateway_integration" "api_tags" {
+  count       = local.nlb_available ? 1 : 0
   rest_api_id = aws_api_gateway_rest_api.ollama.id
   resource_id = aws_api_gateway_resource.tags.id
   http_method = aws_api_gateway_method.api_tags.http_method
 
   type                    = "HTTP_PROXY"
   integration_http_method = "GET"
-  uri                     = "http://${var.nlb_dns_name}:11434/api/tags"
+  uri                     = "http://${var.nlb_dns_name}/api/tags"
   connection_type         = "VPC_LINK"
-  connection_id           = aws_api_gateway_vpc_link.ollama.id
+  connection_id           = aws_api_gateway_vpc_link.ollama[0].id
 
   timeout_milliseconds = 10000
+}
+
+# Mock integration when NLB not yet available
+resource "aws_api_gateway_integration" "api_tags_mock" {
+  count       = local.nlb_available ? 0 : 1
+  rest_api_id = aws_api_gateway_rest_api.ollama.id
+  resource_id = aws_api_gateway_resource.tags.id
+  http_method = aws_api_gateway_method.api_tags.http_method
+  type        = "MOCK"
+
+  request_templates = {
+    "application/json" = "{\"statusCode\": 503}"
+  }
 }
 
 # ==============================================================================
@@ -127,9 +164,8 @@ resource "aws_api_gateway_deployment" "ollama" {
   triggers = {
     redeployment = sha1(jsonencode([
       aws_api_gateway_method.chat_completions,
-      aws_api_gateway_integration.chat_completions,
       aws_api_gateway_method.api_tags,
-      aws_api_gateway_integration.api_tags,
+      local.nlb_available,
     ]))
   }
 
@@ -139,7 +175,9 @@ resource "aws_api_gateway_deployment" "ollama" {
 
   depends_on = [
     aws_api_gateway_integration.chat_completions,
+    aws_api_gateway_integration.chat_completions_mock,
     aws_api_gateway_integration.api_tags,
+    aws_api_gateway_integration.api_tags_mock,
   ]
 }
 
@@ -185,16 +223,6 @@ resource "aws_api_gateway_method_settings" "all" {
 # ==============================================================================
 # API KEY + USAGE PLAN — Console-Managed
 # ==============================================================================
-# Creates an initial API key and usage plan. Additional keys can be created,
-# rotated, disabled, and monitored directly from the AWS Console:
-#   Console → API Gateway → Usage Plans → ollama-standard → API Keys
-#
-# Per-key features available in Console:
-#   - Create/delete keys
-#   - Enable/disable keys (instant revocation)
-#   - Per-key usage metrics
-#   - Per-plan rate limits and quotas
-#   - Export usage data
 
 resource "aws_api_gateway_usage_plan" "standard" {
   count = var.api_key_required ? 1 : 0
@@ -211,12 +239,6 @@ resource "aws_api_gateway_usage_plan" "standard" {
     rate_limit  = var.throttle_rate
     burst_limit = var.throttle_burst
   }
-
-  # Optional: daily/monthly quota (uncomment to enforce)
-  # quota_settings {
-  #   limit  = 10000
-  #   period = "DAY"
-  # }
 
   tags = var.tags
 }
