@@ -37,7 +37,7 @@ spec:
         kubernetes.io/arch: amd64
       containers:
         - name: open-webui
-          image: ghcr.io/open-webui/open-webui:v0.6.5
+          image: ghcr.io/open-webui/open-webui:v0.8.10
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
