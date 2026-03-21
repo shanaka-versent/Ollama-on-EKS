@@ -14,7 +14,8 @@
 # --- Locals ---
 locals {
   # Skip IP allowlist rule when "0.0.0.0/0" is set (means "allow all")
-  ip_allowlist_enabled = !contains(var.allowed_ips, "0.0.0.0/0")
+  ip_allowlist_enabled    = !contains(var.allowed_ips, "0.0.0.0/0")
+  origin_lockdown_enabled = var.origin_verify_secret != ""
 }
 
 # --- WAFv2 Web ACL (must be in us-east-1 for CloudFront) ---
@@ -200,6 +201,17 @@ resource "aws_cloudfront_distribution" "ollama" {
       https_port             = 443
       origin_protocol_policy = "https-only"
       origin_ssl_protocols   = ["TLSv1.2"]
+    }
+
+    # Origin lockdown: CloudFront overrides the Referer header with a shared secret.
+    # API Gateway resource policy checks aws:Referer to block direct access.
+    # This is the AWS-recommended zero-cost pattern for origin lockdown.
+    dynamic "custom_header" {
+      for_each = local.origin_lockdown_enabled ? [1] : []
+      content {
+        name  = "Referer"
+        value = var.origin_verify_secret
+      }
     }
   }
 

@@ -10,7 +10,8 @@
 # to wire up the API Gateway routes.
 
 locals {
-  nlb_available = var.nlb_arn != ""
+  nlb_available           = var.nlb_arn != ""
+  origin_lockdown_enabled = var.origin_verify_secret != ""
 }
 
 # ==============================================================================
@@ -26,6 +27,37 @@ resource "aws_api_gateway_rest_api" "ollama" {
   }
 
   tags = var.tags
+}
+
+# ==============================================================================
+# ORIGIN LOCKDOWN — Resource Policy (blocks direct API Gateway access)
+# ==============================================================================
+# When origin_verify_secret is set, only requests with a matching
+# x-origin-verify header are allowed. CloudFront injects this header
+# on every request, so only traffic via CloudFront reaches the backend.
+
+resource "aws_api_gateway_rest_api_policy" "origin_lockdown" {
+  count       = local.origin_lockdown_enabled ? 1 : 0
+  rest_api_id = aws_api_gateway_rest_api.ollama.id
+
+  # CloudFront sends the secret as the Referer header. Requests without the
+  # matching Referer get implicit deny (no Allow statement matches).
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect    = "Allow"
+        Principal = "*"
+        Action    = "execute-api:Invoke"
+        Resource  = "${aws_api_gateway_rest_api.ollama.execution_arn}/*"
+        Condition = {
+          StringEquals = {
+            "aws:Referer" = var.origin_verify_secret
+          }
+        }
+      }
+    ]
+  })
 }
 
 # ==============================================================================
@@ -166,6 +198,7 @@ resource "aws_api_gateway_deployment" "ollama" {
       aws_api_gateway_method.chat_completions,
       aws_api_gateway_method.api_tags,
       local.nlb_available,
+      local.origin_lockdown_enabled,
     ]))
   }
 

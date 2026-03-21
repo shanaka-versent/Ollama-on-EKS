@@ -34,6 +34,13 @@ variable "throttle_burst" {
   default     = 20
 }
 
+variable "origin_verify_secret" {
+  description = "Shared secret for CloudFront origin lockdown. When set, API Gateway denies requests without matching x-origin-verify header."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 variable "tags" {
   description = "Tags for all resources"
   type        = map(string)
