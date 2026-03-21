@@ -1,0 +1,54 @@
+# EC2NodeClass for GPU Ollama Nodes
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# Configures the AMI, networking, and block devices for GPU nodes.
+# The data volume uses an EBS snapshot pre-loaded with all 3 model tiers
+# (qwen3.5:27b, qwen3-coder:30b-a3b, qwen3.5:122b-a10b).
+#
+# To create the snapshot, run: scripts/create-model-snapshot.sh
+# Then update the snapshotID below with the output.
+apiVersion: karpenter.k8s.aws/v1beta1
+kind: EC2NodeClass
+metadata:
+  name: gpu-ollama
+spec:
+  amiFamily: AL2023
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "ollama-eks"
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "ollama-eks"
+  blockDeviceMappings:
+    # Root volume
+    - deviceName: /dev/xvda
+      ebs:
+        volumeType: gp3
+        volumeSize: 50Gi
+        encrypted: true
+        deleteOnTermination: true
+    # Data volume — pre-loaded model weights from EBS snapshot
+    - deviceName: /dev/xvdb
+      ebs:
+        volumeType: gp3
+        volumeSize: 200Gi
+        iops: 6000
+        throughput: 400
+        encrypted: true
+        deleteOnTermination: true
+        snapshotID: "snap-REPLACE_WITH_SNAPSHOT_ID"
+  userData: |
+    #!/bin/bash
+    set -euo pipefail
+
+    # Mount the pre-loaded model data volume
+    mkdir -p /data/ollama
+    # Wait for device to be available
+    while [ ! -b /dev/xvdb ]; do sleep 1; done
+    # Mount (already formatted from snapshot creation)
+    mount /dev/xvdb /data/ollama
+    # Add to fstab for persistence across reboots
+    echo '/dev/xvdb /data/ollama ext4 defaults,nofail 0 2' >> /etc/fstab
+
+    # Set Ollama model directory
+    echo 'OLLAMA_MODELS=/data/ollama' >> /etc/environment

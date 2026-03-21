@@ -1,26 +1,22 @@
 #!/bin/bash
-# Ollama Stack Integration Test
+# Ollama Stack Integration Test — Stack A (Air-Gapped)
 # @author Shanaka Jayasundera - shanakaj@gmail.com
 #
 # Tests the full stack end-to-end:
-#   1. Switch Claude Code to Ollama via Kong Cloud AI Gateway
-#   2. Send a test prompt and verify the response
+#   1. CloudFront + API Gateway reachability
+#   2. Send a test prompt via CloudFront → API GW → NLB → Istio → Ollama
 #   3. Scale down the GPU node group
 #   4. Scale up the GPU node group
 #   5. Scale down again
-#   6. Switch Claude Code back to remote (Anthropic API)
+#   6. Air-gap verification
 #
 # Usage:
 #   ./scripts/test-ollama-stack.sh
 #
 # Prerequisites:
-#   - AWS SSO logged in: aws sso login --profile <your-profile>
-#   - .env with KONG_PROXY_URL and KONG_API_KEY (or pass as args)
+#   - AWS CLI configured (aws sts get-caller-identity works)
 #   - kubectl context pointing to EKS cluster
-#
-# Environment (can override via .env):
-#   KONG_PROXY_URL   Kong Konnect proxy endpoint
-#   KONG_API_KEY     API key for Kong authentication
+#   - Terraform outputs available
 
 set -euo pipefail
 
@@ -47,35 +43,34 @@ result() { echo -e "  ${YELLOW}→${NC} $*"; }
 echo ""
 echo "========================================"
 echo "  Ollama Stack Integration Test"
+echo "  Stack A (Air-Gapped)"
 echo "========================================"
 echo ""
 
 # ---------------------------------------------------------------------------
-# Load config
+# Load config from Terraform outputs
 # ---------------------------------------------------------------------------
-ENV_FILE="$ROOT_DIR/.env"
-[[ -f "$ENV_FILE" ]] && source "$ENV_FILE"
-
-KONG_PROXY_URL="${KONG_PROXY_URL:-https://d509717478.gateways.konggateway.com}"
-KONG_API_KEY="${KONG_API_KEY:-jFwezt8cwc8skNQnfCLN}"
-MODEL="${MODEL:-qwen3.5:122b}"
-AWS_PROFILE="${AWS_PROFILE:-stax-stax-au1-versent-innovation}"
-
-export AWS_PROFILE
-
-info "Kong endpoint : $KONG_PROXY_URL"
-info "Model         : $MODEL"
-
-# Resolve cluster values from Terraform outputs
 CLUSTER_NAME=$(terraform -chdir="$ROOT_DIR/terraform" output -raw eks_cluster_name 2>/dev/null) \
   || { echo -e "${RED}ERROR: could not read eks_cluster_name from Terraform outputs${NC}"; exit 1; }
 NODE_GROUP=$(terraform -chdir="$ROOT_DIR/terraform" output -raw gpu_node_group_name 2>/dev/null) \
   || { echo -e "${RED}ERROR: could not read gpu_node_group_name from Terraform outputs${NC}"; exit 1; }
 REGION=$(terraform -chdir="$ROOT_DIR/terraform" output -raw region 2>/dev/null) \
   || { echo -e "${RED}ERROR: could not read region from Terraform outputs${NC}"; exit 1; }
+CLOUDFRONT_DOMAIN=$(terraform -chdir="$ROOT_DIR/terraform" output -raw cloudfront_domain 2>/dev/null) \
+  || { echo -e "${RED}ERROR: could not read cloudfront_domain from Terraform outputs${NC}"; exit 1; }
+API_KEY_ID=$(terraform -chdir="$ROOT_DIR/terraform" output -raw api_key_id 2>/dev/null) \
+  || { echo -e "${RED}ERROR: could not read api_key_id from Terraform outputs${NC}"; exit 1; }
+
+API_KEY=$(aws apigateway get-api-key --api-key "$API_KEY_ID" \
+  --include-value --query value --output text 2>/dev/null) \
+  || { echo -e "${RED}ERROR: could not retrieve API key value${NC}"; exit 1; }
+
+MODEL="qwen3.5:122b-a10b"
 
 info "Cluster       : $CLUSTER_NAME"
 info "Node group    : $NODE_GROUP  ($REGION)"
+info "CloudFront    : $CLOUDFRONT_DOMAIN"
+info "Model         : $MODEL"
 
 # ---------------------------------------------------------------------------
 # Helper: wait for node group to be ACTIVE
@@ -105,19 +100,7 @@ wait_for_nodegroup_active() {
 }
 
 # ---------------------------------------------------------------------------
-# Helper: get scaling config
-# ---------------------------------------------------------------------------
-get_scaling_config() {
-  aws eks describe-nodegroup \
-    --cluster-name "$CLUSTER_NAME" \
-    --nodegroup-name "$NODE_GROUP" \
-    --region "$REGION" \
-    --query 'nodegroup.scalingConfig' \
-    --output json 2>/dev/null
-}
-
-# ---------------------------------------------------------------------------
-# Helper: get current node group desired size
+# Helper: get desired size
 # ---------------------------------------------------------------------------
 get_desired_size() {
   aws eks describe-nodegroup \
@@ -142,36 +125,17 @@ scale_nodegroup() {
 }
 
 # ===========================================================================
-# TEST 1 — Switch to Claude local (Ollama via Kong)
+# TEST 1 — CloudFront + API Gateway reachability
 # ===========================================================================
-step "Test 1: Switch Claude to Ollama via Kong"
-
-source "$ROOT_DIR/claude-switch.sh" ollama \
-  --endpoint "$KONG_PROXY_URL" \
-  --apikey "$KONG_API_KEY" > /dev/null 2>&1
-
-result "ANTHROPIC_BASE_URL  = ${ANTHROPIC_BASE_URL:-not set}"
-result "ANTHROPIC_AUTH_TOKEN = ${ANTHROPIC_AUTH_TOKEN:0:8}..."
-
-if [[ "${ANTHROPIC_BASE_URL:-}" == "$KONG_PROXY_URL" ]] && \
-   [[ "${ANTHROPIC_AUTH_TOKEN:-}" == "$KONG_API_KEY" ]]; then
-  pass "Claude switched to Ollama mode"
-else
-  fail "Claude env vars not set correctly"
-fi
-
-# ===========================================================================
-# TEST 2 — Kong reachability
-# ===========================================================================
-step "Test 2: Kong Gateway reachability"
+step "Test 1: CloudFront + API Gateway reachability"
 
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-  "${KONG_PROXY_URL}/api/tags" \
-  -H "apikey: ${KONG_API_KEY}" \
+  "https://${CLOUDFRONT_DOMAIN}/api/tags" \
+  -H "x-api-key: ${API_KEY}" \
   --connect-timeout 10 2>/dev/null)
 
-MODELS_JSON=$(curl -s "${KONG_PROXY_URL}/api/tags" \
-  -H "apikey: ${KONG_API_KEY}" \
+MODELS_JSON=$(curl -s "https://${CLOUDFRONT_DOMAIN}/api/tags" \
+  -H "x-api-key: ${API_KEY}" \
   --connect-timeout 10 2>/dev/null | python3 -c \
   "import sys,json; d=json.load(sys.stdin); [print('  '+m['name']) for m in d.get('models',[])]" 2>/dev/null || true)
 
@@ -180,19 +144,24 @@ result "Models available:"
 echo "$MODELS_JSON"
 
 if [[ "$HTTP_CODE" == "200" ]]; then
-  pass "Kong Gateway reachable (HTTP $HTTP_CODE)"
+  pass "CloudFront + API Gateway reachable (HTTP $HTTP_CODE)"
 else
-  fail "Kong Gateway returned HTTP $HTTP_CODE"
+  fail "CloudFront returned HTTP $HTTP_CODE"
 fi
 
 # ===========================================================================
-# TEST 3 — Send prompt to Ollama: 2+2
+# TEST 2 — Send prompt to Ollama via CloudFront
 # ===========================================================================
-step "Test 3: Send prompt to Ollama — 'What is 2+2?'"
+step "Test 2: Send prompt — 'What is 2+2?'"
 
-info "Sending prompt via: claude -p ... --model $MODEL"
-RESPONSE=$(claude -p "What is 2+2? Reply with the number only, no explanation." \
-  --model "$MODEL" 2>/dev/null || true)
+info "Sending via CloudFront → API GW → NLB → Istio → Ollama"
+RESPONSE=$(curl -s "https://${CLOUDFRONT_DOMAIN}/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ${API_KEY}" \
+  --connect-timeout 10 \
+  --max-time 120 \
+  -d "{\"model\": \"${MODEL}\", \"messages\": [{\"role\": \"user\", \"content\": \"What is 2+2? Reply with the number only.\"}]}" 2>/dev/null \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['choices'][0]['message']['content'])" 2>/dev/null || echo "ERROR")
 
 result "Model response = '$RESPONSE'"
 
@@ -200,6 +169,26 @@ if echo "$RESPONSE" | grep -qE '\b4\b'; then
   pass "Ollama returned correct answer (contains '4')"
 else
   fail "Unexpected response: '$RESPONSE'"
+fi
+
+# ===========================================================================
+# TEST 3 — Air-gap verification
+# ===========================================================================
+step "Test 3: Air-gap compliance"
+
+OLLAMA_POD=$(kubectl get pods -n ollama -l app=ollama --no-headers 2>/dev/null | head -1 | awk '{print $1}')
+if [[ -n "$OLLAMA_POD" ]]; then
+    CURL_EXIT=0
+    kubectl exec -n ollama "$OLLAMA_POD" -- \
+        curl -s --max-time 5 https://google.com > /dev/null 2>&1 || CURL_EXIT=$?
+
+    if [[ $CURL_EXIT -ne 0 ]]; then
+        pass "Ollama pod cannot reach internet (air-gap enforced)"
+    else
+        fail "Ollama pod CAN reach the internet — air-gap broken!"
+    fi
+else
+    fail "No Ollama pod found"
 fi
 
 # ===========================================================================
@@ -213,19 +202,16 @@ kubectl scale deployment ollama -n ollama --replicas=0 > /dev/null 2>&1
 info "Scaling node group to 0..."
 scale_nodegroup 0
 
-SCALING=$(get_scaling_config)
 DESIRED=$(get_desired_size)
 NODE_COUNT=$(kubectl get nodes --no-headers 2>/dev/null | { grep "g5\." || true; } | wc -l | tr -d ' ')
-POD_STATUS=$(kubectl get deployment ollama -n ollama --no-headers 2>/dev/null | awk '{print $2}')
 
-result "Node group scaling   = $SCALING"
-result "GPU nodes in cluster = $NODE_COUNT"
-result "Ollama deployment    = $POD_STATUS"
+result "Desired size      = $DESIRED"
+result "GPU nodes remaining = $NODE_COUNT"
 
 if [[ "$DESIRED" == "0" ]] && [[ "$NODE_COUNT" == "0" ]]; then
-  pass "GPU node group scaled to 0, GPU node gone"
+  pass "GPU node group scaled to 0"
 else
-  fail "Scale down issue — desired=$DESIRED, GPU nodes remaining=$NODE_COUNT"
+  fail "Scale down issue — desired=$DESIRED, GPU nodes=$NODE_COUNT"
 fi
 
 # ===========================================================================
@@ -247,28 +233,21 @@ kubectl wait --for=condition=ready pod \
   -l app=ollama -n ollama \
   --timeout=300s > /dev/null 2>&1
 
-SCALING=$(get_scaling_config)
-NODE_NAME=$(kubectl get nodes -l "eks.amazonaws.com/nodegroup=$NODE_GROUP" \
-  --no-headers 2>/dev/null | awk '{print $1, $2, $5}')
-POD_LINE=$(kubectl get pods -n ollama -l app=ollama \
-  --no-headers 2>/dev/null | awk '{print $1, $3, $6}')
-
-result "Node group scaling = $SCALING"
-result "GPU node           = $NODE_NAME"
-result "Ollama pod         = $POD_LINE"
-
 DESIRED=$(get_desired_size)
 POD_STATUS=$(kubectl get pods -n ollama -l app=ollama \
   --no-headers 2>/dev/null | awk '{print $3}' | head -1)
 
+result "Desired size = $DESIRED"
+result "Pod status   = $POD_STATUS"
+
 if [[ "$DESIRED" == "1" ]] && [[ "$POD_STATUS" == "Running" ]]; then
   pass "GPU node up, Ollama pod Running"
 else
-  fail "Scale up issue — desired=$DESIRED, pod status=$POD_STATUS"
+  fail "Scale up issue — desired=$DESIRED, pod=$POD_STATUS"
 fi
 
 # ===========================================================================
-# TEST 6 — Scale down again
+# TEST 6 — Scale down (final)
 # ===========================================================================
 step "Test 6: Scale down GPU node group (final)"
 
@@ -278,36 +257,13 @@ kubectl scale deployment ollama -n ollama --replicas=0 > /dev/null 2>&1
 info "Scaling node group to 0..."
 scale_nodegroup 0
 
-SCALING=$(get_scaling_config)
 DESIRED=$(get_desired_size)
 NODE_COUNT=$(kubectl get nodes --no-headers 2>/dev/null | { grep "g5\." || true; } | wc -l | tr -d ' ')
-POD_STATUS=$(kubectl get deployment ollama -n ollama --no-headers 2>/dev/null | awk '{print $2}')
-
-result "Node group scaling   = $SCALING"
-result "GPU nodes in cluster = $NODE_COUNT"
-result "Ollama deployment    = $POD_STATUS"
 
 if [[ "$DESIRED" == "0" ]] && [[ "$NODE_COUNT" == "0" ]]; then
   pass "GPU node group scaled to 0 cleanly"
 else
-  fail "Scale down issue — desired=$DESIRED, GPU nodes remaining=$NODE_COUNT"
-fi
-
-# ===========================================================================
-# TEST 7 — Switch back to remote
-# ===========================================================================
-step "Test 7: Switch Claude back to remote (Anthropic API)"
-
-source "$ROOT_DIR/claude-switch.sh" remote > /dev/null 2>&1
-
-result "ANTHROPIC_BASE_URL  = ${ANTHROPIC_BASE_URL:-unset}"
-result "KONG_PROXY_URL      = ${KONG_PROXY_URL:-unset}"
-result "ANTHROPIC_AUTH_TOKEN = ${ANTHROPIC_AUTH_TOKEN:-unset}"
-
-if [[ -z "${ANTHROPIC_BASE_URL:-}" ]] && [[ -z "${KONG_PROXY_URL:-}" ]]; then
-  pass "Claude switched back to remote mode"
-else
-  fail "Remote vars not cleared — ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-} KONG_PROXY_URL=${KONG_PROXY_URL:-}"
+  fail "Scale down issue — desired=$DESIRED, GPU nodes=$NODE_COUNT"
 fi
 
 # ===========================================================================

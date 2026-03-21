@@ -38,7 +38,8 @@ spec:
           effect: NoSchedule
       containers:
         - name: ollama
-          image: ollama/ollama:latest
+          image: ollama/ollama:0.6.2
+          imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: 11434
@@ -49,13 +50,13 @@ spec:
             - name: OLLAMA_KEEP_ALIVE
               value: "24h"
             - name: OLLAMA_NUM_PARALLEL
-              value: "2"
+              value: "4"
             - name: OLLAMA_MAX_LOADED_MODELS
               value: "1"
-            # Cap context to 16K — qwen3.5:122b uses ~81GB of 96GB VRAM for weights,
-            # leaving ~15GB for KV cache. num_parallel × context determines cache size.
+            # Context window — 32K tokens. num_parallel × context determines KV cache size.
+            # qwen3.5:122b-a10b (MoE, 10B active) fits comfortably on 4x A10G with 32K context.
             - name: OLLAMA_CONTEXT_LENGTH
-              value: "16384"
+              value: "32768"
           resources:
             limits:
               nvidia.com/gpu: "4"   # 4x NVIDIA A10G on g5.12xlarge

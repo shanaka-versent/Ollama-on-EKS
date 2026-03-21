@@ -1,0 +1,16 @@
+# Open WebUI — Persistent Storage for user data, chat history, settings
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: open-webui-data
+  namespace: open-webui
+  labels:
+    app: open-webui
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: gp3
+  resources:
+    requests:
+      storage: 5Gi

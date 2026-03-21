@@ -23,3 +23,7 @@ certs/
 # deck/kong-consumers.yaml.sample ← committed (template only, placeholder keys)
 deck/kong.yaml
 deck/kong-consumers.yaml
+
+# Generated HTML reports (auto-generated from markdown sources)
+README.html
+Ollama-EKS-Report.html

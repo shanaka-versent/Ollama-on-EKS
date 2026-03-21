@@ -1,0 +1,49 @@
+# Open WebUI NetworkPolicy — Air-Gap Enforced
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# Ingress: from istio-system (for gateway routing) + within namespace
+# Egress: DNS + Ollama service only — no internet access
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: open-webui-airgap
+  namespace: open-webui
+  labels:
+    app: open-webui
+spec:
+  podSelector:
+    matchLabels:
+      app: open-webui
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow from Istio gateway
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: istio-system
+      ports:
+        - port: 8080
+          protocol: TCP
+    # Allow from within namespace (port-forward)
+    - from:
+        - podSelector: {}
+      ports:
+        - port: 8080
+          protocol: TCP
+  egress:
+    # DNS resolution
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Ollama API only
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ollama
+      ports:
+        - port: 11434
+          protocol: TCP

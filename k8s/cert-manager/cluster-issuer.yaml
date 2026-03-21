@@ -1,0 +1,33 @@
+# cert-manager — Self-Signed ClusterIssuer + Istio Gateway Certificate
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# Replaces manual openssl cert generation (scripts/05-generate-certs.sh).
+# Certificate auto-renews 30 days before expiry.
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: selfsigned-issuer
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: istio-gateway-cert
+  namespace: istio-system
+spec:
+  secretName: istio-gateway-tls
+  duration: 2160h    # 90 days
+  renewBefore: 720h  # 30 days before expiry
+  isCA: false
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  dnsNames:
+    - "*.ollama.internal"
+    - "ollama.internal"
+  issuerRef:
+    name: selfsigned-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io

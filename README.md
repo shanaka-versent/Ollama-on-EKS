@@ -1,83 +1,256 @@
 # Ollama on EKS
 
-Deploy a fully private Ollama LLM server on AWS EKS with GPU acceleration, exposed via Kong Konnect Cloud AI Gateway for team-wide access. Your code and prompts stay inside your own infrastructure — no third-party LLM provider sees your data.
+Deploy a fully private, air-gapped Ollama LLM server on AWS EKS with GPU acceleration, exposed via CloudFront + WAF + API Gateway. Your code and prompts never leave your AWS account — no third-party LLM provider sees your data.
 
 ---
 
 ## Architecture
 
-<img src="ollama-on-eks.png" width="700" alt="Architecture Diagram"/>
+### High-Level Architecture
+
+```mermaid
+flowchart TB
+    subgraph L4["Layer 4 — Edge + Security"]
+        Client([Developer / Client])
+        CF["CloudFront\n+ Shield Standard"]
+        WAF["WAFv2\nRate Limit · IP Allow · Geo-Block\nSQL/XSS · Bot Control"]
+        APIGW["API Gateway\nREST API + x-api-key Auth"]
+    end
+
+    subgraph L1["Layer 1 — VPC (10.0.0.0/16)"]
+        direction TB
+        subgraph pub["Public Subnets"]
+            NAT["NAT Gateway"]
+            IGW["Internet Gateway"]
+        end
+
+        subgraph priv["Private Subnets"]
+            VPCL["VPC Link"]
+            NLB["Internal NLB"]
+
+            subgraph L2["Layer 2 — EKS Cluster (ollama-eks)"]
+                direction TB
+                subgraph L3["Layer 3 — ArgoCD GitOps (Waves 0-7)"]
+                    direction LR
+                    ISTIO["Istio Gateway\nAmbient mTLS"]
+                    OLLAMA["Ollama Pod\nv0.6.2 · 4x A10G"]
+                    EBS["EBS gp3 200GB\n6000 IOPS · 400 MB/s\nSnapshot Pre-loaded"]
+                    WEBUI["Open WebUI\nChat Interface (model locked)"]
+                    MON["Prometheus + Grafana\nDCGM Exporter"]
+                end
+            end
+        end
+    end
+
+    Client -->|HTTPS| CF
+    CF --> WAF
+    WAF --> CF
+    CF -->|AWS Backbone| APIGW
+    APIGW --> VPCL
+    VPCL --> NLB
+    NLB --> ISTIO
+    ISTIO -->|mTLS| OLLAMA
+    OLLAMA --> EBS
+    WEBUI -->|port 11434| OLLAMA
+
+    style L4 fill:#fff3e0,stroke:#ff9800,stroke-width:2px
+    style L1 fill:#e8f5e9,stroke:#4caf50,stroke-width:2px
+    style L2 fill:#e3f2fd,stroke:#2196f3,stroke-width:2px
+    style L3 fill:#f3e5f5,stroke:#9c27b0,stroke-width:2px
+    style pub fill:#f1f8e9,stroke:#8bc34a
+    style priv fill:#e0f2f1,stroke:#009688
+    style CF fill:#ff9800,color:#fff
+    style WAF fill:#f44336,color:#fff
+    style APIGW fill:#7b1fa2,color:#fff
+    style OLLAMA fill:#1565c0,color:#fff
+    style EBS fill:#2e7d32,color:#fff
+```
 
 **Traffic flow:**
 ```
-Client → Kong Cloud AI GW (Kong's AWS) --[Transit GW]--> Internal NLB --> Istio Gateway --> Ollama Pod
+Client → CloudFront (WAF rate limit + IP allowlist + geo-block) → API Gateway (REST API, x-api-key auth) → VPC Link → Internal NLB → Istio Gateway (mTLS) → Ollama Pod
 ```
+
+All traffic stays on the AWS backbone. No Transit Gateway. No third-party gateway.
+
+### Architecture (4 Layers)
+
+| Layer | What | Components |
+|-------|------|------------|
+| 1 — Cloud Foundations | VPC (10.0.0.0/16) | Private/public subnets, NAT Gateway, Internet Gateway |
+| 2 — EKS Cluster | Kubernetes + GPU | EKS Control Plane, system nodes (t3.medium), GPU nodes (g5.12xlarge, 4x A10G), EBS CSI Driver, LB Controller |
+| 3 — GitOps | ArgoCD waves 0-6 | Wave 0: Istio + NVIDIA → Waves 1-2: Namespaces + Storage → Waves 3-4: Ollama + Model Loader → Waves 5-6: Gateway + Routes |
+| 4 — Edge + Security | CloudFront + WAF + API GW | CloudFront (+ WAF + Shield Standard) → API Gateway (REST API, x-api-key) → VPC Link → Internal NLB → Istio Gateway (mTLS) → Ollama Pod |
 
 | Component | Where | Role |
 |-----------|-------|------|
-| Claude Code | Your Mac | Agent — reads files, edits code, runs commands |
-| Kong Cloud AI GW | Kong's AWS (managed) | API gateway — auth, rate limiting, LLM routing |
-| Transit Gateway | Your AWS account | Private network bridge between Kong's VPC and yours |
-| RAM Share | Your AWS account | Shares TGW with Kong's AWS account for cross-account attach |
-| Internal NLB | Your EKS VPC | Only reachable via Transit Gateway — not internet-facing |
+| CloudFront + WAF | AWS edge | DDoS protection, rate limiting, IP allowlist, geo-blocking |
+| API Gateway (REST API) | Your AWS account | REST API with native API key auth, VPC Link to private NLB |
+| Internal NLB | Your EKS VPC | Only reachable via VPC Link — not internet-facing |
 | Istio Ambient Mesh | Your EKS cluster | L4 mTLS between pods, Gateway API routing |
 | Ollama server | Your EKS GPU node | Model server — runs GPU inference |
-| EBS gp3 (200GB) | Your AWS account | Persists downloaded models across pod restarts |
-| qwen3.5:122b | Your EKS GPU node | The LLM — 122B MoE model (10B active), ~81GB on disk |
+| EBS gp3 (200GB) | Your AWS account | Pre-loaded models via EBS snapshot, 6000 IOPS, 400 MB/s |
+| qwen3.5:122b-a10b | Your EKS GPU node | Default model — MoE 122B total, 10B active params |
+
+### Default Model: Flagship (qwen3.5:122b-a10b)
+
+Three tiers available, all pre-downloaded to EBS via snapshot:
+
+| Tier | Model | GPU | Spot Cost | When to Use |
+|------|-------|-----|-----------|-------------|
+| 1 (Fallback) | `qwen3.5:27b` | g5.xlarge (1x A10G) | $0.35/hr | Fast iteration, debugging, simple edits |
+| 2 (Code) | `qwen3-coder:30b-a3b` | g5.xlarge (1x A10G) | $0.35/hr | Pure coding tasks, very fast MoE inference |
+| 3 (Default) | `qwen3.5:122b-a10b` | g5.12xlarge (4x A10G) | $1.90/hr | All tasks — maximum quality |
+
+Switch tiers using the `/model` command in Claude Code, or directly via:
+
+```bash
+./switch-model.sh use 3   # flagship (default)
+./switch-model.sh use 1   # fallback
+./switch-model.sh use 2   # code-optimised
+```
+
+### Key Design Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| CloudFront + WAF + API Gateway (not Kong) | 99% cost reduction ($756/mo → $6/mo), adds DDoS protection, eliminates Transit Gateway dependency |
+| EKS Auto Mode | Replaces manual Karpenter + NVIDIA device plugin — fewer moving parts, AWS manages GPU node lifecycle and drivers |
+| 30-min idle window (`consolidateAfter: 30m`) | Nodes stay warm through coffee breaks and short meetings, terminate after 30 min idle to save costs |
+| EBS snapshots for model weights | Pre-loaded models on disk, no internet needed for model loading (air-gap compliant), cold start ~3 min instead of 15-25 min |
+| High-throughput gp3 (400 MB/s + 6000 IOPS) | Fast model loading from snapshot — critical for reasonable cold start times |
+| Self-managed observability | Prometheus + Grafana + DCGM Exporter, all air-gapped (no AMP/AMG dependency) |
+| Spot with on-demand fallback | Karpenter tries spot first (~65% savings), auto-falls back to on-demand if reclaimed |
+| Dual-mode pipeline | Two separate stacks (not config flag) — compliance by design, eliminates human error risk |
+| Ollama image pinned to v0.6.2 | Reproducible builds, no surprise breaking changes from `:latest` |
+| cert-manager (not manual openssl) | Automated TLS lifecycle — 90d duration, 30d auto-renewal, no manual cert rotation |
+
+### Dual-Mode Pipeline — Two Separate Stacks
+
+Two separate deployment stacks — deploy one or the other per engagement. Separate stacks ensure compliance by design and eliminate human error risk.
+
+| | Stack A (Fully Air-Gapped) | Stack B (Hybrid — Local + Bedrock) |
+|---|---|---|
+| Phase 1 (Analysis) | Local Ollama/Qwen | Local Ollama/Qwen |
+| Phase 2 (Report Gen) | Local Ollama/Qwen | Latest Claude Opus via AWS Bedrock |
+| Sanitisation | Yes — regex + LLM review | Yes — regex + LLM review |
+| Internet Egress | None | Bedrock VPC endpoint only |
+| Best For | Defence, healthcare, government | Client-approved cloud access |
+
+Stack A physically cannot reach Bedrock — no credentials, no egress rules, no API client.
+
+**Data flow:**
+- **Stack A:** Client Data → Phase 1 (Ollama/Qwen) → Sanitisation → Phase 2 (Ollama/Qwen) → Good quality report
+- **Stack B:** Client Data → Phase 1 (Ollama/Qwen) → Sanitisation → Phase 2 (Latest Claude Opus via Bedrock, sanitised findings only) → High quality report
+
+```mermaid
+flowchart LR
+    CD([Client Data])
+
+    subgraph StackA["Stack A — Fully Air-Gapped"]
+        direction LR
+        A1["Phase 1\nAnalysis\n(Ollama/Qwen)"]
+        AS["Sanitisation\nRegex + LLM Review"]
+        A2["Phase 2\nReport Generation\n(Ollama/Qwen)"]
+        AR([Report\nGood Quality])
+    end
+
+    subgraph StackB["Stack B — Hybrid (Local + Bedrock)"]
+        direction LR
+        B1["Phase 1\nAnalysis\n(Ollama/Qwen)"]
+        BS["Sanitisation\nRegex + LLM Review"]
+        B2["Phase 2\nReport Generation\n(Claude Opus via Bedrock)"]
+        BR([Report\nHigh Quality])
+    end
+
+    CD --> A1
+    A1 --> AS
+    AS --> A2
+    A2 --> AR
+
+    CD --> B1
+    B1 --> BS
+    BS -->|Sanitised JSON only\nVPC Endpoint| B2
+    B2 --> BR
+
+    style StackA fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style StackB fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    style AS fill:#fff3e0,stroke:#ff9800
+    style BS fill:#fff3e0,stroke:#ff9800
+    style A2 fill:#66bb6a,color:#fff
+    style B2 fill:#5c4ee5,color:#fff
+    style AR fill:#a5d6a7
+    style BR fill:#b39ddb
+```
+
+Deploy Stack B with: `terraform apply -var="enable_bedrock=true"`
+
+#### Stack B — Bedrock Integration Details
+
+Stack B adds these AWS resources (created by `terraform/modules/bedrock-integration/`):
+
+| Resource | Details |
+|----------|---------|
+| VPC Endpoint | `com.amazonaws.ap-southeast-2.bedrock-runtime`, Interface type, private subnets, private DNS enabled |
+| IRSA Role | `ollama-orchestrator-bedrock` — service account: `orchestrator:orchestrator-sa` |
+| IAM Policy | `bedrock:InvokeModel` + `bedrock:InvokeModelWithResponseStream` on `anthropic.claude-*` |
+| NetworkPolicy | Orchestrator namespace: egress to Bedrock VPC endpoint only (Stack A blocks all egress) |
+| Sanitisation | Two-pass: (1) regex strips IPs, emails, API keys, ARNs, JWTs, SSH keys, connection strings; (2) local Qwen reviews for semantic leakage. Hard stop if raw data detected |
+
+> The orchestrator is a separate product built on top of the Ollama-on-EKS infrastructure — separate repo, Dockerfile, and CI.
 
 ### Request Sequence
 
-How a prompt travels from Claude Code (or any OpenAI-compatible client) through every layer to Ollama and back:
-
 ```mermaid
 sequenceDiagram
-    participant Dev as Developer (Mac)
-    participant CC as Claude Code / Copilot
-    participant Kong as Kong Cloud AI GW
-    participant TGW as Transit Gateway
+    participant Dev as Developer
+    participant CF as CloudFront + WAF
+    participant APIGW as API Gateway (REST)
     participant NLB as Internal NLB
     participant IGW as Istio Gateway
     participant ZT as ztunnel (Ambient mTLS)
     participant OLM as Ollama Pod (4x NVIDIA A10G)
     participant EBS as EBS Volume (200GB gp3)
 
-    Dev->>CC: Types prompt or code request
-
-    Note over CC,Kong: HTTPS — public internet
-    CC->>+Kong: POST /v1/chat/completions
-    Note right of CC: Authorization: Bearer apikey
+    Dev->>CF: POST /v1/chat/completions (HTTPS)
 
     rect rgb(255, 248, 240)
-        Note over Kong: Kong plugin chain
-        Kong->>Kong: key-auth — validate API key
-        Kong->>Kong: rate-limiting — 60 req/min per consumer
-        Kong->>Kong: request-transformer — add X-Kong-Proxy header
+        Note over CF: WAF rule chain
+        CF->>CF: Rate limit — 100 req/5min per IP
+        CF->>CF: IP allowlist — corporate CIDRs only
+        CF->>CF: Geo-block — AU + US only
+        CF->>CF: SQL/XSS — AWSManagedRulesCommonRuleSet
     end
 
-    Note over Kong,NLB: Private network — Transit Gateway, never touches the internet
-    Kong->>+TGW: HTTP (cross-account private link)
-    TGW->>+NLB: Routes into EKS VPC (10.0.0.0/16)
-    NLB->>+IGW: Forwards to Istio Gateway pod
+    CF->>+APIGW: HTTPS (AWS backbone)
+
+    rect rgb(245, 240, 255)
+        Note over APIGW: API Key Auth
+        APIGW->>APIGW: Validate x-api-key against usage plan
+        APIGW->>APIGW: Check rate limit + quota per key
+    end
+
+    APIGW->>+NLB: VPC Link (private connectivity)
+    NLB->>+IGW: Forward to Istio Gateway pod
 
     rect rgb(240, 248, 255)
-        Note over IGW,OLM: Istio Ambient mTLS — transparent L4 encryption between pods
+        Note over IGW,OLM: Istio Ambient mTLS — transparent L4 encryption
         IGW->>+ZT: Intercepted by ztunnel (no sidecar needed)
         ZT->>+OLM: Decrypted request to ollama.ollama.svc:11434
     end
 
     OLM->>+EBS: Load model weights (if not already in GPU VRAM)
-    EBS-->>-OLM: qwen3.5:122b (~81GB)
+    EBS-->>-OLM: qwen3.5:122b-a10b from EBS snapshot
 
     Note over OLM: GPU inference — 4x NVIDIA A10G (96GB VRAM)
-    Note over OLM: Context window: 16K tokens
+    Note over OLM: Context window: 32K tokens, 4 parallel requests
 
     OLM-->>-ZT: Streaming response tokens
     ZT-->>-IGW: mTLS encrypted stream
     IGW-->>-NLB: HTTP response
-    NLB-->>-TGW: Forward back through private link
-    TGW-->>-Kong: Response arrives at Kong
-    Kong-->>-CC: HTTPS streaming response
-    CC-->>Dev: Displays generated code / answer
+    NLB-->>-APIGW: Forward back through VPC Link
+    APIGW-->>-CF: Response to CloudFront
+    CF-->>Dev: HTTPS streaming response
 ```
 
 ---
@@ -88,56 +261,82 @@ sequenceDiagram
 
 ```bash
 brew install awscli terraform kubectl helm
-brew install kong/deck/deck   # Kong declarative config tool
 ```
 
 ### 2. AWS Credentials
 
 ```bash
 aws configure
-# Enter: Access Key ID, Secret Key, Region (e.g. us-west-2), Output format (json)
+# Enter: Access Key ID, Secret Key, Region (ap-southeast-2), Output format (json)
 
 aws sts get-caller-identity   # verify
 ```
 
-### 3. Kong Konnect Account
-
-1. Sign up at [cloud.konghq.com](https://cloud.konghq.com)
-2. Generate a Personal Access Token: **Settings → Personal Access Tokens**
-3. Set credentials:
-
-```bash
-cp .env.example .env
-# Edit .env — set KONNECT_REGION and KONNECT_TOKEN
-```
-
-### 4. GPU Instance Quota
+### 3. GPU Instance Quota
 
 Check **AWS Console → Service Quotas → EC2 → Running On-Demand G and VT instances**.
 For `g5.12xlarge` you need at least 48 vCPUs. Request a quota increase if needed.
+
+### 4. S3 Backend Bootstrap
+
+Before running Terraform, create the state backend:
+
+```bash
+# Create S3 bucket (replace <ACCOUNT_ID> with your AWS account ID)
+aws s3api create-bucket \
+  --bucket ollama-eks-tfstate-<ACCOUNT_ID> \
+  --region ap-southeast-2 \
+  --create-bucket-configuration LocationConstraint=ap-southeast-2
+
+aws s3api put-bucket-versioning \
+  --bucket ollama-eks-tfstate-<ACCOUNT_ID> \
+  --versioning-configuration Status=Enabled
+
+# Create DynamoDB lock table
+aws dynamodb create-table \
+  --table-name ollama-eks-tfstate-lock \
+  --attribute-definitions AttributeName=LockID,AttributeType=S \
+  --key-schema AttributeName=LockID,KeyType=HASH \
+  --billing-mode PAY_PER_REQUEST \
+  --region ap-southeast-2
+```
 
 ---
 
 ## Quick Start
 
-The deployment has three phases. Complete each verification before moving on.
+The deployment has two phases. Complete each verification before moving on.
 
 ---
 
 ### Phase 1 — Deploy Infrastructure (~20–30 min)
 
-**Step 1: Deploy AWS infrastructure + Kubernetes workloads**
+**Option A: Automated deployment (recommended)**
 
 ```bash
-./deploy.sh
+./scripts/deploy-stack-a.sh
 ```
 
-This runs `terraform apply` (VPC, EKS, IAM, ArgoCD) then `scripts/01-setup.sh`, which:
-- Configures `kubectl` from Terraform outputs
-- Waits for ArgoCD sync waves to complete
-- Generates TLS certificates (unblocks Wave 5 — Istio Gateway)
-- Waits for Ollama to be ready
-- Creates the Kong Konnect control plane + cloud gateway network + Transit Gateway attachment request
+This single script handles everything: validates prerequisites, bootstraps the S3 backend, runs `terraform plan` + `apply`, configures `kubectl`, waits for ArgoCD waves to sync, and runs air-gap verification.
+
+**Option B: Manual step-by-step**
+
+```bash
+cd terraform
+terraform init
+terraform plan
+terraform apply
+```
+
+This provisions VPC, EKS, IAM, LB Controller, API Gateway, CloudFront + WAF, cert-manager, ArgoCD, and observability. ArgoCD then auto-deploys all Kubernetes workloads in sync wave order.
+
+**Step 2: Create EBS model snapshot (first time only)**
+
+```bash
+./scripts/create-model-snapshot.sh
+```
+
+This launches a temporary GPU instance, pulls all 3 model tiers, snapshots the volume, and terminates the instance. Update `k8s/nodepools/gpu-ec2nodeclass.yaml` with the output snapshot ID.
 
 **Verify before continuing:**
 
@@ -145,156 +344,171 @@ This runs `terraform apply` (VPC, EKS, IAM, ArgoCD) then `scripts/01-setup.sh`, 
 # All ArgoCD apps should be Synced / Healthy
 kubectl get applications -n argocd
 
-# Model pull should show "completed" (qwen3.5:122b is ~81GB, takes 30–60 min)
-kubectl logs -n ollama -l app=ollama-model-loader -f
-
 # Ollama pod should be Running
 kubectl get pods -n ollama
+
+# Run air-gap verification
+./scripts/verify-airgap.sh
 ```
 
 ---
 
-### Phase 2 — Complete Kong Transit Gateway Setup (~30–60 min)
+### Phase 2 — Connect (~5 min)
 
-The cloud gateway network takes ~30 min to provision. Once ready, Kong initiates a Transit Gateway attachment to your VPC. The TGW is configured with `auto_accept_shared_attachments = "enable"`, so **no manual acceptance is required**.
-
-**Step 2: Discover NLB and sync Kong config**
-
-Wait for the TGW attachment to reach `ready` state (the script polls automatically), then:
+**Step 3: Get your API key**
 
 ```bash
-./scripts/04-post-setup.sh
+# Retrieve the auto-generated API key from API Gateway
+API_KEY_ID=$(terraform -chdir=terraform output -raw api_key_id)
+API_KEY=$(aws apigateway get-api-key \
+  --api-key $API_KEY_ID \
+  --include-value --query value --output text)
+echo $API_KEY
+
+# Or view it in the Console: API Gateway → API Keys
 ```
 
-This discovers the Istio Gateway NLB hostname, updates `deck/kong-config.yaml`, and syncs services and routes to Konnect.
-
-**Step 3: Set GitHub secrets and enable auto-sync**
+**Step 4: Verify end-to-end via CloudFront**
 
 ```bash
-./scripts/06-setup-github-sync.sh
+# Get CloudFront domain from Terraform outputs
+CLOUDFRONT_DOMAIN=$(terraform -chdir=terraform output -raw cloudfront_domain)
+
+# Should return model list (requires API key)
+curl -s "https://${CLOUDFRONT_DOMAIN}/api/tags" \
+  -H "x-api-key: ${API_KEY}" | jq '.models[].name'
+
+# Test chat completions
+curl -s "https://${CLOUDFRONT_DOMAIN}/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ${API_KEY}" \
+  -d '{"model":"qwen3.5:122b-a10b","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
-This reads your `.env`, sets `KONNECT_TOKEN` / `KONNECT_REGION` / `KONNECT_CP_NAME` as GitHub Actions secrets, commits the updated config, and pushes — triggering the first sync automatically. After this, any push to `deck/kong-config.yaml` on `main` auto-syncs to Konnect.
-
----
-
-### Phase 3 — Connect (~5 min)
-
-**Step 4: Get your Kong proxy URL**
-
-The proxy URL is shown in the Konnect UI only:
-
-> **[cloud.konghq.com](https://cloud.konghq.com) → Gateway Manager → `kong-cloud-gateway-eks` → Overview → Proxy URL**
-
-It will look like: `https://xxxx.gateways.konggateway.com`
-
-**Step 5: Add your first consumer (API key)**
+**Step 5: Connect clients**
 
 ```bash
-# Copy the sample and add yourself
-cp deck/kong-consumers.yaml.sample deck/kong-consumers.yaml
-# Edit deck/kong-consumers.yaml — replace placeholder keys with real ones
-openssl rand -hex 32   # generate a strong key
+# OpenAI SDK / Continue.dev / Open WebUI — API key maps to OPENAI_API_KEY
+export OPENAI_API_BASE=https://${CLOUDFRONT_DOMAIN}
+export OPENAI_API_KEY=${API_KEY}
 
-# Sync consumers to Konnect
-./scripts/05-sync-kong-config.sh
-```
-
-**Step 6: Verify end-to-end**
-
-```bash
-# Should return: "qwen3.5:122b"
-curl -s "https://<KONG_PROXY_URL>/api/tags" \
-  -H "apikey: <your-api-key>" | jq '.models[].name'
-```
-
-**Step 7: Connect Claude Code**
-
-```bash
-source claude-switch.sh ollama \
-  --endpoint https://<KONG_PROXY_URL> \
-  --apikey <your-api-key>
-
-claude --model qwen3.5:122b
+# Or via kubectl port-forward (direct, no API key needed)
+kubectl port-forward -n ollama svc/ollama 11434:11434
 ```
 
 ---
 
 ## Day-to-Day Usage
 
-### Switching Claude Code Modes
+### Model Tier Switching
 
-`claude-switch.sh` manages which backend Claude Code talks to:
-
-```bash
-# Use Anthropic API (default, billed to your Anthropic account)
-source claude-switch.sh remote
-claude
-
-# Use Ollama via Kong (team access, recommended)
-source claude-switch.sh ollama \
-  --endpoint https://<KONG_PROXY_URL> \
-  --apikey <your-api-key>
-claude --model qwen3.5:122b
-
-# Use Ollama directly via port-forward (single user, no Kong)
-source claude-switch.sh local
-claude --model qwen3.5:122b
-
-# Check what mode you're in
-source claude-switch.sh status
-```
-
-### Integration Test
-
-Verify the full stack end-to-end — switches Claude to Ollama, tests a prompt, cycles scale down/up/down, then restores remote mode:
+Use the `/model` command in Claude Code for an interactive picker, or specify directly:
 
 ```bash
-./scripts/test-ollama-stack.sh
+/model              # interactive — shows tiers and asks which one
+/model 3            # switch to flagship immediately
+/model fallback     # switch to Tier 1
+/model coder        # switch to Tier 2
+
+# Or via shell script directly:
+./switch-model.sh use 3
 ```
 
+### Open WebUI (Browser-Based Chat Interface)
+
+Open WebUI provides a ChatGPT-like interface for Ollama. Deployed on EKS system nodes (no GPU needed), air-gapped via NetworkPolicy. Model switching is **restricted to admins only** — regular users see only the default flagship model, preventing accidental model swaps that would spin up additional GPU nodes.
+
+```bash
+# Access via port-forward
+kubectl port-forward -n open-webui svc/open-webui 8080:80
+# Open http://localhost:8080
 ```
-==> Test 1: Switch Claude to Ollama via Kong
-  → ANTHROPIC_BASE_URL   = https://d509717478.gateways.konggateway.com
-  → ANTHROPIC_AUTH_TOKEN = jFwezt8c...
-  ✓ PASS  Claude switched to Ollama mode
 
-==> Test 2: Kong Gateway reachability
-  → HTTP status  = 200
-  → Models available:
-    qwen3.5:122b
-  ✓ PASS  Kong Gateway reachable (HTTP 200)
+On first login, create an admin account (signup is disabled after the first user for security).
 
-==> Test 3: Send prompt to Ollama — 'What is 2+2?'
-  → Model response = '4'
-  ✓ PASS  Ollama returned correct answer (contains '4')
+| Role | Model Access | How to Assign |
+|------|-------------|---------------|
+| **Admin** (first user) | All 3 tiers visible in model selector | Automatic — first signup becomes admin |
+| **Admin** (additional) | All 3 tiers visible in model selector | Admin Settings → Users → Promote to admin |
+| **User** (regular) | Flagship only (`qwen3.5:122b-a10b`) | Default for all subsequent signups |
 
-==> Test 4: Scale down GPU node group
-  → Node group scaling   = {"desiredSize": 0, "maxSize": 2, "minSize": 0}
-  → GPU nodes in cluster = 0
-  → Ollama deployment    = 0/0
-  ✓ PASS  GPU node group scaled to 0, GPU node gone
+To change the locked model for regular users, update `MODEL_FILTER_LIST` in `k8s/open-webui/deployment.yaml` and redeploy. Admins can also switch the cluster-wide default via `./switch-model.sh use <tier>`.
 
-==> Test 5: Scale up GPU node group
-  → Node group scaling = {"desiredSize": 1, "maxSize": 2, "minSize": 0}
-  → GPU node          = ip-10-0-2-x.us-west-2.compute.internal Ready g5.12xlarge
-  → Ollama pod        = ollama-xxxx Running ip-10-0-2-x
-  ✓ PASS  GPU node up, Ollama pod Running
+**Connecting an external Open WebUI instance:**
 
-==> Test 6: Scale down GPU node group (final)
-  → Node group scaling   = {"desiredSize": 0, "maxSize": 2, "minSize": 0}
-  → GPU nodes in cluster = 0
-  → Ollama deployment    = 0/0
-  ✓ PASS  GPU node group scaled to 0 cleanly
+If you already run Open WebUI elsewhere, point it at your CloudFront endpoint with your API key:
 
-==> Test 7: Switch Claude back to remote (Anthropic API)
-  → ANTHROPIC_BASE_URL   = unset
-  → KONG_PROXY_URL       = unset
-  → ANTHROPIC_AUTH_TOKEN = unset
-  ✓ PASS  Claude switched back to remote mode
+```bash
+# Get your API key (or copy from Console: API Gateway → API Keys)
+API_KEY=$(aws apigateway get-api-key \
+  --api-key $(terraform output -raw api_key_id) \
+  --include-value --query value --output text)
 
-  All 7 tests passed
+docker run -d -p 3000:8080 \
+  -e OLLAMA_BASE_URL=https://<CLOUDFRONT_DOMAIN> \
+  -e OLLAMA_API_KEY=$API_KEY \
+  -v open-webui:/app/backend/data \
+  ghcr.io/open-webui/open-webui:v0.6.5
 ```
+
+Replace `<CLOUDFRONT_DOMAIN>` with `terraform output -raw cloudfront_domain`.
+
+### Observability (Prometheus + Grafana)
+
+Self-managed, air-gapped monitoring — no AWS managed services (AMP/AMG). GPU metrics stay in-cluster alongside the workloads they monitor.
+
+```bash
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
+# Open http://localhost:3000
+```
+
+| Component | What It Monitors |
+|-----------|-----------------|
+| Prometheus (kube-prometheus-stack) | Cluster-wide metrics collection and alerting |
+| Grafana (4 dashboards) | GPU metrics, Ollama API metrics, Karpenter node lifecycle, FinOps showback |
+| DCGM Exporter (DaemonSet) | NVIDIA GPU metrics — temperature, utilisation, memory |
+
+**Alert Rules (6 configured):**
+
+| Alert | Threshold |
+|-------|-----------|
+| GPU temperature | > 85°C |
+| GPU memory usage | > 90% |
+| Ollama pod restarts | Any restart |
+| Node not ready | Node leaves Ready state |
+| High API error rate | Elevated 5xx responses |
+| PV usage | > 80% capacity |
+
+The monitoring namespace has its own air-gapped NetworkPolicy (`k8s/monitoring-networkpolicy.yaml`). Grafana has a scoped HTTPS exception for CloudWatch API access (FinOps dashboard).
+
+### FinOps Showback Dashboard
+
+A 4th Grafana dashboard (`FinOps Showback Report`) provides per-API-key cost attribution for internal showback. It combines API Gateway metrics from CloudWatch with GPU metrics from Prometheus.
+
+```bash
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
+# Open http://localhost:3000 → Dashboards → FinOps Showback Report
+```
+
+The dashboard is structured so you see the **total cost at a glance**, then drill into the breakdown:
+
+| Section | What You See |
+|---------|-------------|
+| **Total Estimated Cost** (always visible) | Total Cost stat (GPU + Infra combined), GPU Cost (green), Shared Infra (purple), Total Requests, Avg Latency, legend |
+| **GPU Compute Cost** (collapsed — click to expand) | GPU Hours stat, GPU Node Uptime timeline (= billing hours) |
+| **Shared Infra Cost** (collapsed — click to expand) | Component breakdown table (EKS $73, Idle $16, EBS $10, CF/WAF $6, gp3 $4 = $109), cost attribution formula |
+| **Per-API-Key Showback** (always visible) | GPU Cost Share donut (by inference time), Infra Cost Share donut (by request count), Errors per key, Requests over time, Latency per key |
+| **GPU Utilisation** (always visible) | GPU utilisation %, GPU memory (VRAM) usage |
+
+**Cost attribution formula** (shown on the dashboard):
+
+- **Per-key GPU cost** = (key's IntegrationLatency / total IntegrationLatency) × GPU spend
+- **Per-key shared infra** = (key's request count / total requests) × $109/mo fixed
+- **Per-key total** = GPU cost + shared infra
+
+Dashboard variables let you adjust the GPU spot rate ($0.35/hr for g5.xlarge, $1.90/hr for g5.12xlarge) and shared infra monthly cost ($109 default).
+
+> **Prerequisite:** Grafana uses IRSA to access CloudWatch (role: `ollama-eks-grafana-cloudwatch`). This is auto-provisioned by the observability Terraform module.
 
 ---
 
@@ -302,365 +516,104 @@ Verify the full stack end-to-end — switches Claude to Ollama, tests a prompt, 
 
 ### GPU Instance Options
 
-> **Instance type is chosen at setup time** — decide which model you intend to run *before* `terraform apply`. The GPU node group is provisioned for a specific instance type. Changing it requires `terraform apply` to replace the node group.
+| Instance | GPUs | VRAM | Models | Spot Cost/hr | On-Demand/hr |
+|----------|------|------|--------|-------------|--------------|
+| `g5.xlarge` | 1x A10G | 24GB | Tier 1 + 2 | ~$0.35 | ~$1.01 |
+| `g5.2xlarge` | 1x A10G | 24GB | Tier 1 + 2 | ~$0.42 | ~$1.21 |
+| `g5.12xlarge` | 4x A10G | 96GB | All tiers (flagship) | ~$1.90 | ~$5.67 |
 
-The model must fit within the instance VRAM. A model that exceeds VRAM will fail to load or fall back to CPU (very slow).
+### Monthly Cost Summary
 
-> **Costs are approximate (~) and subject to change.** Check current [AWS EC2 pricing](https://aws.amazon.com/ec2/pricing/on-demand/) for your region.
+| Component | Monthly Cost |
+|-----------|-------------|
+| GPU compute (flagship, 8hrs/day weekdays, spot) | ~$304 |
+| 30-min idle window overhead | ~$16 |
+| EBS snapshot storage (200GB) | ~$10 |
+| gp3 throughput upgrade (400 MB/s) | ~$4 |
+| EKS control plane | $73 |
+| CloudFront + WAF + API Gateway | ~$6 |
+| **Total** | **~$413/mo** |
 
-| Instance | GPUs | VRAM | Recommended Models | Cost/hr |
-|----------|------|------|--------------------|---------|
-| `g5.xlarge` | 1x A10G | 24GB | `qwen2.5-coder:7b`, `codellama:7b` | ~$1.01 |
-| `g5.2xlarge` | 1x A10G | 24GB | `qwen2.5-coder:14b`, `llama3.1:8b` | ~$1.21 |
-| `g5.12xlarge` | 4x A10G | 96GB | `qwen3.5:122b`, `qwen3-coder:30b` | ~$5.67 |
-| `p4d.24xlarge` | 8x A100 | 320GB | `llama3.1:405b`, largest models | ~$32.77 |
+Down from $4,155/mo (24/7 on-demand + Kong) — 90% reduction.
 
-**Rule of thumb:** model size in GB ≈ parameter count × 0.5 (4-bit quantised). A 32B model needs ~18–20GB VRAM; 70B needs ~40GB. Leave headroom for KV cache.
+### Response Time Expectations
 
-When changing instance type, update these variables together in `terraform/terraform.tfvars`:
+| Scenario | Wait Time |
+|----------|-----------|
+| Warm node (within 30-min idle window) | 4-6s to first token (flagship) |
+| Back from <30 min break | 0s (node still warm) |
+| First request of the day / after 30+ min idle | ~3 min cold start, then 4-6s |
+| Spot instance reclaimed mid-session | ~2-3 min interruption (auto-recovery) |
 
-```hcl
-gpu_node_instance_type = "g5.xlarge"
-gpu_count              = 1
-ollama_memory_limit    = "20Gi"
-ollama_memory_request  = "16Gi"
-ollama_cpu_limit       = 4
-ollama_cpu_request     = 2
-```
+Token generation: flagship produces 30-50 tok/s. A 500-token response takes ~10-17s.
 
 ### Scale to Zero (Stop GPU Billing)
 
-When you're done for the day — stop the GPU node to avoid ~$5.67/hr charges:
-
 ```bash
-./scripts/scale-down.sh
+kubectl scale deployment ollama -n ollama --replicas=0
 ```
-
-Shows current state, asks for confirmation, then stops the pod and scales the node group to 0.
 
 ### Resume Next Session
 
-The EBS volume with your downloaded models is preserved — no re-download needed:
+The EBS snapshot has your models pre-loaded — no re-download needed. Karpenter auto-provisions a new GPU node when the pod is scaled back up:
 
 ```bash
-./scripts/scale-up.sh
+kubectl scale deployment ollama -n ollama --replicas=1
+# Wait ~3 min for node provision + model load from snapshot
 ```
-
-Shows current state, asks for confirmation, then scales up the node group, waits for the node to join, starts the pod, and confirms it's Running.
-
-> **Note:** The GPU node group is pinned to `us-west-2a` to match the EBS PVC (AZ-scoped). This is enforced by Terraform — `gpu_subnet_ids = [private_subnet_ids[0]]`. If you ever see a volume affinity conflict, run `terraform apply` to reconcile the node group subnet configuration.
-
----
-
-## Kong Gateway Reference
-
-### Plugins
-
-| Plugin | Purpose |
-|--------|---------|
-| `key-auth` | API key auth — accepts `apikey`, `x-api-key`, or `Authorization: Bearer` headers |
-| `rate-limiting` | 60 requests/min per consumer (configurable in `deck/kong-config.yaml`) |
-| `request-size-limiting` | Rejects payloads over 10MB |
-
-> **Plugin note:** Kong Konnect Cloud Gateway (Dedicated tier) does not support `ai-proxy` with `ollama` provider, `ai-rate-limiting-advanced`, or `prometheus`. The config uses standard plugins that work across all tiers.
-
-### Routes
-
-| Route | Path | Description |
-|-------|------|-------------|
-| Ollama Direct | `/api/*`, `/v1/*` | Pass-through for Claude Code and native Ollama API |
-| Health Check | `/healthz` | Kong Cloud Gateway connectivity probe |
-
-### Authentication
-
-Kong accepts API keys in three formats:
-
-```bash
--H "apikey: <key>"                    # curl / direct API clients
--H "x-api-key: <key>"                 # OpenAI-compatible clients
--H "Authorization: Bearer <key>"      # Claude Code (ANTHROPIC_AUTH_TOKEN)
-```
-
-Because Kong reads the full `Authorization` header value, each consumer needs two credential entries — the bare key and `Bearer <key>`. See `deck/kong-consumers.yaml.sample` for the format.
-
-### Configuration Files
-
-The Kong config is split into two files to allow safe Git commits:
-
-| File | Contents | Git | Sync |
-|------|----------|-----|------|
-| `deck/kong-config.yaml` | Services, routes, plugins — no secrets | ✅ Committed | Auto via GitHub Actions on push to `main` |
-| `deck/kong-consumers.yaml` | Consumers + API keys | ❌ Gitignored | `./scripts/05-sync-kong-config.sh` |
-| `deck/kong-consumers.yaml.sample` | Consumer format template | ✅ Committed | Reference only |
-
-`scripts/06-setup-github-sync.sh` (run once after deployment) extracts the NLB hostname, sets GitHub Actions secrets, and triggers the first sync. After that, pushes to `deck/kong-config.yaml` auto-sync to Konnect.
-
-### Adding Team Members
-
-```bash
-# 1. Generate a strong key
-openssl rand -hex 32
-
-# 2. Add consumer to deck/kong-consumers.yaml
-```
-```yaml
-consumers:
-  - username: alice
-    keyauth_credentials:
-      - key: GENERATED_KEY_HERE
-      - key: "Bearer GENERATED_KEY_HERE"
-```
-```bash
-# 3. Sync to Konnect
-./scripts/05-sync-kong-config.sh
-
-# 4. Share the key via a secure channel (1Password, etc.) — never email or Slack
-```
-
-### Removing Team Members
-
-Delete their block from `deck/kong-consumers.yaml` and re-run `./scripts/05-sync-kong-config.sh`. Their key is invalidated immediately.
 
 ---
 
 ## ArgoCD GitOps Pipeline
 
-Terraform provisions ArgoCD during `terraform apply`. ArgoCD then auto-syncs all Kubernetes workloads from Git using sync waves — no manual `kubectl apply` needed after initial setup. Drift is continuously reconciled.
-
-### Deployment Sequence
-
-```mermaid
-%%{init: {'theme': 'default', 'themeVariables': {'fontSize': '11px'}, 'flowchart': {'nodeSpacing': 25, 'rankSpacing': 35}}}%%
-flowchart TD
-    START(["🚀 deploy.sh"])
-
-    subgraph TF["⚙️ terraform apply"]
-        TF1["VPC · EKS · IAM\nLB Controller · Transit Gateway · RAM Share"]
-        TF2["helm install argo-cd"]
-        TF3["helm install argocd-apps\nRoot Application → argocd/apps/"]
-        TF1 --> TF2 --> TF3
-    end
-
-    subgraph ARGO["🔄 ArgoCD — automated sync waves"]
-        W_2["Wave -2 · Gateway API CRDs"]
-        W_1["Wave -1 · Istio Base CRDs"]
-        W0["Wave  0 · Istiod · CNI · ztunnel · NVIDIA plugin"]
-        W1["Wave  1 · Namespaces: ollama · istio-ingress"]
-        W2["Wave  2 · StorageClass gp3 · PVC 200Gi"]
-        W3["Wave  3 · Ollama Deployment · Service · NetworkPolicy"]
-        W4["Wave  4 · Model Loader Job — qwen3.5:122b ~81GB"]
-        W5["⚠️ Wave  5 · Istio Gateway → internal NLB\nDegraded until TLS secret exists"]
-        W6["Wave  6 · HTTPRoutes → ollama:11434"]
-        W_2 --> W_1 --> W0 --> W1 --> W2 --> W3 --> W4 --> W5 --> W6
-    end
-
-    subgraph SETUP["📜 scripts/01-setup.sh — called by deploy.sh"]
-        SA["kubectl config from Terraform outputs"]
-        SB["scripts/02-generate-certs.sh\ncreates istio-gateway-tls secret"]
-        SC["Wait for Ollama pod Ready"]
-        SD["scripts/03-setup-cloud-gateway.sh\nKong control plane · network · TGW attach request"]
-        SA --> SB --> SC --> SD
-    end
-
-    subgraph POST["📜 scripts/04-post-setup.sh — manual after TGW ready"]
-        PA["Discover NLB DNS\nkubectl get gateway -n istio-ingress"]
-        PB["deck gateway sync\npush kong-config.yaml to Kong Konnect"]
-        PA --> PB
-    end
-
-    DONE(["✅ Ollama reachable via Kong Gateway"])
-
-    START --> TF1
-    TF3 --> W_2
-    TF3 --> SA
-    SB -. "unblocks Wave 5" .-> W5
-    SD --> WAIT(["⏳ Wait ~30 min\nfor TGW attachment ready"])
-    WAIT --> PA
-    W6 --> DONE
-    PB --> DONE
-
-    style START fill:#2E8B57,color:#fff
-    style DONE fill:#2E8B57,color:#fff
-    style WAIT fill:#FF9900,color:#fff
-    style TF1 fill:#5C4EE5,color:#fff
-    style TF2 fill:#EF7B4D,color:#fff
-    style TF3 fill:#EF7B4D,color:#fff
-    style W_2 fill:#466BB0,color:#fff
-    style W_1 fill:#466BB0,color:#fff
-    style W0 fill:#466BB0,color:#fff
-    style W1 fill:#466BB0,color:#fff
-    style W2 fill:#466BB0,color:#fff
-    style W3 fill:#2E8B57,color:#fff
-    style W4 fill:#2E8B57,color:#fff
-    style W5 fill:#8B0000,color:#fff
-    style W6 fill:#2E8B57,color:#fff
-    style SA fill:#F0F0F0,color:#333
-    style SB fill:#466BB0,color:#fff
-    style SC fill:#F0F0F0,color:#333
-    style SD fill:#003459,color:#fff
-    style PA fill:#F0F0F0,color:#333
-    style PB fill:#003459,color:#fff
-    style TF fill:#E8E8E8,stroke:#999,color:#333
-    style ARGO fill:#F0F0F0,stroke:#BBB,color:#333
-    style SETUP fill:#F5F5F5,stroke:#CCC,color:#333
-    style POST fill:#F5F5F5,stroke:#CCC,color:#333
-```
+Terraform provisions ArgoCD during `terraform apply`. ArgoCD then auto-syncs all Kubernetes workloads from Git using sync waves — no manual `kubectl apply` needed. Drift is continuously reconciled.
 
 ### Sync Wave Ordering
 
-```mermaid
-%%{init: {'theme': 'default', 'gantt': {'leftPadding': 160}}}%%
-gantt
-    title ArgoCD Sync Wave Deployment Order
-    dateFormat X
-    axisFormat Wave %s
-
-    section Infrastructure
-    Gateway API CRDs (wave -2)     :a1, 0, 1
-    Istio Base CRDs (wave -1)      :a2, 1, 2
-    Istiod + CNI + NVIDIA (wave 0) :a3, 2, 3
-
-    section Namespaces & Storage
-    Namespaces (wave 1)            :b1, 3, 4
-    StorageClass + PVC (wave 2)    :b2, 4, 5
-
-    section Applications
-    Ollama Deployment (wave 3)     :c1, 5, 6
-    Model Loader Job (wave 4)      :c2, 6, 7
-
-    section Gateway & Routing
-    Istio Gateway NLB (wave 5)     :d1, 7, 8
-    HTTPRoutes (wave 6)            :d2, 8, 9
-```
-
 | Wave | Application | What Gets Deployed |
 |------|-------------|-------------------|
-| -2 | `gateway-api-crds` | `Gateway`, `HTTPRoute`, `GRPCRoute` CRDs v1.2.0 — prune disabled |
+| -2 | `gateway-api-crds` | `Gateway`, `HTTPRoute`, `GRPCRoute` CRDs v1.2.0 |
 | -1 | `istio-base` | Istio CRDs and cluster-wide resources |
-| 0 | `istiod`, `istio-cni`, `ztunnel`, `nvidia-device-plugin` | Ambient mesh control plane + data plane DaemonSets + GPU plugin |
-| 1 | `namespaces` | `ollama`, `istio-ingress` namespaces labelled `istio.io/dataplane-mode: ambient` |
+| 0 | `istiod`, `istio-cni`, `ztunnel`, `nvidia-device-plugin` | Ambient mesh + GPU plugin |
+| 1 | `namespaces` | `ollama`, `istio-system` namespaces with ambient mesh label |
 | 2 | `ollama-storage` | StorageClass `gp3` (Retain, WaitForFirstConsumer) + PVC 200Gi |
-| 3 | `ollama` | Deployment (4 GPUs, `strategy: Recreate`), Service (ClusterIP :11434), NetworkPolicy |
-| 4 | `model-loader` | Job: pulls `qwen3.5:122b` (~81GB) to EBS PVC |
-| 5 | `gateway` | Istio Gateway → AWS LB Controller provisions internal NLB ⚠️ requires TLS cert from `02-generate-certs.sh` |
+| 3 | `ollama` | Deployment (4 GPUs, `strategy: Recreate`), Service, NetworkPolicy |
+| 4 | `model-loader` | Job: pulls models to EBS PVC |
+| 5 | `gateway` | Istio Gateway → AWS LB Controller provisions internal NLB |
 | 6 | `httproutes` | HTTPRoute: `/*` → `ollama.ollama.svc.cluster.local:11434` |
-
-> **Key insight:** Negative waves establish CRD foundations before control plane components, which must be healthy before workload and gateway waves execute.
-
-### End-to-End GitOps Flow
+| 7 | `open-webui` | Open WebUI deployment, service, PVC, NetworkPolicy (model locked to admins) |
 
 ```mermaid
-sequenceDiagram
-    participant Dev as Developer
-    participant TF as Terraform
-    participant ARGO as ArgoCD Controller
-    participant GIT as GitHub Repo (argocd/apps/)
-    participant K8S as Kubernetes API (EKS)
-    participant AWS as AWS (LB Controller)
-
-    Dev->>TF: terraform apply
-
-    rect rgb(240, 248, 255)
-        Note over TF,K8S: Bootstrap — AWS infrastructure + ArgoCD
-        TF->>K8S: VPC, EKS, IAM, LB Controller, Transit Gateway, RAM Share
-        TF->>K8S: helm install argo-cd (argocd namespace)
-        TF->>K8S: helm install argocd-apps → root Application pointing to argocd/apps/
+flowchart LR
+    subgraph W0["Wave -2 to 0"]
+        CRD["Gateway API CRDs"]
+        ISTIO["Istio Base + Istiod\nCNI + ztunnel"]
+        NV["NVIDIA Device Plugin"]
     end
 
-    Note over ARGO,GIT: ArgoCD polls Git every 3 min and reconciles drift
-    ARGO->>GIT: Discover child Applications in argocd/apps/
-    GIT-->>ARGO: 12 Application manifests (waves -2 to 6)
-
-    rect rgb(255, 248, 240)
-        Note over ARGO,K8S: Waves -2 to 0 — CRDs + Service Mesh + GPU
-        ARGO->>K8S: Apply Gateway API CRDs v1.2.0
-        K8S-->>ARGO: Healthy
-        ARGO->>K8S: helm install istio/base v1.24.2
-        K8S-->>ARGO: Healthy
-        ARGO->>K8S: helm install istiod + istio-cni + ztunnel + nvidia-device-plugin
-        K8S-->>ARGO: All Healthy
+    subgraph W1["Waves 1-2"]
+        NS["Namespaces\n+ Ambient Labels"]
+        ST["StorageClass gp3\n+ PVC 200Gi"]
     end
 
-    rect rgb(240, 255, 240)
-        Note over ARGO,K8S: Waves 1–2 — Namespaces + Storage
-        ARGO->>K8S: Create ollama + istio-ingress namespaces
-        ARGO->>K8S: StorageClass gp3 (Retain) + PVC 200Gi
-        K8S-->>ARGO: Healthy
+    subgraph W2["Waves 3-4"]
+        OLM["Ollama Deployment\nService + NetworkPolicy"]
+        ML["Model Loader Job"]
     end
 
-    rect rgb(240, 255, 240)
-        Note over ARGO,K8S: Waves 3–4 — Ollama + Model Loader
-        ARGO->>K8S: Deployment (4 GPUs, strategy Recreate) + Service + NetworkPolicy
-        K8S-->>ARGO: Synced (pod Running once GPU node Ready)
-        ARGO->>K8S: Job: poll /api/tags then POST /api/pull qwen3.5:122b
-        Note right of K8S: Downloads ~81GB to EBS PVC (30-60 min)
-        K8S-->>ARGO: Job Completed
+    subgraph W3["Waves 5-7"]
+        GW["Istio Gateway\n→ Internal NLB"]
+        HR["HTTPRoutes"]
+        WUI["Open WebUI"]
     end
 
-    rect rgb(255, 240, 240)
-        Note over ARGO,K8S: Wave 5 — Istio Gateway (TLS dependency)
-        ARGO->>K8S: Gateway resource (internal NLB annotation)
-        Note right of K8S: Degraded — missing istio-gateway-tls secret
-        Dev->>K8S: scripts/02-generate-certs.sh creates TLS secret
-        ARGO->>K8S: selfHeal retries automatically
-        K8S->>AWS: LB Controller provisions internal NLB
-        AWS-->>K8S: NLB DNS assigned
-        K8S-->>ARGO: Healthy
-    end
+    CRD --> ISTIO --> NV --> NS --> ST --> OLM --> ML --> GW --> HR --> WUI
 
-    rect rgb(240, 255, 240)
-        Note over ARGO,K8S: Wave 6 — HTTPRoutes
-        ARGO->>K8S: HTTPRoute: /* to ollama.ollama.svc:11434
-        K8S-->>ARGO: Healthy
-    end
-
-    Note over Dev,AWS: All 12 apps Synced + Healthy
-    Dev->>Dev: scripts/03-setup-cloud-gateway.sh
-    Note right of Dev: Kong Konnect control plane + Transit Gateway attach
-    Dev->>Dev: scripts/04-post-setup.sh
-    Note right of Dev: Discover NLB DNS + deck gateway sync to Konnect
+    style W0 fill:#e8eaf6,stroke:#3f51b5,stroke-width:2px
+    style W1 fill:#e0f7fa,stroke:#00bcd4,stroke-width:2px
+    style W2 fill:#fff3e0,stroke:#ff9800,stroke-width:2px
+    style W3 fill:#e8f5e9,stroke:#4caf50,stroke-width:2px
 ```
-
----
-
-## How It's Built
-
-### Layer 1 — Cloud Foundations (Terraform `modules/vpc`)
-
-| Resource | Details |
-|----------|---------|
-| VPC | `10.0.0.0/16`, DNS hostnames enabled |
-| Public Subnets | 2x AZs, tagged for ELB |
-| Private Subnets | 2x AZs, tagged for internal ELB |
-| Internet Gateway | Outbound for public subnets |
-| NAT Gateway | Outbound for private subnets |
-
-### Layer 2 — Kubernetes Infrastructure (Terraform `modules/eks`, `modules/argocd`, etc.)
-
-| Resource | Details |
-|----------|---------|
-| EKS Cluster | Kubernetes 1.31, public + private API endpoint |
-| System Node Group | 2x `t3.medium`, tainted `CriticalAddonsOnly` |
-| GPU Node Group | 1x `g5.12xlarge` (4x NVIDIA A10G, 96GB VRAM), tainted `nvidia.com/gpu`, pinned to `us-west-2a` |
-| EKS Addons | VPC-CNI, CoreDNS, kube-proxy, EBS CSI Driver |
-| IAM / IRSA | Scoped roles for EBS CSI + LB Controller via OIDC |
-| ArgoCD | Helm chart v7.7.16, bootstraps root app pointing to `argocd/apps/` |
-| AWS LB Controller | Provisions internal NLBs from Gateway API resources |
-| Transit Gateway | Network bridge to Kong's managed AWS account |
-| RAM Share | Shares TGW with Kong's AWS account ID (fetched from Konnect API at setup time) |
-
-### Layer 3 — Service Mesh (ArgoCD waves -2 to 2, 5, 6)
-
-Waves -2 through 2 set up the mesh and storage before Ollama starts. Waves 5–6 (Gateway + HTTPRoutes) wait for the TLS secret created by `02-generate-certs.sh`.
-
-### Layer 4 — Applications (ArgoCD waves 3, 4)
-
-| Wave | What |
-|------|------|
-| 3 | Ollama Deployment (4 GPUs, `strategy: Recreate`), Service (ClusterIP :11434), NetworkPolicy |
-| 4 | Model Loader Job — pulls `qwen3.5:122b` (~81GB) to EBS PVC |
-
-> **`strategy: Recreate`** is required because the GPU node cannot run two Ollama pods simultaneously — the new pod would stay Pending until the old one terminates.
 
 ---
 
@@ -668,16 +621,157 @@ Waves -2 through 2 set up the mesh and storage before Ollama starts. Waves 5–6
 
 | Layer | Protection |
 |-------|-----------|
-| **Kong AI Gateway** | API key auth per consumer, rate limiting, 10MB request size cap |
-| **Transit Gateway** | Private connectivity — Kong traffic never traverses the internet after leaving Kong's AWS |
-| **Internal NLB** | Not internet-facing — only reachable from Kong via Transit Gateway |
+| **CloudFront + WAF** | Rate limiting (100/5min), IP allowlist, geo-blocking (AU/US), SQL/XSS rules, DDoS protection (Shield Standard) |
+| **API Gateway + API Key** | x-api-key header required (native usage plans + API keys, managed via Console), REST API with VPC Link — no public NLB exposure |
+| **VPC Link** | Private connectivity from API Gateway to internal NLB |
+| **Internal NLB** | Not internet-facing — only reachable via VPC Link |
 | **Istio Ambient** | Automatic L4 mTLS between all pods |
 | **Ollama Service** | `ClusterIP` — never directly exposed outside the cluster |
-| **NetworkPolicy** | Ingress from `istio-ingress` + `ollama` namespaces only; egress DNS + HTTPS |
+| **NetworkPolicy** | Air-gap enforced: ingress from `istio-system` only on port 11434; egress DNS + intra-cluster only |
 | **AWS VPC** | Nodes in private subnets, NAT for outbound only |
 | **Node Isolation** | System nodes tainted `CriticalAddonsOnly`, GPU nodes tainted `nvidia.com/gpu` |
-| **EBS Storage** | Attaches to EC2 GPU node via Nitro NVMe (hypervisor-level, not network path) |
-| **IRSA** | EBS CSI + LB Controller use least-privilege IAM roles via OIDC |
+| **EBS Snapshot** | Pre-loaded models — no internet needed for model loading |
+| **IRSA** | EBS CSI + LB Controller + Bedrock (Stack B) use least-privilege IAM roles via OIDC |
+| **cert-manager** | Automated TLS certificate lifecycle (90d duration, 30d auto-renewal) |
+
+### API Key Authentication
+
+Every request to the Ollama API requires an `x-api-key` header — same pattern as the Claude API. Keys are managed natively by API Gateway via usage plans, directly from the AWS Console.
+
+| Component | Details |
+|-----------|---------|
+| Header | `x-api-key` (required on all routes) |
+| Management | AWS Console → API Gateway → Usage Plans → `ollama-standard` → API Keys |
+| Validation | Native API Gateway key validation (no Lambda, no external dependency) |
+| Per-key features | Enable/disable, per-key usage metrics, per-plan rate limits + quotas |
+| Initial key | Auto-created by Terraform on first deploy |
+| Disable auth | `terraform apply -var="api_key_required=false"` removes all key resources |
+
+**Managing keys from the Console:**
+
+| Action | How |
+|--------|-----|
+| View existing keys | Console → API Gateway → API Keys |
+| Create new key | Console → API Gateway → API Keys → Create API Key → Add to `ollama-standard` usage plan |
+| Disable a key | Console → API Gateway → API Keys → Select key → Disable (takes effect immediately) |
+| Delete a key | Console → API Gateway → API Keys → Select key → Delete |
+| View per-key usage | Console → API Gateway → Usage Plans → `ollama-standard` → Usage tab |
+| Set daily/monthly quota | Console → API Gateway → Usage Plans → `ollama-standard` → Edit → Quota |
+
+```bash
+# Retrieve your API key via CLI
+API_KEY=$(aws apigateway get-api-key \
+  --api-key $(terraform output -raw api_key_id) \
+  --include-value --query value --output text)
+
+# Use with OpenAI SDK / Continue.dev
+export OPENAI_API_BASE=https://<CLOUDFRONT_DOMAIN>
+export OPENAI_API_KEY=$API_KEY
+
+# Use with curl
+curl https://<CLOUDFRONT_DOMAIN>/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $API_KEY" \
+  -d '{"model":"qwen3.5:122b-a10b","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+> **Note:** `kubectl port-forward` bypasses CloudFront/API Gateway entirely, so no API key is needed for direct cluster access.
+
+### Key Rotation
+
+Create a new key and disable the old one — zero downtime:
+
+```bash
+# Create a new key via CLI (or do this in the Console)
+NEW_KEY_ID=$(aws apigateway create-api-key \
+  --name "ollama-$(date +%Y%m%d)" \
+  --enabled \
+  --query id --output text)
+
+# Add it to the usage plan
+USAGE_PLAN_ID=$(terraform output -raw usage_plan_id)
+aws apigateway create-usage-plan-key \
+  --usage-plan-id $USAGE_PLAN_ID \
+  --key-id $NEW_KEY_ID \
+  --key-type API_KEY
+
+# Get the new key value
+aws apigateway get-api-key --api-key $NEW_KEY_ID --include-value --query value --output text
+
+# Disable the old key (or delete it)
+OLD_KEY_ID=$(terraform output -raw api_key_id)
+aws apigateway update-api-key --api-key $OLD_KEY_ID --patch-operations op=replace,path=/enabled,value=false
+```
+
+---
+
+## Terraform CI/CD
+
+Two GitHub Actions workflows with OIDC federation (no long-lived credentials):
+
+| Workflow | Trigger | What It Does |
+|----------|---------|-------------|
+| `terraform-plan.yml` | PR to `terraform/**` | Runs `terraform plan`, posts output as PR comment |
+| `terraform-apply.yml` | Push to main for `terraform/**` | Runs `terraform apply` with manual approval (GitHub Environment "production"), then runs `verify-airgap.sh` |
+
+Prerequisites: S3 backend bootstrapped, OIDC federation configured between GitHub and AWS.
+
+---
+
+## Repo Structure
+
+```
+terraform/
+  main.tf                          # Main config — all modules wired together
+  variables.tf                     # All variables with defaults
+  outputs.tf                       # Cluster info, CloudFront domain, commands
+  backend.tf                       # S3 + DynamoDB state locking
+  modules/
+    vpc/                           # VPC, subnets, NAT, IGW
+    iam/                           # Cluster + node IAM roles, IRSA
+    eks/                           # EKS cluster, node groups, addons
+    argocd/                        # ArgoCD Helm + root Application
+    lb-controller/                 # AWS Load Balancer Controller
+    observability/                 # Prometheus + Grafana + DCGM Exporter
+    api-gateway/                   # REST API Gateway + VPC Link + API Keys
+    cdn-waf/                       # CloudFront + WAFv2 (5 rules)
+    cert-manager/                  # cert-manager Helm release
+    bedrock-integration/           # Stack B: VPC endpoint + IRSA for Bedrock
+
+k8s/
+  ollama/                          # Deployment, Service, NetworkPolicy (air-gapped)
+  model-loader/                    # Job to pull models
+  nodepools/                       # Karpenter NodePool + EC2NodeClass
+  cert-manager/                    # ClusterIssuer + Certificate
+  open-webui/                      # Open WebUI — chat interface (model locked to admins)
+  gateway.yaml                     # Istio Gateway
+  httproutes.yaml                  # HTTPRoutes to Ollama
+  monitoring-networkpolicy.yaml    # Monitoring namespace air-gap
+
+argocd/apps/                       # Wave-based Application manifests
+
+scripts/
+  deploy-stack-a.sh                # End-to-end Stack A deployment automation
+  verify-airgap.sh                 # Air-gap compliance verification
+  create-model-snapshot.sh         # EBS snapshot with pre-loaded models
+  generate-readme-html.py          # README.md → README.html converter
+  01-setup.sh                      # Post-terraform cluster setup
+  04-post-setup.sh                 # NLB discovery + endpoint verification
+  scale-up.sh / scale-down.sh      # GPU node scaling helpers
+  test-ollama-stack.sh             # Integration tests
+
+.github/workflows/
+  terraform-plan.yml               # PR → plan → comment
+  terraform-apply.yml              # Merge → apply → verify air-gap
+
+switch-model.sh                    # Model tier switching (repo root)
+
+.claude/skills/
+  readme-sync/SKILL.md             # Skill: keep README + HTML + architecture diagrams in sync
+  model-switch/SKILL.md            # Skill: /model command for interactive tier switching
+```
+
+> **Implementation status:** All Terraform modules, K8s manifests, scripts, and workflows listed above are implemented. Stack A (air-gapped) is the default deployment. Set `enable_bedrock=true` in `terraform.tfvars` for Stack B (hybrid).
 
 ---
 
@@ -685,248 +779,72 @@ Waves -2 through 2 set up the mesh and storage before Ollama starts. Waves 5–6
 
 | Problem | Diagnosis | Fix |
 |---------|-----------|-----|
-| Pod stuck in `Pending` | `kubectl describe pod -n ollama -l app=ollama` | GPU node not ready — wait or check nodegroup scaling |
+| Pod stuck in `Pending` | `kubectl describe pod -n ollama` | GPU node not ready — wait for Karpenter to provision |
 | `Insufficient nvidia.com/gpu` | NVIDIA device plugin not ready | `kubectl get ds -n kube-system` — wait for DaemonSet rollout |
-| Model pull fails | `kubectl exec -n ollama deploy/ollama -- df -h /root/.ollama` | Disk full — increase PVC size |
-| Kong returns 401 | Wrong or missing API key | Check header: `apikey`, `x-api-key`, or `Authorization: Bearer <key>`. For Bearer, `deck/kong-consumers.yaml` must have `"Bearer <key>"` as a separate credential entry |
-| Kong returns 429 | Rate limit hit | Wait or raise the `minute` limit in `deck/kong-config.yaml` and re-sync |
-| Ollama returns `500 model failed to load` | CUDA INT_MAX overflow | `OLLAMA_CONTEXT_LENGTH` must be set (e.g. `32768`). qwen3moe's default context of 262K tokens × 4 parallel overflows the 2GB CUDA copy kernel limit |
-| NLB not provisioning | `kubectl get gateway -n istio-ingress` | Check LB Controller: `kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller` |
-| TGW attachment stuck `initializing` | Check Konnect UI or poll loop in Phase 2 | RAM share must be ASSOCIATED with Kong's AWS account before the attachment is created — verify with `aws ram get-resource-share-associations` |
-| TGW attachment stuck `pendingAcceptance` | `aws ec2 describe-transit-gateway-attachments --filters Name=state,Values=pendingAcceptance` | `aws ec2 accept-transit-gateway-vpc-attachment --transit-gateway-attachment-id <id>` |
-| Istio pods not ready | `kubectl get pods -n istio-system` | ArgoCD self-heals — check: `kubectl get applications -n argocd` |
-| ArgoCD app stuck | `kubectl get applications -n argocd` | `kubectl describe application <name> -n argocd` |
-| Port-forward drops | Tunnel disconnected | Use Kong mode, or loop: `while true; do kubectl port-forward ...; sleep 2; done` |
-| Claude Code outputs raw JSON | Model too small | Use 30B+ model |
-| GPU quota exceeded | AWS `InsufficientInstanceCapacity` | Request quota increase in AWS Console |
-| Kong 409 on re-run | Resource already exists | Scripts are idempotent — existing resources are reused automatically |
+| Model pull fails | `kubectl exec -n ollama deploy/ollama -- df -h` | Disk full — check EBS snapshot volume |
+| Air-gap test fails | `curl` from pod reaches internet | Check `k8s/ollama/networkpolicy.yaml` — should block all egress except DNS |
+| NLB not provisioning | `kubectl get gateway -n istio-system` | Check LB Controller logs |
+| Cold start slow | Node provisioning takes >5 min | Verify EBS snapshot ID in EC2NodeClass, check gp3 throughput settings |
+| Spot reclaimed | Pod evicted mid-session | Karpenter auto-provisions replacement — ~2-3 min recovery |
+| Ollama returns 500 | Model failed to load | Check `OLLAMA_CONTEXT_LENGTH` is set to `32768` |
 
 ### Debug Commands
 
-<details>
-<summary><strong>ArgoCD — sync and app health</strong></summary>
-
 ```bash
-# All apps with sync + health status
+# ArgoCD status
 kubectl get applications -n argocd
 
-# Detailed sync diff and events for a specific app
-kubectl describe application <app-name> -n argocd
-
-# ArgoCD web UI (open https://localhost:8080 in browser)
-kubectl port-forward svc/argocd-server -n argocd 8080:443
-kubectl -n argocd get secret argocd-initial-admin-secret \
-  -o jsonpath='{.data.password}' | base64 -d
-```
-
-</details>
-
-<details>
-<summary><strong>Ollama — model loading and GPU</strong></summary>
-
-```bash
-# Pod status + assigned node
-kubectl get pods -n ollama -o wide
-
-# Stream model download progress
-kubectl logs -n ollama -l app=ollama-model-loader -f
-
-# Ollama server logs (model load, inference, errors)
+# Ollama pod logs
 kubectl logs -n ollama deploy/ollama -f
-
-# List models on disk
-kubectl exec -n ollama deploy/ollama -- ollama list
 
 # GPU utilisation
 kubectl exec -n ollama deploy/ollama -- nvidia-smi
 
-# Test Ollama API from within the cluster
-cat <<'EOF' | kubectl apply -f - && sleep 15 && kubectl logs test-curl -n ollama && kubectl delete pod test-curl -n ollama
-apiVersion: v1
-kind: Pod
-metadata:
-  name: test-curl
-  namespace: ollama
-spec:
-  restartPolicy: Never
-  tolerations:
-    - key: CriticalAddonsOnly
-      operator: Exists
-      effect: NoSchedule
-  containers:
-    - name: curl
-      image: curlimages/curl:latest
-      command: ["curl", "-s", "http://ollama.ollama.svc.cluster.local:11434/api/tags"]
-EOF
+# Grafana dashboards
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
 
-# Storage used by model cache
-kubectl exec -n ollama deploy/ollama -- df -h /root/.ollama
+# Verify air-gap
+kubectl exec -n ollama deploy/ollama -- curl -s --max-time 5 https://google.com
 ```
-
-</details>
-
-<details>
-<summary><strong>EKS Nodes — scheduling and taints</strong></summary>
-
-```bash
-# Node list with instance types and AZ
-kubectl get nodes -L topology.kubernetes.io/zone,node.kubernetes.io/instance-type
-
-# Why is a pod Pending?
-kubectl describe pod -n <namespace> <pod-name> | tail -20
-
-# Node taints (system=CriticalAddonsOnly, gpu=nvidia.com/gpu)
-kubectl get nodes -o json | jq -r '.items[] | "\(.metadata.name): \(.spec.taints // [] | map(.key + "=" + (.value // "") + ":" + .effect) | join(", "))"'
-```
-
-</details>
-
-<details>
-<summary><strong>Scale-down verification — confirm GPU node and pod are stopped</strong></summary>
-
-Run these after the scale-down commands to confirm billing has stopped:
-
-```bash
-# Deployment should show 0/0 READY
-kubectl get deployment ollama -n ollama
-
-# Pod list — no ollama pod should be Running (Completed model-loader is fine)
-kubectl get pods -n ollama -o wide
-
-# Node list — GPU node (g5.12xlarge) should be gone; only system t3.medium nodes remain
-kubectl get nodes -o wide
-
-# GPU nodegroup desired size should be 0
-aws eks describe-nodegroup \
-  --cluster-name $(terraform -chdir=terraform output -raw eks_cluster_name) \
-  --nodegroup-name $(terraform -chdir=terraform output -raw gpu_node_group_name) \
-  --region $(terraform -chdir=terraform output -raw region) \
-  --query 'nodegroup.scalingConfig'
-```
-
-Expected: `{"desiredSize": 0, "maxSize": 2, "minSize": 0}`
-
-> If the pod is `Pending` instead of gone, run: `kubectl scale deployment ollama -n ollama --replicas=0`
-
-</details>
-
-<details>
-<summary><strong>Istio + Gateway — NLB provisioning</strong></summary>
-
-```bash
-# Istio control plane
-kubectl get pods -n istio-system
-
-# Gateway pod + NLB address
-kubectl get pods -n istio-ingress
-kubectl get gateway -n istio-ingress        # shows NLB DNS once provisioned
-kubectl get service -n istio-ingress        # EXTERNAL-IP = NLB DNS
-
-# LB Controller logs (NLB provisioning failures)
-kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller --tail=50
-
-# HTTPRoute status
-kubectl get httproutes -A
-```
-
-</details>
-
-<details>
-<summary><strong>Kong Konnect — control planes, networks, TGW state</strong></summary>
-
-```bash
-source .env
-
-# List control planes
-curl -s "https://${KONNECT_REGION}.api.konghq.com/v2/control-planes" \
-  -H "Authorization: Bearer $KONNECT_TOKEN" | \
-  jq -r '.data[] | "\(.id) | \(.name) | cloud_gateway=\(.cloud_gateway)"'
-
-# List cloud gateway networks with state
-curl -s "https://global.api.konghq.com/v2/cloud-gateways/networks" \
-  -H "Authorization: Bearer $KONNECT_TOKEN" | \
-  jq -r '.data[] | "\(.id) | \(.name) | \(.state)"'
-
-# Poll TGW attachment until ready
-NETWORK_ID=$(curl -s "https://global.api.konghq.com/v2/cloud-gateways/networks" \
-  -H "Authorization: Bearer $KONNECT_TOKEN" | \
-  jq -r '.data[] | select(.name == "ollama-eks-network") | .id')
-TGW_ATT_ID=$(curl -s \
-  "https://global.api.konghq.com/v2/cloud-gateways/networks/${NETWORK_ID}/transit-gateways" \
-  -H "Authorization: Bearer $KONNECT_TOKEN" | jq -r '.data[0].id')
-while true; do
-  STATE=$(curl -s \
-    "https://global.api.konghq.com/v2/cloud-gateways/networks/${NETWORK_ID}/transit-gateways/${TGW_ATT_ID}" \
-    -H "Authorization: Bearer $KONNECT_TOKEN" | jq -r '.state')
-  echo "[$(date '+%H:%M:%S')] TGW attachment: $STATE"
-  [[ "$STATE" == "ready" ]] && echo "Ready — proceed to Phase 3" && break
-  sleep 30
-done
-
-# Kong config diff (preview changes before sync)
-deck gateway diff deck/kong-config.yaml \
-  --konnect-addr https://${KONNECT_REGION}.api.konghq.com \
-  --konnect-token $KONNECT_TOKEN \
-  --konnect-control-plane-name kong-cloud-gateway-eks
-```
-
-> The proxy URL for a Dedicated Cloud Gateway is shown in the Konnect UI only — not returned by the API.
-> **[cloud.konghq.com](https://cloud.konghq.com) → Gateway Manager → `kong-cloud-gateway-eks` → Overview → Proxy URL**
-
-</details>
-
-<details>
-<summary><strong>Kong Konnect — verify end-to-end</strong></summary>
-
-```bash
-source .env
-KONG_PROXY_URL="<paste-from-konnect-ui>"   # e.g. https://xxxx.gateways.konggateway.com
-
-# Verify Ollama responds through Kong
-curl -s "https://${KONG_PROXY_URL}/api/tags" \
-  -H "apikey: <your-api-key>" | jq '.models[].name'
-# Expected: "qwen3.5:122b"
-
-# Test OpenAI-compatible chat completions
-curl -s "https://${KONG_PROXY_URL}/v1/chat/completions" \
-  -H "apikey: <your-api-key>" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"qwen3.5:122b","messages":[{"role":"user","content":"Hello"}]}'
-
-# Connect Claude Code
-source claude-switch.sh ollama \
-  --endpoint "https://${KONG_PROXY_URL}" \
-  --apikey <your-api-key>
-claude --model qwen3.5:122b
-```
-
-</details>
 
 ---
 
 ## Tear Down
 
 ```bash
-./destroy.sh
+cd terraform
+terraform destroy
 ```
 
-This script:
-1. Removes Kong Konnect control plane via API
-2. Deletes all ArgoCD Applications (cascades to Istio, Ollama, Gateway)
-3. Waits for the internal NLB to be deleted (prevents VPC destroy failure)
-4. Uninstalls ArgoCD Helm releases
-5. Deletes namespaces (`istio-system`, `istio-ingress`, `ollama`, `argocd`)
-6. Removes the EBS CSI Driver addon
-7. Runs `terraform destroy`
-8. Reports any orphaned EBS volumes (retained by policy — delete manually if not needed)
+> **Note:** EBS snapshots are retained by default. Delete manually if not needed: `aws ec2 delete-snapshot --snapshot-id snap-xxx`
 
-```bash
-./destroy.sh --force   # skip confirmation prompt
-```
+---
+
+## Working Conventions
+
+| Convention | Details |
+|-----------|---------|
+| Terraform modules | Each follows: `main.tf`, `variables.tf`, `outputs.tf`, `versions.tf` |
+| ArgoCD waves | Respect wave numbering when adding new resources |
+| NetworkPolicy | Mandatory for any new namespace — default-deny egress, allow only required traffic |
+| Air-gap principle | No pod should reach the internet unless explicitly justified. Verify with `verify-airgap.sh` |
+| Branch strategy | Feature branches per sprint, PR to main with Terraform plan output |
+| Image tags | Always pin to specific version + digest. Never use `:latest` |
+| Region | `ap-southeast-2` (Sydney) throughout. All resources in this region |
+| Cluster name | `ollama-eks` |
+| Naming convention | Resources prefixed with `ollama-eks-` or `ollama-` for easy identification |
+
+---
+
+## Companion Documents
+
+- **Ollama-EKS-Report.html** — Full visual report with architecture diagrams, cost tables, and implementation details
+- **RECOMMENDATIONS-Ollama-EKS-Improvements.md** — Detailed recommendations for each improvement area
+- **CLAUDE.md** — Project context file for Claude Code implementation
+- **switch-model.sh** — Model tier switching script
 
 ---
 
 ## More Information
 
-- **Terraform variable reference:** [terraform/README.md](terraform/README.md)
 - **GitHub:** [shanaka-versent/Ollama-on-EKS](https://github.com/shanaka-versent/Ollama-on-EKS)

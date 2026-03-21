@@ -1,0 +1,34 @@
+# NVIDIA DCGM Exporter — runs as DaemonSet on GPU nodes only
+nodeSelector:
+  ${gpu_node_selector_key}: "${gpu_node_selector_value}"
+
+# Tolerate GPU taints so DCGM runs on GPU nodes
+tolerations:
+  - key: nvidia.com/gpu
+    operator: Exists
+    effect: NoSchedule
+
+# Enable ServiceMonitor for Prometheus auto-discovery
+serviceMonitor:
+  enabled: true
+  namespace: monitoring
+  additionalLabels: {}
+
+# Resources — DCGM Exporter is lightweight
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "200m"
+    memory: "256Mi"
+
+# Metrics to collect — keep the default set which includes:
+# DCGM_FI_DEV_GPU_UTIL      — SM utilisation %
+# DCGM_FI_DEV_MEM_COPY_UTIL — Memory copy utilisation %
+# DCGM_FI_DEV_FB_FREE       — Framebuffer memory free (MiB)
+# DCGM_FI_DEV_FB_USED       — Framebuffer memory used (MiB)
+# DCGM_FI_DEV_GPU_TEMP      — GPU temperature (°C)
+# DCGM_FI_DEV_POWER_USAGE   — Power draw (W)
+# DCGM_FI_DEV_PCIE_TX_THROUGHPUT — PCIe TX (KB/s)
+# DCGM_FI_DEV_PCIE_RX_THROUGHPUT — PCIe RX (KB/s)

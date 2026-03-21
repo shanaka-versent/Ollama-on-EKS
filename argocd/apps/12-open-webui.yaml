@@ -1,0 +1,30 @@
+# Wave 7: Open WebUI — Browser-Based Model Switching Interface
+# Deploys Open WebUI with:
+#   - ChatGPT-like interface for Ollama
+#   - Model switching via browser dropdown
+#   - Air-gapped NetworkPolicy (egress to Ollama only)
+#   - 5Gi persistent storage for chat history
+# Requires: namespaces, Ollama (wave 3), Gateway (wave 5)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: open-webui
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "7"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/shanaka-versent/Ollama-on-EKS
+    targetRevision: HEAD
+    path: k8s/open-webui
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: open-webui
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ApplyOutOfSyncOnly=true
+      - CreateNamespace=true

@@ -1,36 +1,26 @@
 #!/bin/bash
-# Post-Terraform Setup — Master Orchestrator
+# Post-Terraform Setup — Stack A (Air-Gapped)
 # @author Shanaka Jayasundera - shanakaj@gmail.com
 #
-# Runs all post-terraform steps in sequence after `terraform apply`:
+# Runs post-terraform steps after `terraform apply`:
 #   1. Configure kubectl from Terraform outputs
-#   2. Wait for ArgoCD to sync Wave 1 (namespaces created)
-#   3. Generate TLS certificates + create K8s secret (unblocks Wave 5)
+#   2. Wait for ArgoCD to sync namespaces (Wave 1)
+#   3. Wait for cert-manager to issue TLS certs (automated)
 #   4. Wait for Ollama to be ready (Wave 3)
-#   5. Set up Kong Konnect Cloud AI Gateway (if .env credentials are set)
-#   6. Discover NLB + sync Kong config (if Kong enabled)
+#   5. Show connection details (CloudFront + API Gateway)
 #
 # Usage:
 #   ./scripts/01-setup.sh
 #
 # Prerequisites:
 #   - terraform apply completed successfully
-#   - .env file exists (with optional KONNECT_REGION + KONNECT_TOKEN for Kong)
-#   - awscli, kubectl, helm installed
+#   - awscli, kubectl installed
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="${SCRIPT_DIR}/.."
 TERRAFORM_DIR="${REPO_DIR}/terraform"
-ENV_FILE="${REPO_DIR}/.env"
-
-# Load .env if it exists
-if [[ -f "$ENV_FILE" ]]; then
-    set -a
-    source "$ENV_FILE"
-    set +a
-fi
 
 # Colors
 RED='\033[0;31m'
@@ -63,7 +53,7 @@ configure_kubectl() {
     fi
 
     EKS_CLUSTER_NAME=$(terraform -chdir="$TERRAFORM_DIR" output -raw eks_cluster_name 2>/dev/null || echo "")
-    AWS_REGION=$(terraform -chdir="$TERRAFORM_DIR" output -raw region 2>/dev/null || echo "us-west-2")
+    AWS_REGION=$(terraform -chdir="$TERRAFORM_DIR" output -raw region 2>/dev/null || echo "ap-southeast-2")
 
     if [[ -z "$EKS_CLUSTER_NAME" ]]; then
         error "Could not read eks_cluster_name from Terraform outputs."
@@ -80,10 +70,10 @@ configure_kubectl() {
 # Step 2: Wait for ArgoCD Wave 1 — namespaces to be created
 # ==============================================================================
 wait_for_namespaces() {
-    step "Step 2: Waiting for ArgoCD Wave 1 — namespaces (ollama, istio-ingress)"
+    step "Step 2: Waiting for ArgoCD Wave 1 — namespaces"
 
     log "ArgoCD syncs in waves. Wave 1 creates namespaces (~5-10 min after terraform apply)."
-    log "Watching for: istio-ingress + ollama"
+    log "Watching for: istio-system + ollama"
 
     local max_wait=900  # 15 min
     local interval=15
@@ -91,19 +81,18 @@ wait_for_namespaces() {
 
     while [[ $waited -lt $max_wait ]]; do
         local istio_ns ollama_ns
-        istio_ns=$(kubectl get namespace istio-ingress --no-headers 2>/dev/null | wc -l | tr -d ' ')
+        istio_ns=$(kubectl get namespace istio-system --no-headers 2>/dev/null | wc -l | tr -d ' ')
         ollama_ns=$(kubectl get namespace ollama --no-headers 2>/dev/null | wc -l | tr -d ' ')
 
         if [[ "$istio_ns" -ge 1 && "$ollama_ns" -ge 1 ]]; then
             log "Both namespaces are ready"
-            # Check ArgoCD app status for visibility
             echo ""
             kubectl get applications -n argocd 2>/dev/null || true
             return
         fi
 
         echo -n "  [${waited}s] Waiting for namespaces"
-        if [[ "$istio_ns" -lt 1 ]]; then echo -n " (istio-ingress missing)"; fi
+        if [[ "$istio_ns" -lt 1 ]]; then echo -n " (istio-system missing)"; fi
         if [[ "$ollama_ns" -lt 1 ]]; then echo -n " (ollama missing)"; fi
         echo ""
         sleep "$interval"
@@ -117,14 +106,34 @@ wait_for_namespaces() {
 }
 
 # ==============================================================================
-# Step 3: Generate TLS certificates (unblocks Wave 5 — Istio Gateway)
+# Step 3: Wait for cert-manager TLS certificates
 # ==============================================================================
-generate_certs() {
-    step "Step 3: Generating TLS certificates for Istio Gateway"
-    log "This creates the 'istio-gateway-tls' secret that Wave 5 (Gateway) requires."
-    log "ArgoCD will self-heal Wave 5 automatically once the secret exists."
-    echo ""
-    "${SCRIPT_DIR}/02-generate-certs.sh"
+wait_for_certs() {
+    step "Step 3: Waiting for cert-manager TLS certificates"
+
+    log "cert-manager auto-generates TLS certs for Istio Gateway."
+    log "Certificate: *.ollama.internal (90-day duration, 30-day auto-renewal)"
+
+    local max_wait=300
+    local interval=10
+    local waited=0
+
+    while [[ $waited -lt $max_wait ]]; do
+        CERT_READY=$(kubectl get certificate -n istio-system istio-gateway-cert \
+            -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+
+        if [[ "$CERT_READY" == "True" ]]; then
+            log "TLS certificate is ready"
+            return
+        fi
+
+        echo "  [${waited}s] Waiting for certificate (status: ${CERT_READY:-pending})..."
+        sleep "$interval"
+        waited=$((waited + interval))
+    done
+
+    warn "Certificate not ready after ${max_wait}s — cert-manager may still be initialising."
+    warn "Check: kubectl get certificate -n istio-system"
 }
 
 # ==============================================================================
@@ -146,7 +155,6 @@ wait_for_ollama() {
 
         if [[ "$READY" -ge 1 ]]; then
             log "Ollama is running (${READY} replica ready)"
-            log "Model loader job (Wave 4) will pull qwen3.5:122b in the background."
             return
         fi
 
@@ -156,30 +164,8 @@ wait_for_ollama() {
     done
 
     warn "Ollama not ready after ${max_wait}s — GPU node may still be initialising."
-    warn "This does not block Kong setup. Check later: kubectl get pods -n ollama"
-}
-
-# ==============================================================================
-# Step 5 & 6 (optional): Kong Konnect Cloud AI Gateway
-# ==============================================================================
-setup_kong() {
-    if [[ -z "${KONNECT_TOKEN:-}" || -z "${KONNECT_REGION:-}" ]]; then
-        echo ""
-        warn "KONNECT_TOKEN or KONNECT_REGION not set — skipping Kong setup."
-        warn "To enable Kong team access:"
-        warn "  1. Set KONNECT_TOKEN and KONNECT_REGION in .env"
-        warn "  2. Run: ./scripts/03-setup-cloud-gateway.sh"
-        warn "  3. Run: ./scripts/04-post-setup.sh"
-        return
-    fi
-
-    step "Step 5: Setting up Kong Konnect Cloud AI Gateway"
-    log "Network provisioning takes ~30 minutes. The script polls automatically."
-    echo ""
-    "${SCRIPT_DIR}/03-setup-cloud-gateway.sh"
-
-    step "Step 6: Post-setup — NLB discovery + Kong config sync"
-    "${SCRIPT_DIR}/04-post-setup.sh"
+    warn "Check pods: kubectl get pods -n ollama"
+    warn "Check nodes: kubectl get nodes"
 }
 
 # ==============================================================================
@@ -188,36 +174,29 @@ setup_kong() {
 show_summary() {
     echo ""
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN}  Setup Complete!${NC}"
+    echo -e "${GREEN}  Setup Complete — Stack A (Air-Gapped)${NC}"
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
 
-    if [[ -n "${KONNECT_TOKEN:-}" ]]; then
-        echo "  Kong Cloud AI Gateway mode (team access):"
-        echo ""
-        echo "  Get your Kong proxy URL from:"
-        echo "  https://cloud.konghq.com → Gateway Manager → Data Plane Nodes"
-        echo ""
-        echo "  Then connect:"
-        echo "    source claude-switch.sh ollama \\"
-        echo "      --endpoint https://<KONG_PROXY_URL> \\"
-        echo "      --apikey <your-api-key>"
-    else
-        echo "  Local mode (port-forward — single user):"
-        echo ""
-        echo "    source claude-switch.sh local"
-    fi
+    CLOUDFRONT=$(terraform -chdir="$TERRAFORM_DIR" output -raw cloudfront_domain 2>/dev/null || echo "pending")
+    API_KEY_ID=$(terraform -chdir="$TERRAFORM_DIR" output -raw api_key_id 2>/dev/null || echo "")
+    MODEL=$(grep '^ollama_model' "$TERRAFORM_DIR/terraform.tfvars" | sed 's/.*= *"//;s/".*//')
 
+    echo "  CloudFront endpoint: https://${CLOUDFRONT}"
     echo ""
-    echo "  Run Claude Code:"
-    echo "    claude --model qwen3.5:122b"
+    echo "  Get API key:"
+    echo "    aws apigateway get-api-key --api-key ${API_KEY_ID} --include-value --query value --output text"
     echo ""
-    echo "  Monitor ArgoCD (model pull may take 10-30 min depending on speed):"
-    echo "    kubectl get applications -n argocd"
-    echo "    kubectl logs -n ollama -l app=model-loader -f"
+    echo "  Test:"
+    echo "    curl https://${CLOUDFRONT}/v1/chat/completions \\"
+    echo "      -H 'Content-Type: application/json' \\"
+    echo "      -H 'x-api-key: <YOUR_API_KEY>' \\"
+    echo "      -d '{\"model\": \"${MODEL}\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}]}'"
     echo ""
-    echo "  Scale to zero when done (stop billing):"
-    echo "    kubectl scale deployment ollama -n ollama --replicas=0"
+    echo "  Open WebUI:  kubectl port-forward -n open-webui svc/open-webui 8080:8080"
+    echo "  Grafana:     kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80"
+    echo ""
+    echo "  Scale down (stop billing): ./scripts/scale-down.sh"
     echo ""
 }
 
@@ -226,13 +205,12 @@ show_summary() {
 # ==============================================================================
 echo ""
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${CYAN}  Ollama on EKS — Post-Terraform Setup${NC}"
+echo -e "${CYAN}  Ollama on EKS — Post-Terraform Setup (Stack A)${NC}"
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
 configure_kubectl
 wait_for_namespaces
-generate_certs
+wait_for_certs
 wait_for_ollama
-setup_kong
 show_summary

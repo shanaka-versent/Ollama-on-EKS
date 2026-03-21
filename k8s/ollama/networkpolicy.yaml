@@ -1,11 +1,16 @@
-# Ollama NetworkPolicy — defense-in-depth access control
-# Ingress: only from istio-ingress namespace (NLB/Gateway traffic) and
-#          from the ollama namespace itself (model loader job, health checks)
-# Egress:  DNS (UDP+TCP/53) and HTTPS (443) for model downloads from ollama.com
+# Ollama NetworkPolicy — Air-Gap Enforced
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# This policy enforces the air-gap principle:
+#   - Ingress: only from istio-system namespace on port 11434
+#   - Egress: DNS (port 53) + intra-cluster only — NO internet access
+#
+# Verify air-gap: kubectl exec -n ollama deploy/ollama -- curl -s --max-time 5 https://google.com
+# Expected: connection timeout (exit code 28)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: ollama-restrict
+  name: ollama-airgap
   namespace: ollama
   labels:
     app: ollama
@@ -18,33 +23,21 @@ spec:
     - Ingress
     - Egress
   ingress:
-    # Allow traffic from the Istio ingress gateway (Kong → Transit GW → NLB → Istio)
+    # Allow traffic from Istio gateway (CloudFront → API GW → NLB → Istio → Ollama)
     - from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: istio-ingress
-      ports:
-        - port: 11434
-          protocol: TCP
-    # Allow traffic from within the ollama namespace (model loader job, probes)
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: ollama
+              kubernetes.io/metadata.name: istio-system
       ports:
         - port: 11434
           protocol: TCP
   egress:
-    # DNS resolution
+    # DNS resolution (kube-dns / CoreDNS)
     - ports:
         - port: 53
           protocol: UDP
         - port: 53
           protocol: TCP
-    # HTTPS for pulling models from ollama.com / Hugging Face
+    # Intra-cluster traffic only (no internet egress)
     - to:
-        - ipBlock:
-            cidr: 0.0.0.0/0
-      ports:
-        - port: 443
-          protocol: TCP
+        - namespaceSelector: {}

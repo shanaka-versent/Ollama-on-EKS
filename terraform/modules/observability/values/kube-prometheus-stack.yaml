@@ -1,0 +1,193 @@
+# ──────────────────────────────────────────────────────────────────────
+# Prometheus
+# ──────────────────────────────────────────────────────────────────────
+prometheus:
+  prometheusSpec:
+    # CRITICAL: Must be false to pick up DCGM ServiceMonitor
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+
+    retention: "${prometheus_retention}"
+
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: gp3
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: "${prometheus_storage_size}"
+
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "1Gi"
+      limits:
+        cpu: "1"
+        memory: "2Gi"
+
+    # Scrape interval
+    scrapeInterval: "15s"
+    evaluationInterval: "15s"
+
+# ──────────────────────────────────────────────────────────────────────
+# Grafana
+# ──────────────────────────────────────────────────────────────────────
+grafana:
+  adminPassword: "${grafana_admin_password}"
+
+  serviceAccount:
+    annotations:
+      eks.amazonaws.com/role-arn: "${grafana_cloudwatch_role_arn}"
+
+  persistence:
+    enabled: true
+    storageClassName: gp3
+    size: "${grafana_storage_size}"
+
+  # Auto-discover dashboards from ConfigMaps with label grafana_dashboard=1
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: monitoring
+
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+
+  # Datasources: Prometheus (in-cluster) + CloudWatch (for API Gateway metrics)
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+        - name: Prometheus
+          type: prometheus
+          uid: prometheus
+          url: http://kube-prometheus-stack-prometheus.monitoring:9090
+          access: proxy
+          isDefault: true
+          editable: false
+        - name: CloudWatch
+          type: cloudwatch
+          uid: cloudwatch
+          access: proxy
+          editable: false
+          jsonData:
+            authType: default
+            defaultRegion: ${cluster_name == "ollama-eks" ? "ap-southeast-2" : "ap-southeast-2"}
+
+  # Grafana.ini overrides for air-gapped mode
+  grafana.ini:
+    analytics:
+      check_for_updates: false
+      check_for_plugin_updates: false
+      reporting_enabled: false
+    server:
+      root_url: "%(protocol)s://%(domain)s:%(http_port)s/grafana/"
+    # Disable external calls
+    external_image_storage:
+      provider: ""
+    unified_alerting:
+      enabled: true
+
+# ──────────────────────────────────────────────────────────────────────
+# Alertmanager
+# ──────────────────────────────────────────────────────────────────────
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "128Mi"
+      limits:
+        cpu: "200m"
+        memory: "256Mi"
+
+# ──────────────────────────────────────────────────────────────────────
+# Additional PrometheusRules for Ollama/GPU alerts
+# ──────────────────────────────────────────────────────────────────────
+additionalPrometheusRulesMap:
+  ollama-gpu-alerts:
+    groups:
+      - name: gpu.alerts
+        rules:
+          # GPU memory approaching limit — pre-OOM warning
+          - alert: GPUMemoryHigh
+            expr: (DCGM_FI_DEV_FB_USED / (DCGM_FI_DEV_FB_USED + DCGM_FI_DEV_FB_FREE)) * 100 > 85
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "GPU memory usage above 85%"
+              description: "GPU {{ $labels.gpu }} on {{ $labels.instance }} is at {{ $value }}% memory. Risk of OOM."
+
+          - alert: GPUMemoryCritical
+            expr: (DCGM_FI_DEV_FB_USED / (DCGM_FI_DEV_FB_USED + DCGM_FI_DEV_FB_FREE)) * 100 > 95
+            for: 2m
+            labels:
+              severity: critical
+            annotations:
+              summary: "GPU memory usage above 95% — OOM imminent"
+              description: "GPU {{ $labels.gpu }} on {{ $labels.instance }} is at {{ $value }}% memory."
+
+          # GPU temperature warning
+          - alert: GPUTemperatureHigh
+            expr: DCGM_FI_DEV_GPU_TEMP > 85
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "GPU temperature above 85°C"
+              description: "GPU {{ $labels.gpu }} on {{ $labels.instance }} at {{ $value }}°C. Check cooling."
+
+      - name: ollama.alerts
+        rules:
+          # Ollama pod restarting
+          - alert: OllamaPodRestarts
+            expr: increase(kube_pod_container_status_restarts_total{namespace="ollama", container="ollama"}[1h]) > 2
+            for: 0m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Ollama pod restarting frequently"
+              description: "Ollama pod has restarted {{ $value }} times in the last hour."
+
+          # No Ollama pods running (could be expected if scaled to zero)
+          - alert: OllamaUnavailable
+            expr: kube_deployment_status_replicas_available{namespace="ollama", deployment="ollama"} == 0
+            for: 10m
+            labels:
+              severity: info
+            annotations:
+              summary: "No Ollama pods running"
+              description: "Ollama has been unavailable for 10+ minutes. May be scaled to zero (expected) or failing to start (check Karpenter)."
+
+      - name: karpenter.alerts
+        rules:
+          # Karpenter unable to provision GPU node
+          - alert: KarpenterProvisioningFailed
+            expr: increase(karpenter_nodeclaims_terminated_total{reason="FailedProvisioning"}[15m]) > 0
+            for: 0m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Karpenter failed to provision GPU node"
+              description: "Karpenter could not provision a GPU node. Check capacity, quotas, and instance availability."
+
+# ──────────────────────────────────────────────────────────────────────
+# Disable components we don't need
+# ──────────────────────────────────────────────────────────────────────
+kubeEtcd:
+  enabled: false  # Not accessible on EKS managed control plane
+
+kubeControllerManager:
+  enabled: false  # Not accessible on EKS managed control plane
+
+kubeScheduler:
+  enabled: false  # Not accessible on EKS managed control plane
