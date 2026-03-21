@@ -2,21 +2,18 @@
 # @author Shanaka Jayasundera - shanakaj@gmail.com
 #
 # Creates the Istio ingress gateway with an INTERNAL NLB.
-# Kong Cloud Gateway reaches this NLB via AWS Transit Gateway.
+# API Gateway reaches this NLB via VPC Link.
 #
 # Traffic flow:
-#   Client --> Kong Cloud AI GW (managed) --[Transit GW]--> Internal NLB --> Istio Gateway --> Ollama
+#   Client --> CloudFront (WAF) --> API Gateway --> VPC Link --> Internal NLB --> Istio Gateway --> Ollama
 #
 # IMPORTANT: This uses Gateway API (gateway.networking.k8s.io), NOT Ingress
-# IMPORTANT: Apply AFTER terraform apply and scripts/02-generate-certs.sh
-#
-# Apply:
-#   kubectl apply -f k8s/gateway.yaml
 #
 # Node scheduling: All cluster nodes carry either CriticalAddonsOnly or nvidia.com/gpu taints.
 # The Deployment below is a seed for Istio's auto-provisioning: Istio merges the real
-# istio-proxy container into it. ArgoCD ignores the containers diff (see 10-gateway.yaml
-# ignoreDifferences) so the toleration persists without creating a sync loop.
+# istio-proxy container into it. The inject.istio.io/templates=gateway annotation ensures
+# the proxy runs in gateway mode (not sidecar mode). ArgoCD ignores the containers diff
+# (see 10-gateway.yaml ignoreDifferences) so the toleration persists without sync loops.
 
 ---
 # Deployment seed: provides CriticalAddonsOnly toleration so the gateway pod schedules
@@ -37,6 +34,8 @@ spec:
     metadata:
       labels:
         gateway.networking.k8s.io/gateway-name: ollama-gateway
+      annotations:
+        inject.istio.io/templates: gateway  # Use gateway mode, not sidecar mode
     spec:
       tolerations:
         - key: CriticalAddonsOnly
@@ -64,7 +63,7 @@ spec:
       # AWS Load Balancer Controller - INTERNAL NLB (not internet-facing)
       service.beta.kubernetes.io/aws-load-balancer-type: "external"
       service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
-      # CRITICAL: Internal scheme — only reachable via Transit Gateway from Kong
+      # CRITICAL: Internal scheme — only reachable via VPC Link from API Gateway
       service.beta.kubernetes.io/aws-load-balancer-scheme: "internal"
       # Health check configuration
       service.beta.kubernetes.io/aws-load-balancer-healthcheck-protocol: "TCP"
@@ -73,7 +72,7 @@ spec:
       service.beta.kubernetes.io/aws-load-balancer-healthcheck-unhealthy-threshold: "2"
 
   listeners:
-    # HTTP Listener (port 80) — Kong Cloud Gateway connects here
+    # HTTP Listener (port 80) — API Gateway VPC Link connects here
     - name: http
       port: 80
       protocol: HTTP

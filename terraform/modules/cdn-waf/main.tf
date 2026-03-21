@@ -11,12 +11,18 @@
 # NOTE: WAF for CloudFront must be created in us-east-1.
 #       This module uses a separate provider alias for that.
 
+# --- Locals ---
+locals {
+  # Skip IP allowlist rule when "0.0.0.0/0" is set (means "allow all")
+  ip_allowlist_enabled = !contains(var.allowed_ips, "0.0.0.0/0")
+}
+
 # --- WAFv2 Web ACL (must be in us-east-1 for CloudFront) ---
 resource "aws_wafv2_web_acl" "ollama" {
   provider = aws.us_east_1
 
   name        = "${var.project_name}-waf"
-  description = "WAF for Ollama LLM API — rate limit, IP allowlist, geo-block"
+  description = "WAF for Ollama LLM API - rate limit, IP allowlist, geo-block"
   scope       = "CLOUDFRONT"
 
   default_action {
@@ -46,29 +52,32 @@ resource "aws_wafv2_web_acl" "ollama" {
     }
   }
 
-  # Rule 2: IP Allowlist
-  rule {
-    name     = "ip-allowlist"
-    priority = 2
+  # Rule 2: IP Allowlist (skipped when allowed_ips includes 0.0.0.0/0)
+  dynamic "rule" {
+    for_each = local.ip_allowlist_enabled ? [1] : []
+    content {
+      name     = "ip-allowlist"
+      priority = 2
 
-    action {
-      block {}
-    }
+      action {
+        block {}
+      }
 
-    statement {
-      not_statement {
-        statement {
-          ip_set_reference_statement {
-            arn = aws_wafv2_ip_set.allowed_ips.arn
+      statement {
+        not_statement {
+          statement {
+            ip_set_reference_statement {
+              arn = aws_wafv2_ip_set.allowed_ips[0].arn
+            }
           }
         }
       }
-    }
 
-    visibility_config {
-      cloudwatch_metrics_enabled = true
-      metric_name                = "${var.project_name}-ip-allowlist"
-      sampled_requests_enabled   = true
+      visibility_config {
+        cloudwatch_metrics_enabled = true
+        metric_name                = "${var.project_name}-ip-allowlist"
+        sampled_requests_enabled   = true
+      }
     }
   }
 
@@ -156,8 +165,9 @@ resource "aws_wafv2_web_acl" "ollama" {
   tags = var.tags
 }
 
-# --- IP Set for Allowlist ---
+# --- IP Set for Allowlist (only created when specific CIDRs are provided) ---
 resource "aws_wafv2_ip_set" "allowed_ips" {
+  count    = local.ip_allowlist_enabled ? 1 : 0
   provider = aws.us_east_1
 
   name               = "${var.project_name}-allowed-ips"

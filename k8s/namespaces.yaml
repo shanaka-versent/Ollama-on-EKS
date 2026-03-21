@@ -16,4 +16,5 @@ metadata:
   name: istio-ingress
   labels:
     istio.io/dataplane-mode: ambient
+    istio.io/rev: default  # Enables Istio injection for gateway pods
     app.kubernetes.io/part-of: ollama-private-llm

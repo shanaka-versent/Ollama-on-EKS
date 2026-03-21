@@ -627,7 +627,7 @@ flowchart LR
 | **Internal NLB** | Not internet-facing — only reachable via VPC Link |
 | **Istio Ambient** | Automatic L4 mTLS between all pods |
 | **Ollama Service** | `ClusterIP` — never directly exposed outside the cluster |
-| **NetworkPolicy** | Air-gap enforced: ingress from `istio-system` only on port 11434; egress DNS + intra-cluster only |
+| **NetworkPolicy** | Air-gap enforced: ingress from `istio-system` and `istio-ingress` on port 11434; egress DNS + intra-cluster only |
 | **AWS VPC** | Nodes in private subnets, NAT for outbound only |
 | **Node Isolation** | System nodes tainted `CriticalAddonsOnly`, GPU nodes tainted `nvidia.com/gpu` |
 | **EBS Snapshot** | Pre-loaded models — no internet needed for model loading |

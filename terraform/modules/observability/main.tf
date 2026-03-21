@@ -15,21 +15,18 @@ resource "helm_release" "kube_prometheus_stack" {
     prometheus_storage_size       = var.prometheus_storage_size
     grafana_storage_size          = var.grafana_storage_size
     cluster_name                  = var.eks_cluster_name
-    grafana_cloudwatch_role_arn   = var.eks_oidc_provider_arn != "" ? aws_iam_role.grafana_cloudwatch[0].arn : ""
+    grafana_cloudwatch_role_arn   = aws_iam_role.grafana_cloudwatch.arn
   })]
 
-  # Wait for CRDs to be ready before creating ServiceMonitors
-  wait = true
-
-  depends_on = [helm_release.dcgm_exporter]
+  # Wait for CRDs to be ready before DCGM exporter creates ServiceMonitors
+  wait    = true
+  timeout = 600 # 10 minutes — large chart with many CRDs
 }
 
 # ──────────────────────────────────────────────────────────────────────
 # 1b. IRSA Role for Grafana → CloudWatch (FinOps dashboard)
 # ──────────────────────────────────────────────────────────────────────
 resource "aws_iam_role" "grafana_cloudwatch" {
-  count = var.eks_oidc_provider_arn != "" ? 1 : 0
-
   name = "${var.eks_cluster_name}-grafana-cloudwatch"
 
   assume_role_policy = jsonencode({
@@ -53,10 +50,8 @@ resource "aws_iam_role" "grafana_cloudwatch" {
 }
 
 resource "aws_iam_role_policy" "grafana_cloudwatch" {
-  count = var.eks_oidc_provider_arn != "" ? 1 : 0
-
   name = "cloudwatch-read"
-  role = aws_iam_role.grafana_cloudwatch[0].id
+  role = aws_iam_role.grafana_cloudwatch.id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -104,12 +99,15 @@ resource "helm_release" "dcgm_exporter" {
   name             = "dcgm-exporter"
   repository       = "https://nvidia.github.io/dcgm-exporter/helm-charts"
   chart            = "dcgm-exporter"
-  version          = "4.2.3-4.1.3" # check latest
+  version          = "4.8.1"
 
   values = [templatefile("${path.module}/values/dcgm-exporter.yaml", {
     gpu_node_selector_key   = var.gpu_node_selector_key
     gpu_node_selector_value = var.gpu_node_selector_value
   })]
+
+  # ServiceMonitor CRD comes from kube-prometheus-stack — must deploy first
+  depends_on = [helm_release.kube_prometheus_stack]
 }
 
 # ──────────────────────────────────────────────────────────────────────

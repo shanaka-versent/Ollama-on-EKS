@@ -29,5 +29,60 @@ resource "helm_release" "cert_manager" {
     value = "true"
   }
 
+  # Tolerate CriticalAddonsOnly taint on system nodes
+  set {
+    name  = "tolerations[0].key"
+    value = "CriticalAddonsOnly"
+  }
+  set {
+    name  = "tolerations[0].operator"
+    value = "Exists"
+  }
+  set {
+    name  = "tolerations[0].effect"
+    value = "NoSchedule"
+  }
+
+  set {
+    name  = "cainjector.tolerations[0].key"
+    value = "CriticalAddonsOnly"
+  }
+  set {
+    name  = "cainjector.tolerations[0].operator"
+    value = "Exists"
+  }
+  set {
+    name  = "cainjector.tolerations[0].effect"
+    value = "NoSchedule"
+  }
+
+  set {
+    name  = "webhook.tolerations[0].key"
+    value = "CriticalAddonsOnly"
+  }
+  set {
+    name  = "webhook.tolerations[0].operator"
+    value = "Exists"
+  }
+  set {
+    name  = "webhook.tolerations[0].effect"
+    value = "NoSchedule"
+  }
+
+  set {
+    name  = "startupapicheck.tolerations[0].key"
+    value = "CriticalAddonsOnly"
+  }
+  set {
+    name  = "startupapicheck.tolerations[0].operator"
+    value = "Exists"
+  }
+  set {
+    name  = "startupapicheck.tolerations[0].effect"
+    value = "NoSchedule"
+  }
+
+  timeout = 600 # 10 minutes
+
   depends_on = [var.eks_cluster_endpoint]
 }

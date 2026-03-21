@@ -18,7 +18,7 @@ output "api_execution_arn" {
 
 output "vpc_link_id" {
   description = "VPC Link ID"
-  value       = aws_api_gateway_vpc_link.ollama.id
+  value       = local.nlb_available ? aws_api_gateway_vpc_link.ollama[0].id : null
 }
 
 # --- API Key Outputs ---
