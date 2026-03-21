@@ -11,6 +11,12 @@ variable "api_gateway_endpoint" {
   type        = string
 }
 
+variable "nlb_dns_name" {
+  description = "Internal NLB DNS name (used as CloudFront origin for Open WebUI)"
+  type        = string
+  default     = ""
+}
+
 variable "allowed_ips" {
   description = "List of CIDR ranges allowed through WAF IP allowlist"
   type        = list(string)

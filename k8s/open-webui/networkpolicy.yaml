@@ -18,7 +18,15 @@ spec:
     - Ingress
     - Egress
   ingress:
-    # Allow from Istio gateway
+    # Allow from Istio gateway (istio-ingress namespace)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: istio-ingress
+      ports:
+        - port: 8080
+          protocol: TCP
+    # Allow from istio-system (ztunnel / ambient mesh)
     - from:
         - namespaceSelector:
             matchLabels:

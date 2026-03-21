@@ -16,6 +16,7 @@ locals {
   # Skip IP allowlist rule when "0.0.0.0/0" is set (means "allow all")
   ip_allowlist_enabled    = !contains(var.allowed_ips, "0.0.0.0/0")
   origin_lockdown_enabled = var.enable_origin_lockdown
+  webui_enabled           = var.nlb_dns_name != ""
 }
 
 # --- WAFv2 Web ACL (must be in us-east-1 for CloudFront) ---
@@ -215,17 +216,50 @@ resource "aws_cloudfront_distribution" "ollama" {
     }
   }
 
+  # NLB origin for Open WebUI (internal NLB → Istio Gateway → Open WebUI)
+  dynamic "origin" {
+    for_each = local.webui_enabled ? [1] : []
+    content {
+      domain_name = var.nlb_dns_name
+      origin_id   = "nlb-webui"
+
+      custom_origin_config {
+        http_port              = 80
+        https_port             = 443
+        origin_protocol_policy = "http-only"
+        origin_ssl_protocols   = ["TLSv1.2"]
+      }
+    }
+  }
+
+  # Default behavior: Open WebUI (when enabled), otherwise API Gateway
   default_cache_behavior {
     allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
     cached_methods   = ["GET", "HEAD"]
-    target_origin_id = "api-gateway"
+    target_origin_id = local.webui_enabled ? "nlb-webui" : "api-gateway"
 
-    # Disable caching for API requests (POST /v1/chat/completions)
     cache_policy_id          = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # CachingDisabled
     origin_request_policy_id = "b689b0a8-53d0-40ab-baf2-68738e2966ac" # AllViewerExceptHostHeader
 
     viewer_protocol_policy = "https-only"
     compress               = true
+  }
+
+  # API paths → API Gateway (with API key auth)
+  dynamic "ordered_cache_behavior" {
+    for_each = local.webui_enabled ? ["/v1/*", "/api/tags"] : []
+    content {
+      path_pattern     = ordered_cache_behavior.value
+      allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+      cached_methods   = ["GET", "HEAD"]
+      target_origin_id = "api-gateway"
+
+      cache_policy_id          = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # CachingDisabled
+      origin_request_policy_id = "b689b0a8-53d0-40ab-baf2-68738e2966ac" # AllViewerExceptHostHeader
+
+      viewer_protocol_policy = "https-only"
+      compress               = true
+    }
   }
 
   restrictions {

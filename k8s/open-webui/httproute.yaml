@@ -1,0 +1,44 @@
+# Open WebUI — HTTPRoute through Istio Gateway
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# Routes traffic from the Istio Gateway (internal NLB) to Open WebUI.
+# CloudFront sends web UI traffic directly to the NLB (bypassing API Gateway),
+# which uses this HTTPRoute to reach the Open WebUI pod.
+#
+# Path routing priority (handled by CloudFront behaviors):
+#   /v1/*, /api/tags  → API Gateway origin (API key required)
+#   /*                → NLB origin → this HTTPRoute → Open WebUI
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: open-webui-route
+  namespace: open-webui
+spec:
+  parentRefs:
+    - name: ollama-gateway
+      namespace: istio-ingress
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: open-webui
+          port: 80
+
+---
+# ReferenceGrant — allow HTTPRoutes in 'open-webui' namespace to attach
+# to the Gateway in 'istio-ingress' namespace
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-open-webui-routes
+  namespace: open-webui
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: open-webui
+  to:
+    - group: ""
+      kind: Service

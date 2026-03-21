@@ -435,6 +435,7 @@ module "cdn_waf" {
 
   project_name           = var.project_name
   api_gateway_endpoint   = module.api_gateway.api_endpoint
+  nlb_dns_name           = var.nlb_dns_name
   allowed_ips            = var.waf_allowed_ips
   rate_limit             = var.waf_rate_limit
   geo_countries          = var.waf_geo_countries
@@ -475,7 +476,7 @@ module "observability" {
   grafana_storage_size      = var.grafana_storage_size
   eks_oidc_provider_arn    = module.eks.oidc_provider_arn
   eks_oidc_issuer_url      = module.eks.oidc_issuer_url
-  enable_grafana           = !var.enable_managed_grafana
+  enable_grafana           = true  # Temporarily enabled alongside AMG until SSO access is resolved
 
   # AMP integration: when managed Grafana is enabled, Prometheus remote-writes to AMP
   amp_remote_write_endpoint = var.enable_managed_grafana ? module.managed_grafana[0].amp_remote_write_endpoint : ""
