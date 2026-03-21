@@ -35,8 +35,14 @@ variable "enable_bot_control" {
   default     = false
 }
 
+variable "enable_origin_lockdown" {
+  description = "Enable origin lockdown (CloudFront sends shared secret to API Gateway)."
+  type        = bool
+  default     = false
+}
+
 variable "origin_verify_secret" {
-  description = "Shared secret header value for CloudFront → API Gateway origin lockdown. Prevents direct API Gateway access."
+  description = "Shared secret header value for CloudFront → API Gateway origin lockdown."
   type        = string
   sensitive   = true
   default     = ""

@@ -414,14 +414,15 @@ resource "random_password" "origin_verify_secret" {
 module "api_gateway" {
   source = "./modules/api-gateway"
 
-  project_name         = var.project_name
-  nlb_arn              = var.nlb_arn
-  nlb_dns_name         = var.nlb_dns_name
-  api_key_required     = var.api_key_required
-  throttle_rate        = var.throttle_rate
-  throttle_burst       = var.throttle_burst
-  origin_verify_secret = var.enable_origin_lockdown ? random_password.origin_verify_secret[0].result : ""
-  tags                 = var.tags
+  project_name           = var.project_name
+  nlb_arn                = var.nlb_arn
+  nlb_dns_name           = var.nlb_dns_name
+  api_key_required       = var.api_key_required
+  throttle_rate          = var.throttle_rate
+  throttle_burst         = var.throttle_burst
+  enable_origin_lockdown = var.enable_origin_lockdown
+  origin_verify_secret   = var.enable_origin_lockdown ? random_password.origin_verify_secret[0].result : ""
+  tags                   = var.tags
 }
 
 module "cdn_waf" {
@@ -432,14 +433,15 @@ module "cdn_waf" {
     aws.us_east_1 = aws.us_east_1
   }
 
-  project_name         = var.project_name
-  api_gateway_endpoint = module.api_gateway.api_endpoint
-  allowed_ips          = var.waf_allowed_ips
-  rate_limit           = var.waf_rate_limit
-  geo_countries        = var.waf_geo_countries
-  enable_bot_control   = var.waf_enable_bot_control
-  origin_verify_secret = var.enable_origin_lockdown ? random_password.origin_verify_secret[0].result : ""
-  tags                 = var.tags
+  project_name           = var.project_name
+  api_gateway_endpoint   = module.api_gateway.api_endpoint
+  allowed_ips            = var.waf_allowed_ips
+  rate_limit             = var.waf_rate_limit
+  geo_countries          = var.waf_geo_countries
+  enable_bot_control     = var.waf_enable_bot_control
+  enable_origin_lockdown = var.enable_origin_lockdown
+  origin_verify_secret   = var.enable_origin_lockdown ? random_password.origin_verify_secret[0].result : ""
+  tags                   = var.tags
 }
 
 # ==============================================================================

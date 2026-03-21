@@ -11,7 +11,7 @@
 
 locals {
   nlb_available           = var.nlb_arn != ""
-  origin_lockdown_enabled = var.origin_verify_secret != ""
+  origin_lockdown_enabled = var.enable_origin_lockdown
 }
 
 # ==============================================================================

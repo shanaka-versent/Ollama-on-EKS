@@ -34,8 +34,14 @@ variable "throttle_burst" {
   default     = 20
 }
 
+variable "enable_origin_lockdown" {
+  description = "Enable origin lockdown via API Gateway resource policy."
+  type        = bool
+  default     = false
+}
+
 variable "origin_verify_secret" {
-  description = "Shared secret for CloudFront origin lockdown. When set, API Gateway denies requests without matching x-origin-verify header."
+  description = "Shared secret for CloudFront origin lockdown. API Gateway denies requests without matching Referer header."
   type        = string
   sensitive   = true
   default     = ""

@@ -15,7 +15,7 @@
 locals {
   # Skip IP allowlist rule when "0.0.0.0/0" is set (means "allow all")
   ip_allowlist_enabled    = !contains(var.allowed_ips, "0.0.0.0/0")
-  origin_lockdown_enabled = var.origin_verify_secret != ""
+  origin_lockdown_enabled = var.enable_origin_lockdown
 }
 
 # --- WAFv2 Web ACL (must be in us-east-1 for CloudFront) ---
