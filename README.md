@@ -532,7 +532,8 @@ Dashboard variables let you adjust the GPU spot rate ($0.35/hr for g5.xlarge, $1
 | gp3 throughput upgrade (400 MB/s) | ~$4 |
 | EKS control plane | $73 |
 | CloudFront + WAF + API Gateway | ~$6 |
-| **Total** | **~$413/mo** |
+| AWS Managed Grafana + AMP (optional) | ~$9-14 |
+| **Total** | **~$413/mo** (or ~$427/mo with AMG) |
 
 Down from $4,155/mo (24/7 on-demand + Kong) — 90% reduction.
 
@@ -622,6 +623,7 @@ flowchart LR
 | Layer | Protection |
 |-------|-----------|
 | **CloudFront + WAF** | Rate limiting (100/5min), IP allowlist, geo-blocking (AU/US), SQL/XSS rules, DDoS protection (Shield Standard) |
+| **Origin Lockdown** | CloudFront sends a shared secret via `Referer` header; API Gateway resource policy denies requests without it — blocks direct API Gateway access |
 | **API Gateway + API Key** | x-api-key header required (native usage plans + API keys, managed via Console), REST API with VPC Link — no public NLB exposure |
 | **VPC Link** | Private connectivity from API Gateway to internal NLB |
 | **Internal NLB** | Not internet-facing — only reachable via VPC Link |
@@ -733,9 +735,10 @@ terraform/
     argocd/                        # ArgoCD Helm + root Application
     lb-controller/                 # AWS Load Balancer Controller
     observability/                 # Prometheus + Grafana + DCGM Exporter
-    api-gateway/                   # REST API Gateway + VPC Link + API Keys
-    cdn-waf/                       # CloudFront + WAFv2 (5 rules)
+    api-gateway/                   # REST API Gateway + VPC Link + API Keys + origin lockdown
+    cdn-waf/                       # CloudFront + WAFv2 (5 rules) + origin lockdown header
     cert-manager/                  # cert-manager Helm release
+    managed-grafana/               # Optional: AMG + AMP (replaces in-cluster Grafana)
     bedrock-integration/           # Stack B: VPC endpoint + IRSA for Bedrock
 
 k8s/

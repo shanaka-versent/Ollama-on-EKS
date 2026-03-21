@@ -1,18 +1,23 @@
-# Monitoring namespace — air-gapped with CloudWatch exception for Grafana FinOps
-# Prometheus + Alertmanager: no internet egress
-# Grafana: HTTPS egress to AWS APIs only (CloudWatch for FinOps dashboard)
+# Monitoring namespace — air-gapped
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# When using AWS Managed Grafana (AMG):
+#   - No in-cluster Grafana pod exists — no CloudWatch egress needed from pods
+#   - AMG reads CloudWatch natively via its IAM role (no pod egress)
+#   - Prometheus needs HTTPS egress to AMP for remote write (SigV4 auth via IRSA)
+#
+# When using in-cluster Grafana:
+#   - Grafana pod needs HTTPS egress to CloudWatch APIs (for FinOps dashboard)
+#   - Apply the grafana-cloudwatch policy below
+#
+# Current config: AMG mode (enable_managed_grafana=true)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: monitoring-airgap
   namespace: monitoring
 spec:
-  podSelector:
-    matchExpressions:
-      # All pods EXCEPT Grafana
-      - key: app.kubernetes.io/name
-        operator: NotIn
-        values: ["grafana"]
+  podSelector: {}
   policyTypes:
     - Egress
   egress:
@@ -26,32 +31,8 @@ spec:
           protocol: UDP
         - port: 53
           protocol: TCP
-    # NO egress to 0.0.0.0/0 — air-gapped
----
-# Grafana: allow CloudWatch API access (for FinOps showback dashboard)
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: grafana-cloudwatch
-  namespace: monitoring
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: grafana
-  policyTypes:
-    - Egress
-  egress:
-    # Intra-cluster (query Prometheus, Alertmanager)
-    - to:
-        - namespaceSelector: {}
-    # DNS
-    - to: []
-      ports:
-        - port: 53
-          protocol: UDP
-        - port: 53
-          protocol: TCP
-    # HTTPS to AWS APIs (CloudWatch, CloudWatch Logs, STS for IRSA)
+    # HTTPS to AWS APIs (AMP remote write via SigV4 + STS for IRSA token exchange)
+    # Required for Prometheus → AMP when using AWS Managed Grafana
     - to: []
       ports:
         - port: 443

@@ -51,6 +51,24 @@ variable "eks_oidc_issuer_url" {
   default     = ""
 }
 
+variable "enable_grafana" {
+  description = "Enable in-cluster Grafana. Set false when using AWS Managed Grafana."
+  type        = bool
+  default     = true
+}
+
+variable "amp_remote_write_endpoint" {
+  description = "AMP remote write endpoint. When set, Prometheus sends all metrics to AMP for AMG to read."
+  type        = string
+  default     = ""
+}
+
+variable "amp_remote_write_role_arn" {
+  description = "IRSA role ARN for Prometheus remote write to AMP."
+  type        = string
+  default     = ""
+}
+
 variable "tags" {
   description = "Tags to apply to resources"
   type        = map(string)

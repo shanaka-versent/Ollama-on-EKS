@@ -15,7 +15,10 @@ resource "helm_release" "kube_prometheus_stack" {
     prometheus_storage_size       = var.prometheus_storage_size
     grafana_storage_size          = var.grafana_storage_size
     cluster_name                  = var.eks_cluster_name
-    grafana_cloudwatch_role_arn   = aws_iam_role.grafana_cloudwatch.arn
+    grafana_cloudwatch_role_arn   = var.enable_grafana ? aws_iam_role.grafana_cloudwatch[0].arn : ""
+    enable_grafana                = var.enable_grafana
+    amp_remote_write_endpoint     = var.amp_remote_write_endpoint
+    amp_remote_write_role_arn     = var.amp_remote_write_role_arn
   })]
 
   # Wait for CRDs to be ready before DCGM exporter creates ServiceMonitors
@@ -24,10 +27,12 @@ resource "helm_release" "kube_prometheus_stack" {
 }
 
 # ──────────────────────────────────────────────────────────────────────
-# 1b. IRSA Role for Grafana → CloudWatch (FinOps dashboard)
+# 1b. IRSA Role for in-cluster Grafana → CloudWatch (FinOps dashboard)
+#     Only needed when running Grafana in-cluster (not AMG)
 # ──────────────────────────────────────────────────────────────────────
 resource "aws_iam_role" "grafana_cloudwatch" {
-  name = "${var.eks_cluster_name}-grafana-cloudwatch"
+  count = var.enable_grafana ? 1 : 0
+  name  = "${var.eks_cluster_name}-grafana-cloudwatch"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -50,8 +55,9 @@ resource "aws_iam_role" "grafana_cloudwatch" {
 }
 
 resource "aws_iam_role_policy" "grafana_cloudwatch" {
-  name = "cloudwatch-read"
-  role = aws_iam_role.grafana_cloudwatch.id
+  count = var.enable_grafana ? 1 : 0
+  name  = "cloudwatch-read"
+  role  = aws_iam_role.grafana_cloudwatch[0].id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -111,9 +117,11 @@ resource "helm_release" "dcgm_exporter" {
 }
 
 # ──────────────────────────────────────────────────────────────────────
-# 3. Grafana dashboards as ConfigMaps (air-gapped, no internet fetch)
+# 3. Grafana dashboards as ConfigMaps (in-cluster Grafana only)
+#    When using AMG, import dashboard JSON files directly into the workspace.
 # ──────────────────────────────────────────────────────────────────────
 resource "kubernetes_config_map" "gpu_dashboard" {
+  count = var.enable_grafana ? 1 : 0
   metadata {
     name      = "grafana-dashboard-gpu"
     namespace = "monitoring"
@@ -130,6 +138,7 @@ resource "kubernetes_config_map" "gpu_dashboard" {
 }
 
 resource "kubernetes_config_map" "ollama_dashboard" {
+  count = var.enable_grafana ? 1 : 0
   metadata {
     name      = "grafana-dashboard-ollama"
     namespace = "monitoring"
@@ -146,6 +155,7 @@ resource "kubernetes_config_map" "ollama_dashboard" {
 }
 
 resource "kubernetes_config_map" "karpenter_dashboard" {
+  count = var.enable_grafana ? 1 : 0
   metadata {
     name      = "grafana-dashboard-karpenter"
     namespace = "monitoring"
@@ -162,6 +172,7 @@ resource "kubernetes_config_map" "karpenter_dashboard" {
 }
 
 resource "kubernetes_config_map" "finops_dashboard" {
+  count = var.enable_grafana ? 1 : 0
   metadata {
     name      = "grafana-dashboard-finops"
     namespace = "monitoring"

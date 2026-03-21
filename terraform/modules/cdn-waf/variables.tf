@@ -35,6 +35,13 @@ variable "enable_bot_control" {
   default     = false
 }
 
+variable "origin_verify_secret" {
+  description = "Shared secret header value for CloudFront → API Gateway origin lockdown. Prevents direct API Gateway access."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 variable "tags" {
   description = "Tags for all resources"
   type        = map(string)

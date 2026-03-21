@@ -267,6 +267,12 @@ variable "waf_enable_bot_control" {
   default     = false
 }
 
+variable "enable_origin_lockdown" {
+  description = "Enable CloudFront → API Gateway origin lockdown (blocks direct API Gateway access)"
+  type        = bool
+  default     = true
+}
+
 # ==============================================================================
 # BEDROCK INTEGRATION (Stack B — Hybrid Mode Only)
 # ==============================================================================
@@ -291,6 +297,28 @@ variable "argocd_chart_version" {
   description = "ArgoCD Helm chart version (argo-cd chart from argoproj.github.io/argo-helm)"
   type        = string
   default     = "7.7.16"
+}
+
+# ==============================================================================
+# MANAGED GRAFANA (Optional — replaces in-cluster Grafana)
+# ==============================================================================
+
+variable "enable_managed_grafana" {
+  description = "Enable AWS Managed Grafana + AMP (replaces in-cluster Grafana). Requires IAM Identity Center."
+  type        = bool
+  default     = false
+}
+
+variable "grafana_admin_user_ids" {
+  description = "IAM Identity Center user IDs to grant Grafana ADMIN role"
+  type        = list(string)
+  default     = []
+}
+
+variable "grafana_viewer_group_ids" {
+  description = "IAM Identity Center group IDs to grant Grafana VIEWER role"
+  type        = list(string)
+  default     = []
 }
 
 # ==============================================================================

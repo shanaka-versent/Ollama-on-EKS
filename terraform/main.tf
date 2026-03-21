@@ -403,16 +403,25 @@ provider "aws" {
   region = "us-east-1"
 }
 
+# Origin lockdown secret — auto-generated, shared between CloudFront and API Gateway.
+# CloudFront sends this as the Referer header; API Gateway resource policy validates it.
+resource "random_password" "origin_verify_secret" {
+  count   = var.enable_origin_lockdown ? 1 : 0
+  length  = 64
+  special = false
+}
+
 module "api_gateway" {
   source = "./modules/api-gateway"
 
-  project_name     = var.project_name
-  nlb_arn          = var.nlb_arn
-  nlb_dns_name     = var.nlb_dns_name
-  api_key_required = var.api_key_required
-  throttle_rate    = var.throttle_rate
-  throttle_burst   = var.throttle_burst
-  tags             = var.tags
+  project_name         = var.project_name
+  nlb_arn              = var.nlb_arn
+  nlb_dns_name         = var.nlb_dns_name
+  api_key_required     = var.api_key_required
+  throttle_rate        = var.throttle_rate
+  throttle_burst       = var.throttle_burst
+  origin_verify_secret = var.enable_origin_lockdown ? random_password.origin_verify_secret[0].result : ""
+  tags                 = var.tags
 }
 
 module "cdn_waf" {
@@ -429,6 +438,7 @@ module "cdn_waf" {
   rate_limit           = var.waf_rate_limit
   geo_countries        = var.waf_geo_countries
   enable_bot_control   = var.waf_enable_bot_control
+  origin_verify_secret = var.enable_origin_lockdown ? random_password.origin_verify_secret[0].result : ""
   tags                 = var.tags
 }
 
@@ -463,6 +473,11 @@ module "observability" {
   grafana_storage_size      = var.grafana_storage_size
   eks_oidc_provider_arn    = module.eks.oidc_provider_arn
   eks_oidc_issuer_url      = module.eks.oidc_issuer_url
+  enable_grafana           = !var.enable_managed_grafana
+
+  # AMP integration: when managed Grafana is enabled, Prometheus remote-writes to AMP
+  amp_remote_write_endpoint = var.enable_managed_grafana ? module.managed_grafana[0].amp_remote_write_endpoint : ""
+  amp_remote_write_role_arn = var.enable_managed_grafana ? module.managed_grafana[0].prometheus_remote_write_role_arn : ""
 
   tags = var.tags
 
@@ -471,6 +486,27 @@ module "observability" {
     aws_eks_addon.ebs_csi,
     module.argocd,
   ]
+}
+
+# ==============================================================================
+# MANAGED GRAFANA (Optional — replaces in-cluster Grafana with AWS AMG + AMP)
+# ==============================================================================
+# Enable with: terraform apply -var="enable_managed_grafana=true"
+# Prerequisites: IAM Identity Center (AWS SSO) must be enabled in the account.
+# When enabled, in-cluster Grafana should be disabled in kube-prometheus-stack values.
+
+module "managed_grafana" {
+  count  = var.enable_managed_grafana ? 1 : 0
+  source = "./modules/managed-grafana"
+
+  project_name          = var.project_name
+  eks_oidc_provider_arn = module.eks.oidc_provider_arn
+  eks_oidc_issuer_url   = module.eks.oidc_issuer_url
+  admin_user_ids        = var.grafana_admin_user_ids
+  viewer_group_ids      = var.grafana_viewer_group_ids
+  tags                  = var.tags
+
+  depends_on = [module.eks]
 }
 
 # ==============================================================================
