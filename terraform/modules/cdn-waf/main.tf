@@ -242,11 +242,18 @@ resource "aws_cloudfront_distribution" "ollama" {
 
   # NLB origin via VPC Origins (private connectivity to internal NLB)
   # CloudFront connects privately — no internet-facing NLB needed
+  # Custom header: CloudFront uses CloudFront-Forwarded-Proto (not X-Forwarded-Proto),
+  # but uvicorn/Open WebUI reads X-Forwarded-Proto for scheme detection (OAuth redirect_uri).
   dynamic "origin" {
     for_each = local.webui_enabled ? [1] : []
     content {
       domain_name = var.nlb_dns_name
       origin_id   = "nlb-webui"
+
+      custom_header {
+        name  = "X-Forwarded-Proto"
+        value = "https"
+      }
 
       vpc_origin_config {
         vpc_origin_id = aws_cloudfront_vpc_origin.nlb[0].id
@@ -265,13 +272,16 @@ resource "aws_cloudfront_distribution" "ollama" {
   }
 
   # Default behavior: Open WebUI (when enabled), otherwise API Gateway
+  # NLB behaviors use AllViewer (forwards Host header) so Open WebUI sees the
+  # CloudFront domain — required for OAuth redirect_uri to match Cognito callbacks.
+  # API Gateway behaviors use AllViewerExceptHostHeader (API GW needs its own Host).
   default_cache_behavior {
     allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
     cached_methods   = ["GET", "HEAD"]
     target_origin_id = local.webui_enabled ? "nlb-webui" : "api-gateway"
 
     cache_policy_id          = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # CachingDisabled
-    origin_request_policy_id = "b689b0a8-53d0-40ab-baf2-68738e2966ac" # AllViewerExceptHostHeader
+    origin_request_policy_id = local.webui_enabled ? "216adef6-5c7f-47e4-b989-5492eafa07d3" : "b689b0a8-53d0-40ab-baf2-68738e2966ac" # AllViewer (NLB) or AllViewerExceptHostHeader (APIGW)
 
     viewer_protocol_policy = "https-only"
     compress               = true
@@ -322,7 +332,7 @@ resource "aws_cloudfront_distribution" "ollama" {
       target_origin_id = "nlb-webui"
 
       cache_policy_id          = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # CachingDisabled
-      origin_request_policy_id = "b689b0a8-53d0-40ab-baf2-68738e2966ac" # AllViewerExceptHostHeader
+      origin_request_policy_id = "216adef6-5c7f-47e4-b989-5492eafa07d3" # AllViewer (forwards Host for Grafana OAuth)
 
       viewer_protocol_policy = "https-only"
       compress               = true
