@@ -287,6 +287,26 @@ resource "aws_cloudfront_distribution" "ollama" {
     compress               = true
   }
 
+  # Open WebUI static assets → NLB (cached at CloudFront edge)
+  # /_app/ contains SvelteKit JS/CSS bundles, fonts, and images.
+  # Caching these at the edge eliminates the CloudFront → NLB → Istio → Pod
+  # round-trip for every static file, reducing page load from ~10s to <1s.
+  dynamic "ordered_cache_behavior" {
+    for_each = local.webui_enabled ? ["/_app/*", "/static/*"] : []
+    content {
+      path_pattern     = ordered_cache_behavior.value
+      allowed_methods  = ["GET", "HEAD", "OPTIONS"]
+      cached_methods   = ["GET", "HEAD"]
+      target_origin_id = "nlb-webui"
+
+      cache_policy_id          = "658327ea-f89d-4fab-a63d-7e88639e58f6" # CachingOptimized
+      origin_request_policy_id = "b689b0a8-53d0-40ab-baf2-68738e2966ac" # AllViewerExceptHostHeader
+
+      viewer_protocol_policy = "https-only"
+      compress               = true
+    }
+  }
+
   # Portal API → API Gateway (Cognito-authenticated Lambda)
   dynamic "ordered_cache_behavior" {
     for_each = local.portal_enabled ? [1] : []
