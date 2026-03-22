@@ -43,6 +43,10 @@ spec:
             - containerPort: 8080
               protocol: TCP
           env:
+            # External URL — required for OAuth redirect_uri to use CloudFront domain
+            # Without this, Open WebUI uses the internal NLB hostname from the request
+            - name: WEBUI_URL
+              value: "https://d3f4nz5crzf5t8.cloudfront.net"
             # Connect to Ollama via ClusterIP service
             - name: OLLAMA_BASE_URL
               value: "http://ollama.ollama.svc.cluster.local:11434"
