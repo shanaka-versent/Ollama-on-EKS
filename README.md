@@ -421,7 +421,9 @@ Use the `/model` command in Claude Code for an interactive picker, or specify di
 
 Open WebUI (v0.8.10) provides a ChatGPT-like interface for Ollama. Deployed on EKS system nodes (no GPU needed), air-gapped via NetworkPolicy. Accessible via CloudFront — no port-forwarding needed.
 
-**Authentication:** All login is handled by **AWS Cognito** (OAuth/OIDC). Local login is completely disabled. Users authenticate via Cognito with **mandatory TOTP MFA** (authenticator app). Roles are mapped from Cognito groups to Open WebUI roles automatically.
+**Authentication:** All login is handled by **AWS Cognito** (OAuth/OIDC). Local login and password management are completely disabled (`ENABLE_PASSWORD_AUTH=false`). Users authenticate via Cognito with **mandatory TOTP MFA** (authenticator app). Roles are synced from Cognito groups on every login (`ENABLE_OAUTH_ROLE_MANAGEMENT=true`) — Cognito is the source of truth, any local role changes are overwritten on next login.
+
+**Password changes:** A banner in Open WebUI links to the Cognito hosted UI `/forgotPassword` page. Users enter their email, receive a verification code, and set a new password. The URL is injected by Terraform into a K8s secret.
 
 **Access URL:** `https://<CLOUDFRONT_DOMAIN>` (e.g., `https://d3f4nz5crzf5t8.cloudfront.net`)
 
@@ -453,6 +455,7 @@ Model switching is **restricted to admins only** — regular users see only the 
 | Approve new user | Cognito Console → Users → select user → Groups → Add to `user` or `admin` |
 | Promote to admin | Cognito Console → Users → select user → Groups → Add to `admin` |
 | Reset password/MFA | Cognito Console → Users → select user → Actions |
+| Self-service password change | User clicks "Reset Password" banner in Open WebUI → Cognito hosted UI |
 | Disable user | Cognito Console → Users → select user → Disable |
 
 To change the locked model for regular users, update `MODEL_FILTER_LIST` in `k8s/open-webui/deployment.yaml` and redeploy. Admins can also switch the cluster-wide default via `./switch-model.sh use <tier>`.
@@ -625,7 +628,7 @@ flowchart LR
 
 | Layer | Protection |
 |-------|-----------|
-| **CloudFront + WAF** | Rate limiting (100/5min), IP allowlist, geo-blocking (AU/US), SQL/XSS rules, DDoS protection (Shield Standard) |
+| **CloudFront + WAF** | Rate limiting (2000/5min), IP allowlist, geo-blocking (AU/US), SQL/XSS rules, DDoS protection (Shield Standard) |
 | **Origin Lockdown** | CloudFront sends a shared secret via `Referer` header; API Gateway resource policy denies requests without it — blocks direct API Gateway access |
 | **API Gateway + API Key** | x-api-key header required (native usage plans + API keys, managed via Console), REST API with VPC Link — no public NLB exposure |
 | **CloudFront VPC Origin** | Private connectivity from CloudFront to internal NLB — no internet-facing load balancer |
@@ -637,7 +640,7 @@ flowchart LR
 | **AWS VPC** | Nodes in private subnets, NAT for outbound only |
 | **Node Isolation** | System nodes tainted `CriticalAddonsOnly`, GPU nodes tainted `nvidia.com/gpu` |
 | **EBS Snapshot** | Pre-loaded models — no internet needed for model loading |
-| **Cognito (Open WebUI)** | OAuth/OIDC with mandatory TOTP MFA, role mapping from Cognito groups, admin approval for new signups, no local passwords |
+| **Cognito (Open WebUI)** | OAuth/OIDC with mandatory TOTP MFA, roles synced from Cognito groups on every login, admin approval for new signups, password changes via Cognito hosted UI, no local passwords, admin chat access and DB export disabled |
 | **IRSA** | EBS CSI + LB Controller + Bedrock (Stack B) use least-privilege IAM roles via OIDC |
 | **cert-manager** | Automated TLS certificate lifecycle (90d duration, 30d auto-renewal) |
 

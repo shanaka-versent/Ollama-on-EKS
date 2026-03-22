@@ -794,7 +794,8 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 
 <h3 id="open-webui-browser-based-chat-interface">Open WebUI (Browser-Based Chat Interface)</h3>
 <p>Open WebUI (v0.8.10) provides a ChatGPT-like interface for Ollama. Deployed on EKS system nodes (no GPU needed), air-gapped via NetworkPolicy. Accessible via CloudFront — no port-forwarding needed.</p>
-<p><strong>Authentication:</strong> All login is handled by <strong>AWS Cognito</strong> (OAuth/OIDC). Local login is completely disabled. Users authenticate via Cognito with <strong>mandatory TOTP MFA</strong> (authenticator app). Roles are mapped from Cognito groups to Open WebUI roles automatically.</p>
+<p><strong>Authentication:</strong> All login is handled by <strong>AWS Cognito</strong> (OAuth/OIDC). Local login and password management are completely disabled (<code>ENABLE_PASSWORD_AUTH=false</code>). Users authenticate via Cognito with <strong>mandatory TOTP MFA</strong> (authenticator app). Roles are synced from Cognito groups on every login (<code>ENABLE_OAUTH_ROLE_MANAGEMENT=true</code>) — Cognito is the source of truth, any local role changes are overwritten on next login.</p>
+<p><strong>Password changes:</strong> A banner in Open WebUI links to the Cognito hosted UI <code>/forgotPassword</code> page. Users enter their email, receive a verification code, and set a new password. The URL is injected by Terraform into a K8s secret.</p>
 <p><strong>Access URL:</strong> <code>https://&lt;CLOUDFRONT_DOMAIN&gt;</code> (e.g., <code>https://d3f4nz5crzf5t8.cloudfront.net</code>)</p>
 <h4 id="user-signup-flow">User Signup Flow</h4>
 <ol>
@@ -855,6 +856,10 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 <tr>
 <td>Reset password/MFA</td>
 <td>Cognito Console → Users → select user → Actions</td>
+</tr>
+<tr>
+<td>Self-service password change</td>
+<td>User clicks "Reset Password" banner in Open WebUI → Cognito hosted UI</td>
 </tr>
 <tr>
 <td>Disable user</td>
@@ -1205,7 +1210,7 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 <tbody>
 <tr>
 <td><strong>CloudFront + WAF</strong></td>
-<td>Rate limiting (100/5min), IP allowlist, geo-blocking (AU/US), SQL/XSS rules, DDoS protection (Shield Standard)</td>
+<td>Rate limiting (2000/5min), IP allowlist, geo-blocking (AU/US), SQL/XSS rules, DDoS protection (Shield Standard)</td>
 </tr>
 <tr>
 <td><strong>Origin Lockdown</strong></td>
@@ -1253,7 +1258,7 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 </tr>
 <tr>
 <td><strong>Cognito (Open WebUI)</strong></td>
-<td>OAuth/OIDC with mandatory TOTP MFA, role mapping from Cognito groups, admin approval for new signups, no local passwords</td>
+<td>OAuth/OIDC with mandatory TOTP MFA, roles synced from Cognito groups on every login, admin approval for new signups, password changes via Cognito hosted UI, no local passwords, admin chat access and DB export disabled</td>
 </tr>
 <tr>
 <td><strong>IRSA</strong></td>
