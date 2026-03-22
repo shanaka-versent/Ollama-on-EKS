@@ -56,9 +56,13 @@ Both Open WebUI and Grafana use **separate Cognito User Pools** with:
 #### Access Control Layers
 
 - **Cognito group membership** = primary gate (managed by admin in AWS Console)
+- **ENABLE_OAUTH_ROLE_MANAGEMENT=true** = roles synced from Cognito groups on every login (Cognito is source of truth)
 - **OAUTH_ALLOWED_ROLES** = Open WebUI rejects users not in admin/user Cognito groups
 - **OAUTH_ADMIN_ROLES** = elevates users in "admin" Cognito group to Open WebUI admin
 - **DEFAULT_USER_ROLE=user** = auto-activates OAuth users who pass Cognito group gate
+- **ENABLE_PASSWORD_AUTH=false** = hides local password change UI (all password management via Cognito)
+- **ENABLE_ADMIN_CHAT_ACCESS=false** = admins cannot view user chats
+- **ENABLE_ADMIN_EXPORT=false** = database export disabled
 
 #### Key Implementation Details
 
@@ -67,6 +71,8 @@ Both Open WebUI and Grafana use **separate Cognito User Pools** with:
 - VPC Origins require `AllViewerExceptHostHeader` origin request policy — `AllViewer` breaks the private NLB connection
 - WAF rate limit set to 2000/5min (web UIs load many assets; 100/5min caused false 403s)
 - SES email identity must be verified for access-granted notifications to work. If SES is in sandbox mode, recipient emails must also be verified
+- Password changes redirect to Cognito hosted UI `/forgotPassword` via banner link (URL injected by Terraform into K8s secret)
+- `WEBUI_BANNERS` env var is stored in the `webui-oauth-cognito` K8s secret (not hardcoded in deployment YAML) so Terraform can inject the Cognito change-password URL dynamically
 
 > **TEMPORARY:** In-cluster Grafana + Cognito auth is a stopgap while AMG (AWS Managed Grafana) SSO access is being resolved (Stax ticket pending). Once AMG is accessible: set `enable_grafana = !var.enable_managed_grafana`, remove `grafana_cognito` module + K8s secret + Grafana HTTPRoute, delete `terraform/modules/grafana-cognito/`.
 
