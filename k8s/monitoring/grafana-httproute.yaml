@@ -1,14 +1,14 @@
-# Grafana — HTTPRoute through Internet-Facing Gateway
+# Grafana — HTTPRoute through Istio Gateway (VPC Origins)
 # @author Shanaka Jayasundera - shanakaj@gmail.com
 #
-# Routes /grafana/* traffic from the internet-facing NLB to Grafana.
+# Routes /grafana/* traffic from the internal NLB to Grafana.
 # Grafana is configured with serve_from_sub_path=true and root_url=/grafana/
 #
 # TEMPORARY: This route exists while AMG SSO access is being resolved.
 # Once AMG is accessible, disable in-cluster Grafana and remove this route.
 #
 # Traffic flow:
-#   CloudFront → internet-facing NLB → Istio Gateway → this HTTPRoute → Grafana
+#   CloudFront → VPC Origin → internal NLB → Istio Gateway → this HTTPRoute → Grafana
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -26,3 +26,20 @@ spec:
       backendRefs:
         - name: kube-prometheus-stack-grafana
           port: 80
+
+---
+# ReferenceGrant — allow HTTPRoutes in 'monitoring' namespace to attach
+# to the Gateway in 'istio-ingress' namespace
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-monitoring-routes
+  namespace: monitoring
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: monitoring
+  to:
+    - group: ""
+      kind: Service

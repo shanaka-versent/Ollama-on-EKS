@@ -479,6 +479,7 @@ module "observability" {
   eks_oidc_issuer_url      = module.eks.oidc_issuer_url
   enable_grafana            = true  # Temporarily enabled alongside AMG until SSO access is resolved
   grafana_oauth_secret_name = "grafana-oauth-cognito"  # Cognito OAuth via GF_ env vars
+  grafana_root_url          = "https://${module.cdn_waf.cloudfront_domain}/grafana/"
 
   # AMP integration: when managed Grafana is enabled, Prometheus remote-writes to AMP
   amp_remote_write_endpoint = var.enable_managed_grafana ? module.managed_grafana[0].amp_remote_write_endpoint : ""

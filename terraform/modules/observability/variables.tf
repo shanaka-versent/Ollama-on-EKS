@@ -63,6 +63,12 @@ variable "grafana_oauth_secret_name" {
   default     = ""
 }
 
+variable "grafana_root_url" {
+  description = "Grafana root URL (e.g. https://example.cloudfront.net/grafana/). Used for server.root_url in grafana.ini."
+  type        = string
+  default     = "%(protocol)s://%(domain)s:%(http_port)s/"
+}
+
 variable "amp_remote_write_endpoint" {
   description = "AMP remote write endpoint. When set, Prometheus sends all metrics to AMP for AMG to read."
   type        = string

@@ -118,7 +118,12 @@ grafana:
       check_for_plugin_updates: false
       reporting_enabled: false
     server:
-      root_url: "%(protocol)s://%(domain)s:%(http_port)s/"
+      root_url: "${grafana_root_url}"
+      serve_from_sub_path: true
+    security:
+      cookie_samesite: none
+      cookie_secure: true
+      allow_embedding: false
     # Disable external calls
     external_image_storage:
       provider: ""
