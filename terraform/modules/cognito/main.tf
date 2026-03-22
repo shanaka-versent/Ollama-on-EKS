@@ -49,6 +49,15 @@ resource "aws_cognito_user_pool" "ollama" {
     email_sending_account = "COGNITO_DEFAULT"
   }
 
+  # Custom invite email — identifies this as the Open WebUI login
+  admin_create_user_config {
+    invite_message_template {
+      email_subject = "Ollama Open WebUI — Your Login Credentials"
+      email_message = "You have been invited to Ollama Open WebUI (Chat Interface).\n\nUsername: {username}\nTemporary password: {####}\n\nLogin at: https://${var.cloudfront_domain}/\n\nYou will be asked to set a new password and configure MFA on first login."
+      sms_message   = "Ollama WebUI — Username: {username}, Password: {####}"
+    }
+  }
+
   # Schema: email is required
   schema {
     name                = "email"

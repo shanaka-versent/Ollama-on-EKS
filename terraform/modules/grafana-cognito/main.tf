@@ -40,6 +40,15 @@ resource "aws_cognito_user_pool" "grafana" {
     email_sending_account = "COGNITO_DEFAULT"
   }
 
+  # Custom invite email — identifies this as the Grafana login
+  admin_create_user_config {
+    invite_message_template {
+      email_subject = "Ollama Grafana — Your Login Credentials"
+      email_message = "You have been invited to Ollama Grafana (Monitoring Dashboards).\n\nUsername: {username}\nTemporary password: {####}\n\nLogin at: https://${var.cloudfront_domain}/grafana/\n\nYou will be asked to set a new password and configure MFA on first login."
+      sms_message   = "Ollama Grafana — Username: {username}, Password: {####}"
+    }
+  }
+
   schema {
     name                = "email"
     attribute_data_type = "String"
