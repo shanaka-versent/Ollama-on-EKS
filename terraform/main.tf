@@ -441,9 +441,11 @@ module "cdn_waf" {
   rate_limit             = var.waf_rate_limit
   geo_countries          = var.waf_geo_countries
   enable_bot_control     = var.waf_enable_bot_control
-  enable_origin_lockdown = var.enable_origin_lockdown
-  origin_verify_secret   = var.enable_origin_lockdown ? random_password.origin_verify_secret[0].result : ""
-  tags                   = var.tags
+  enable_origin_lockdown               = var.enable_origin_lockdown
+  origin_verify_secret                 = var.enable_origin_lockdown ? random_password.origin_verify_secret[0].result : ""
+  portal_s3_bucket_regional_domain     = var.cloudfront_domain != "" ? module.api_key_portal.s3_bucket_regional_domain : ""
+  portal_oac_id                        = var.cloudfront_domain != "" ? module.api_key_portal.oac_id : ""
+  tags                                 = var.tags
 }
 
 # ==============================================================================
@@ -591,6 +593,29 @@ resource "kubernetes_secret" "grafana_oauth" {
   }
 
   depends_on = [module.grafana_cognito]
+}
+
+# ==============================================================================
+# API KEY PORTAL (Self-Service Key Management)
+# ==============================================================================
+# Users generate and manage their own API Gateway keys via a static portal.
+# Uses the existing Cognito User Pool for auth (separate SPA app client).
+
+module "api_key_portal" {
+  source = "./modules/api-key-portal"
+
+  project_name              = var.project_name
+  region                    = var.region
+  cognito_user_pool_id      = module.cognito.user_pool_id
+  cognito_domain            = module.cognito.cognito_domain
+  cloudfront_domain         = var.cloudfront_domain
+  rest_api_id               = module.api_gateway.api_id
+  rest_api_root_resource_id = module.api_gateway.root_resource_id
+  rest_api_execution_arn    = module.api_gateway.api_execution_arn
+  usage_plan_id             = module.api_gateway.usage_plan_id
+  tags                      = var.tags
+
+  depends_on = [module.api_gateway, module.cognito]
 }
 
 # ==============================================================================

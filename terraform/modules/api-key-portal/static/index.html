@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ollama API Keys</title>
+  <style>
+    :root { --bg: #0f172a; --surface: #1e293b; --border: #334155; --text: #e2e8f0; --muted: #94a3b8; --primary: #3b82f6; --danger: #ef4444; --success: #22c55e; --warning: #eab308; --orange: #f97316; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+    .container { max-width: 960px; margin: 0 auto; padding: 2rem 1rem; }
+    header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; padding-bottom: 1rem; border-bottom: 1px solid var(--border); }
+    header h1 { font-size: 1.5rem; }
+    header .user-info { display: flex; align-items: center; gap: 1rem; }
+    header .user-info span { color: var(--muted); font-size: 0.875rem; }
+    a { color: var(--primary); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1.5rem; margin-bottom: 1.5rem; }
+    .card h2 { font-size: 1.125rem; margin-bottom: 1rem; }
+    button { cursor: pointer; padding: 0.5rem 1rem; border-radius: 0.375rem; font-size: 0.875rem; border: none; font-weight: 500; transition: opacity 0.15s; }
+    button:hover { opacity: 0.85; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-primary { background: var(--primary); color: white; }
+    .btn-danger { background: var(--danger); color: white; }
+    .btn-outline { background: transparent; color: var(--text); border: 1px solid var(--border); }
+    .btn-sm { padding: 0.25rem 0.75rem; font-size: 0.8rem; }
+    input, select { background: var(--bg); color: var(--text); border: 1px solid var(--border); padding: 0.5rem; border-radius: 0.375rem; font-size: 0.875rem; }
+    input:focus, select:focus { outline: none; border-color: var(--primary); }
+    table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+    th { text-align: left; padding: 0.75rem 0.5rem; border-bottom: 1px solid var(--border); color: var(--muted); font-weight: 500; }
+    td { padding: 0.75rem 0.5rem; border-bottom: 1px solid var(--border); }
+    .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; }
+    .badge-active { background: rgba(34,197,94,0.15); color: var(--success); }
+    .badge-disabled { background: rgba(234,179,8,0.15); color: var(--warning); }
+    .badge-expired { background: rgba(239,68,68,0.15); color: var(--danger); }
+    .badge-revoked { background: rgba(148,163,184,0.15); color: var(--muted); }
+    .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100; justify-content: center; align-items: center; }
+    .modal-overlay.active { display: flex; }
+    .modal { background: var(--surface); border: 1px solid var(--border); border-radius: 0.75rem; padding: 1.5rem; width: 90%; max-width: 480px; }
+    .modal h3 { margin-bottom: 1rem; }
+    .form-group { margin-bottom: 1rem; }
+    .form-group label { display: block; margin-bottom: 0.25rem; font-size: 0.875rem; color: var(--muted); }
+    .form-group input, .form-group select { width: 100%; }
+    .key-display { background: var(--bg); border: 1px solid var(--border); border-radius: 0.375rem; padding: 0.75rem; font-family: monospace; font-size: 0.9rem; word-break: break-all; margin: 0.75rem 0; position: relative; }
+    .key-display button { position: absolute; right: 0.5rem; top: 50%; transform: translateY(-50%); }
+    .warning { color: var(--orange); font-size: 0.8rem; margin-top: 0.5rem; }
+    .actions { display: flex; gap: 0.5rem; }
+    .empty { text-align: center; padding: 2rem; color: var(--muted); }
+    pre { background: var(--bg); border: 1px solid var(--border); border-radius: 0.375rem; padding: 1rem; overflow-x: auto; font-size: 0.8rem; line-height: 1.5; margin: 0.75rem 0; }
+    code { font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace; }
+    #login-section { text-align: center; padding: 4rem 1rem; }
+    #login-section h1 { font-size: 2rem; margin-bottom: 1rem; }
+    #login-section p { color: var(--muted); margin-bottom: 2rem; }
+    .expiring-soon { border-left: 3px solid var(--orange); }
+    .flex-between { display: flex; justify-content: space-between; align-items: center; }
+  </style>
+</head>
+<body>
+  <!-- Login Section -->
+  <div id="login-section" class="container" style="display:none;">
+    <h1>Ollama API Keys</h1>
+    <p>Manage your API keys for the Ollama LLM API</p>
+    <button class="btn-primary" onclick="login()" style="padding: 0.75rem 2rem; font-size: 1rem;">Sign in with Cognito</button>
+  </div>
+
+  <!-- Main App -->
+  <div id="app" class="container" style="display:none;">
+    <header>
+      <h1>Ollama API Keys</h1>
+      <div class="user-info">
+        <span id="user-email"></span>
+        <a href="/">Back to Chat</a>
+        <button class="btn-outline btn-sm" onclick="logout()">Sign out</button>
+      </div>
+    </header>
+
+    <!-- Generate Section -->
+    <div class="card">
+      <div class="flex-between">
+        <h2>Your API Keys</h2>
+        <button class="btn-primary" onclick="showCreateModal()">Generate New Key</button>
+      </div>
+      <div id="keys-table" style="margin-top: 1rem;"></div>
+    </div>
+
+    <!-- Usage Guide -->
+    <div class="card">
+      <h2>Usage Guide</h2>
+      <p style="color: var(--muted); margin-bottom: 0.75rem; font-size: 0.875rem;">Use your API key with any OpenAI-compatible client:</p>
+      <pre><code># curl
+curl https://${cloudfront_domain}/v1/chat/completions \
+  -H "x-api-key: YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen3.5","messages":[{"role":"user","content":"Hello"}]}'
+
+# Python (OpenAI SDK)
+from openai import OpenAI
+client = OpenAI(
+    api_key="YOUR_KEY",
+    base_url="https://${cloudfront_domain}/v1",
+    default_headers={"x-api-key": "YOUR_KEY"}
+)
+response = client.chat.completions.create(
+    model="qwen3.5",
+    messages=[{"role": "user", "content": "Hello"}]
+)
+
+# Claude Code / Continue.dev
+export OPENAI_API_KEY=YOUR_KEY
+export OPENAI_BASE_URL=https://${cloudfront_domain}/v1</code></pre>
+    </div>
+  </div>
+
+  <!-- Create Key Modal -->
+  <div id="create-modal" class="modal-overlay">
+    <div class="modal">
+      <h3>Generate New API Key</h3>
+      <div class="form-group">
+        <label>Key Name (optional)</label>
+        <input type="text" id="key-name" placeholder="e.g. my-dev-key">
+      </div>
+      <div class="form-group">
+        <label>Expires In</label>
+        <select id="key-expiry">
+          <option value="7">7 days</option>
+          <option value="30">30 days</option>
+          <option value="90" selected>90 days</option>
+          <option value="0">No expiry</option>
+        </select>
+      </div>
+      <div style="display: flex; gap: 0.5rem; justify-content: flex-end;">
+        <button class="btn-outline" onclick="closeModal('create-modal')">Cancel</button>
+        <button class="btn-primary" id="create-btn" onclick="createKey()">Generate</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Key Created Modal -->
+  <div id="key-modal" class="modal-overlay">
+    <div class="modal">
+      <h3>API Key Created</h3>
+      <p style="font-size: 0.875rem; color: var(--muted);">Copy your key now. It will only be shown once.</p>
+      <div class="key-display">
+        <code id="key-value"></code>
+        <button class="btn-outline btn-sm" onclick="copyKey()">Copy</button>
+      </div>
+      <p class="warning">This key will not be shown again. Store it securely.</p>
+      <div style="margin-top: 1rem; text-align: right;">
+        <button class="btn-primary" onclick="closeModal('key-modal'); loadKeys();">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirm Revoke Modal -->
+  <div id="revoke-modal" class="modal-overlay">
+    <div class="modal">
+      <h3>Revoke API Key</h3>
+      <p style="font-size: 0.875rem; color: var(--muted); margin-bottom: 1rem;">This will permanently delete the key from API Gateway. API calls using this key will stop working immediately. This cannot be undone.</p>
+      <div style="display: flex; gap: 0.5rem; justify-content: flex-end;">
+        <button class="btn-outline" onclick="closeModal('revoke-modal')">Cancel</button>
+        <button class="btn-danger" id="confirm-revoke-btn">Revoke</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+// Config injected by Terraform templatefile
+const COGNITO_DOMAIN = '${cognito_domain}';
+const CLIENT_ID = '${client_id}';
+const REDIRECT_URI = 'https://${cloudfront_domain}/portal/';
+const API_BASE = '${api_base_url}';
+
+let idToken = null;
+let userEmail = '';
+
+// --- Auth ---
+function login() {
+  const url = COGNITO_DOMAIN + '/oauth2/authorize?response_type=code&client_id=' + CLIENT_ID +
+    '&redirect_uri=' + encodeURIComponent(REDIRECT_URI) + '&scope=openid+email+profile';
+  window.location.href = url;
+}
+
+function logout() {
+  sessionStorage.removeItem('id_token');
+  sessionStorage.removeItem('access_token');
+  const url = COGNITO_DOMAIN + '/logout?client_id=' + CLIENT_ID +
+    '&logout_uri=' + encodeURIComponent(REDIRECT_URI);
+  window.location.href = url;
+}
+
+async function exchangeCode(code) {
+  const resp = await fetch(COGNITO_DOMAIN + '/oauth2/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'grant_type=authorization_code&client_id=' + CLIENT_ID +
+      '&redirect_uri=' + encodeURIComponent(REDIRECT_URI) + '&code=' + code,
+  });
+  if (!resp.ok) throw new Error('Token exchange failed');
+  const data = await resp.json();
+  sessionStorage.setItem('id_token', data.id_token);
+  sessionStorage.setItem('access_token', data.access_token);
+  return data.id_token;
+}
+
+function parseJwt(token) {
+  try {
+    const base64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    return JSON.parse(atob(base64));
+  } catch { return {}; }
+}
+
+async function initAuth() {
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get('code');
+
+  if (code) {
+    try {
+      idToken = await exchangeCode(code);
+      window.history.replaceState({}, '', '/portal/');
+    } catch (e) {
+      console.error('Auth failed:', e);
+      showLogin();
+      return;
+    }
+  } else {
+    idToken = sessionStorage.getItem('id_token');
+  }
+
+  if (!idToken) { showLogin(); return; }
+
+  const claims = parseJwt(idToken);
+  const exp = claims.exp * 1000;
+  if (Date.now() > exp) {
+    sessionStorage.removeItem('id_token');
+    showLogin();
+    return;
+  }
+
+  userEmail = claims.email || 'User';
+  document.getElementById('user-email').textContent = userEmail;
+  document.getElementById('login-section').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  loadKeys();
+}
+
+function showLogin() {
+  document.getElementById('login-section').style.display = 'block';
+  document.getElementById('app').style.display = 'none';
+}
+
+// --- API Calls ---
+async function apiFetch(path, opts = {}) {
+  opts.headers = opts.headers || {};
+  opts.headers['Authorization'] = 'Bearer ' + idToken;
+  opts.headers['Content-Type'] = 'application/json';
+  const resp = await fetch(API_BASE + '/portal/api' + path, opts);
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.error || 'Request failed');
+  return data;
+}
+
+async function loadKeys() {
+  try {
+    const data = await apiFetch('/keys');
+    renderKeys(data.keys || []);
+  } catch (e) {
+    console.error('Failed to load keys:', e);
+    document.getElementById('keys-table').innerHTML = '<div class="empty">Failed to load keys</div>';
+  }
+}
+
+function renderKeys(keys) {
+  const el = document.getElementById('keys-table');
+  if (!keys.length) {
+    el.innerHTML = '<div class="empty">No API keys yet. Click "Generate New Key" to create one.</div>';
+    return;
+  }
+
+  // Sort: active first, then by created date desc
+  const order = { active: 0, disabled: 1, expired: 2, revoked: 3 };
+  keys.sort((a, b) => (order[a.status] || 9) - (order[b.status] || 9) || b.createdDate.localeCompare(a.createdDate));
+
+  let html = '<table><thead><tr><th>Name</th><th>Created</th><th>Expires</th><th>Status</th><th>Actions</th></tr></thead><tbody>';
+  for (const k of keys) {
+    const expiringSoon = k.expiryDate && k.status === 'active' && isExpiringSoon(k.expiryDate);
+    html += '<tr class="' + (expiringSoon ? 'expiring-soon' : '') + '">';
+    html += '<td>' + esc(k.keyName) + '</td>';
+    html += '<td>' + fmtDate(k.createdDate) + '</td>';
+    html += '<td>' + (k.expiryDate ? fmtDate(k.expiryDate) : 'Never') + '</td>';
+    html += '<td><span class="badge badge-' + k.status + '">' + k.status + '</span></td>';
+    html += '<td class="actions">';
+    if (k.status === 'active') {
+      html += '<button class="btn-outline btn-sm" onclick="toggleKey(\'' + k.keyId + '\',\'disable\')">Disable</button>';
+      html += '<button class="btn-danger btn-sm" onclick="confirmRevoke(\'' + k.keyId + '\')">Revoke</button>';
+    } else if (k.status === 'disabled') {
+      html += '<button class="btn-outline btn-sm" onclick="toggleKey(\'' + k.keyId + '\',\'enable\')">Enable</button>';
+      html += '<button class="btn-danger btn-sm" onclick="confirmRevoke(\'' + k.keyId + '\')">Revoke</button>';
+    }
+    html += '</td></tr>';
+  }
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+function isExpiringSoon(dateStr) {
+  const d = new Date(dateStr);
+  const now = new Date();
+  return (d - now) < 3 * 24 * 60 * 60 * 1000 && d > now;
+}
+
+function fmtDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-AU', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+// --- Create Key ---
+function showCreateModal() {
+  document.getElementById('key-name').value = '';
+  document.getElementById('key-expiry').value = '90';
+  document.getElementById('create-modal').classList.add('active');
+}
+
+async function createKey() {
+  const btn = document.getElementById('create-btn');
+  btn.disabled = true;
+  btn.textContent = 'Creating...';
+  try {
+    const data = await apiFetch('/keys', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: document.getElementById('key-name').value,
+        expiryDays: parseInt(document.getElementById('key-expiry').value),
+      }),
+    });
+    closeModal('create-modal');
+    document.getElementById('key-value').textContent = data.keyValue;
+    document.getElementById('key-modal').classList.add('active');
+  } catch (e) {
+    alert('Error: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Generate';
+  }
+}
+
+function copyKey() {
+  const val = document.getElementById('key-value').textContent;
+  navigator.clipboard.writeText(val).then(() => {
+    const btn = event.target;
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = 'Copy', 1500);
+  });
+}
+
+// --- Toggle / Revoke ---
+async function toggleKey(keyId, action) {
+  try {
+    await apiFetch('/keys/' + keyId, { method: 'PATCH', body: JSON.stringify({ action }) });
+    loadKeys();
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+let pendingRevokeId = null;
+function confirmRevoke(keyId) {
+  pendingRevokeId = keyId;
+  document.getElementById('confirm-revoke-btn').onclick = async () => {
+    try {
+      await apiFetch('/keys/' + pendingRevokeId, { method: 'DELETE' });
+      closeModal('revoke-modal');
+      loadKeys();
+    } catch (e) { alert('Error: ' + e.message); }
+  };
+  document.getElementById('revoke-modal').classList.add('active');
+}
+
+function closeModal(id) { document.getElementById(id).classList.remove('active'); }
+
+// Init
+initAuth();
+</script>
+</body>
+</html>

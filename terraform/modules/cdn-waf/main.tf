@@ -17,6 +17,7 @@ locals {
   ip_allowlist_enabled    = !contains(var.allowed_ips, "0.0.0.0/0")
   origin_lockdown_enabled = var.enable_origin_lockdown
   webui_enabled           = var.nlb_dns_name != "" && var.nlb_arn != ""
+  portal_enabled          = var.portal_s3_bucket_regional_domain != ""
 }
 
 # --- CloudFront VPC Origin (private connectivity to internal NLB) ---
@@ -253,6 +254,16 @@ resource "aws_cloudfront_distribution" "ollama" {
     }
   }
 
+  # S3 origin for API Key Portal (OAC access)
+  dynamic "origin" {
+    for_each = local.portal_enabled ? [1] : []
+    content {
+      domain_name              = var.portal_s3_bucket_regional_domain
+      origin_id                = "portal-s3"
+      origin_access_control_id = var.portal_oac_id
+    }
+  }
+
   # Default behavior: Open WebUI (when enabled), otherwise API Gateway
   default_cache_behavior {
     allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
@@ -264,6 +275,40 @@ resource "aws_cloudfront_distribution" "ollama" {
 
     viewer_protocol_policy = "https-only"
     compress               = true
+  }
+
+  # Portal API → API Gateway (Cognito-authenticated Lambda)
+  dynamic "ordered_cache_behavior" {
+    for_each = local.portal_enabled ? [1] : []
+    content {
+      path_pattern     = "/portal/api/*"
+      allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+      cached_methods   = ["GET", "HEAD"]
+      target_origin_id = "api-gateway"
+
+      cache_policy_id          = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # CachingDisabled
+      origin_request_policy_id = "b689b0a8-53d0-40ab-baf2-68738e2966ac" # AllViewerExceptHostHeader
+
+      viewer_protocol_policy = "https-only"
+      compress               = true
+    }
+  }
+
+  # Portal static assets → S3 (OAC)
+  dynamic "ordered_cache_behavior" {
+    for_each = local.portal_enabled ? [1] : []
+    content {
+      path_pattern     = "/portal/*"
+      allowed_methods  = ["GET", "HEAD", "OPTIONS"]
+      cached_methods   = ["GET", "HEAD"]
+      target_origin_id = "portal-s3"
+
+      cache_policy_id          = "658327ea-f89d-4fab-a63d-7e88639e58f6" # CachingOptimized
+      origin_request_policy_id = "88a5eaf4-2fd4-4709-b370-b4c650ea3fcf" # CORS-S3Origin
+
+      viewer_protocol_policy = "https-only"
+      compress               = true
+    }
   }
 
   # Grafana → NLB (same origin, Istio routes by path)

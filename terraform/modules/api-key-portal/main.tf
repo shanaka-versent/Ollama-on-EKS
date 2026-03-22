@@ -1,0 +1,639 @@
+# API Key Portal Module — Self-Service API Key Management
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# Provides a static portal (S3 + CloudFront) for users to generate, list,
+# and revoke their own API Gateway keys. Uses the existing Cognito User Pool
+# (ollama-webui) for authentication via a separate app client (SPA, no secret).
+#
+# Components:
+#   - S3 bucket for portal static assets (OAC access)
+#   - DynamoDB table for key metadata + audit trail
+#   - Lambda function for key CRUD (Cognito-authenticated)
+#   - Lambda function for nightly expiry checks (EventBridge)
+#   - Cognito app client (public SPA, no secret)
+#   - API Gateway resources on the existing REST API
+
+data "aws_caller_identity" "current" {}
+
+# ==============================================================================
+# S3 BUCKET — Portal Static Assets
+# ==============================================================================
+
+resource "aws_s3_bucket" "portal" {
+  bucket = "${var.project_name}-api-key-portal-${data.aws_caller_identity.current.account_id}"
+  tags   = var.tags
+}
+
+resource "aws_s3_bucket_public_access_block" "portal" {
+  bucket                  = aws_s3_bucket.portal.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_versioning" "portal" {
+  bucket = aws_s3_bucket.portal.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "portal" {
+  bucket = aws_s3_bucket.portal.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+# OAC policy — only CloudFront can read from this bucket
+resource "aws_s3_bucket_policy" "portal" {
+  bucket = aws_s3_bucket.portal.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "AllowCloudFrontOAC"
+      Effect    = "Allow"
+      Principal = { Service = "cloudfront.amazonaws.com" }
+      Action    = "s3:GetObject"
+      Resource  = "${aws_s3_bucket.portal.arn}/*"
+      Condition = {
+        StringEquals = {
+          "AWS:SourceArn" = "arn:aws:cloudfront::${data.aws_caller_identity.current.account_id}:distribution/*"
+        }
+      }
+    }]
+  })
+
+  depends_on = [aws_s3_bucket_public_access_block.portal]
+}
+
+# Upload static portal files
+resource "aws_s3_object" "index_html" {
+  bucket       = aws_s3_bucket.portal.id
+  key          = "portal/index.html"
+  content      = templatefile("${path.module}/static/index.html", {
+    cognito_domain    = var.cognito_domain
+    client_id         = aws_cognito_user_pool_client.portal.id
+    cloudfront_domain = var.cloudfront_domain
+    api_base_url      = "https://${var.cloudfront_domain}"
+  })
+  content_type = "text/html"
+  etag         = md5(templatefile("${path.module}/static/index.html", {
+    cognito_domain    = var.cognito_domain
+    client_id         = aws_cognito_user_pool_client.portal.id
+    cloudfront_domain = var.cloudfront_domain
+    api_base_url      = "https://${var.cloudfront_domain}"
+  }))
+}
+
+# ==============================================================================
+# CLOUDFRONT OAC — Origin Access Control for S3
+# ==============================================================================
+
+resource "aws_cloudfront_origin_access_control" "portal" {
+  name                              = "${var.project_name}-portal-oac"
+  origin_access_control_origin_type = "s3"
+  signing_behavior                  = "always"
+  signing_protocol                  = "sigv4"
+}
+
+# ==============================================================================
+# DYNAMODB TABLE — API Key Metadata + Audit Trail
+# ==============================================================================
+
+resource "aws_dynamodb_table" "api_keys" {
+  name         = "${var.project_name}-api-key-metadata"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "keyId"
+
+  attribute {
+    name = "keyId"
+    type = "S"
+  }
+
+  attribute {
+    name = "cognitoUserId"
+    type = "S"
+  }
+
+  attribute {
+    name = "createdDate"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "cognitoUserId-index"
+    hash_key        = "cognitoUserId"
+    range_key       = "createdDate"
+    projection_type = "ALL"
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+
+  tags = var.tags
+}
+
+# ==============================================================================
+# COGNITO APP CLIENT — Portal SPA (public client, no secret)
+# ==============================================================================
+
+resource "aws_cognito_user_pool_client" "portal" {
+  name         = "${var.project_name}-portal-client"
+  user_pool_id = var.cognito_user_pool_id
+
+  allowed_oauth_flows                  = ["code"]
+  allowed_oauth_flows_user_pool_client = true
+  allowed_oauth_scopes                 = ["openid", "email", "profile"]
+  supported_identity_providers         = ["COGNITO"]
+  generate_secret                      = false # SPA client — no secret
+
+  callback_urls = ["https://${var.cloudfront_domain}/portal/"]
+  logout_urls   = ["https://${var.cloudfront_domain}/portal/"]
+
+  access_token_validity  = 1
+  id_token_validity      = 1
+  refresh_token_validity = 30
+
+  token_validity_units {
+    access_token  = "hours"
+    id_token      = "hours"
+    refresh_token = "days"
+  }
+
+  explicit_auth_flows = [
+    "ALLOW_REFRESH_TOKEN_AUTH",
+    "ALLOW_USER_SRP_AUTH",
+  ]
+}
+
+# ==============================================================================
+# LAMBDA — API Key Manager (CRUD)
+# ==============================================================================
+
+data "archive_file" "key_manager" {
+  type        = "zip"
+  source_file = "${path.module}/lambda/key_manager.py"
+  output_path = "${path.module}/lambda/key_manager.zip"
+}
+
+resource "aws_lambda_function" "key_manager" {
+  function_name    = "${var.project_name}-api-key-manager"
+  handler          = "key_manager.handler"
+  runtime          = "python3.12"
+  timeout          = 15
+  filename         = data.archive_file.key_manager.output_path
+  source_code_hash = data.archive_file.key_manager.output_base64sha256
+  role             = aws_iam_role.key_manager.arn
+
+  environment {
+    variables = {
+      DYNAMO_TABLE      = aws_dynamodb_table.api_keys.name
+      USAGE_PLAN_ID     = var.usage_plan_id
+      PROJECT_NAME      = var.project_name
+      MAX_KEYS_PER_USER = tostring(var.max_keys_per_user)
+      KEY_EXPIRY_DAYS   = tostring(var.key_expiry_days)
+    }
+  }
+
+  tags = var.tags
+}
+
+resource "aws_iam_role" "key_manager" {
+  name = "${var.project_name}-api-key-manager"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+    }]
+  })
+
+  tags = var.tags
+}
+
+resource "aws_iam_role_policy" "key_manager" {
+  name = "api-key-management"
+  role = aws_iam_role.key_manager.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "apigateway:POST",
+          "apigateway:GET",
+          "apigateway:DELETE",
+          "apigateway:PATCH",
+        ]
+        Resource = [
+          "arn:aws:apigateway:${var.region}::/apikeys",
+          "arn:aws:apigateway:${var.region}::/apikeys/*",
+          "arn:aws:apigateway:${var.region}::/usageplans/${var.usage_plan_id}/keys",
+          "arn:aws:apigateway:${var.region}::/usageplans/${var.usage_plan_id}/keys/*",
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:PutItem",
+          "dynamodb:GetItem",
+          "dynamodb:Query",
+          "dynamodb:UpdateItem",
+        ]
+        Resource = [
+          aws_dynamodb_table.api_keys.arn,
+          "${aws_dynamodb_table.api_keys.arn}/index/*",
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+        ]
+        Resource = "arn:aws:logs:${var.region}:${data.aws_caller_identity.current.account_id}:*"
+      },
+    ]
+  })
+}
+
+# Lambda permission for API Gateway to invoke
+resource "aws_lambda_permission" "key_manager_apigw" {
+  statement_id  = "AllowAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.key_manager.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${var.rest_api_execution_arn}/*/*"
+}
+
+# ==============================================================================
+# LAMBDA — API Key Expiry Checker (nightly)
+# ==============================================================================
+
+data "archive_file" "expiry_checker" {
+  type        = "zip"
+  source_file = "${path.module}/lambda/expiry_checker.py"
+  output_path = "${path.module}/lambda/expiry_checker.zip"
+}
+
+resource "aws_lambda_function" "expiry_checker" {
+  function_name    = "${var.project_name}-api-key-expiry"
+  handler          = "expiry_checker.handler"
+  runtime          = "python3.12"
+  timeout          = 60
+  filename         = data.archive_file.expiry_checker.output_path
+  source_code_hash = data.archive_file.expiry_checker.output_base64sha256
+  role             = aws_iam_role.expiry_checker.arn
+
+  environment {
+    variables = {
+      DYNAMO_TABLE = aws_dynamodb_table.api_keys.name
+    }
+  }
+
+  tags = var.tags
+}
+
+resource "aws_iam_role" "expiry_checker" {
+  name = "${var.project_name}-api-key-expiry"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+    }]
+  })
+
+  tags = var.tags
+}
+
+resource "aws_iam_role_policy" "expiry_checker" {
+  name = "expiry-check"
+  role = aws_iam_role.expiry_checker.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "apigateway:GET",
+          "apigateway:PATCH",
+        ]
+        Resource = [
+          "arn:aws:apigateway:${var.region}::/apikeys/*",
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:Scan",
+          "dynamodb:UpdateItem",
+        ]
+        Resource = aws_dynamodb_table.api_keys.arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+        ]
+        Resource = "arn:aws:logs:${var.region}:${data.aws_caller_identity.current.account_id}:*"
+      },
+    ]
+  })
+}
+
+# ==============================================================================
+# EVENTBRIDGE — Nightly Expiry Check
+# ==============================================================================
+
+resource "aws_cloudwatch_event_rule" "key_expiry" {
+  name                = "${var.project_name}-api-key-expiry"
+  description         = "Daily check for expired API keys"
+  schedule_expression = "cron(0 2 * * ? *)" # 2 AM UTC daily
+  tags                = var.tags
+}
+
+resource "aws_cloudwatch_event_target" "key_expiry" {
+  rule      = aws_cloudwatch_event_rule.key_expiry.name
+  target_id = "key-expiry-lambda"
+  arn       = aws_lambda_function.expiry_checker.arn
+}
+
+resource "aws_lambda_permission" "eventbridge_expiry" {
+  statement_id  = "AllowEventBridgeInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.expiry_checker.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.key_expiry.arn
+}
+
+# ==============================================================================
+# API GATEWAY — Portal API Resources (on existing REST API)
+# ==============================================================================
+
+# Cognito authorizer — validates JWT from the ollama-webui user pool
+resource "aws_api_gateway_authorizer" "cognito" {
+  name            = "${var.project_name}-cognito"
+  rest_api_id     = var.rest_api_id
+  type            = "COGNITO_USER_POOLS"
+  provider_arns   = ["arn:aws:cognito-idp:${var.region}:${data.aws_caller_identity.current.account_id}:userpool/${var.cognito_user_pool_id}"]
+  identity_source = "method.request.header.Authorization"
+}
+
+# /portal
+resource "aws_api_gateway_resource" "portal" {
+  rest_api_id = var.rest_api_id
+  parent_id   = var.rest_api_root_resource_id
+  path_part   = "portal"
+}
+
+# /portal/api
+resource "aws_api_gateway_resource" "portal_api" {
+  rest_api_id = var.rest_api_id
+  parent_id   = aws_api_gateway_resource.portal.id
+  path_part   = "api"
+}
+
+# /portal/api/keys
+resource "aws_api_gateway_resource" "portal_keys" {
+  rest_api_id = var.rest_api_id
+  parent_id   = aws_api_gateway_resource.portal_api.id
+  path_part   = "keys"
+}
+
+# /portal/api/keys/{keyId}
+resource "aws_api_gateway_resource" "portal_key_by_id" {
+  rest_api_id = var.rest_api_id
+  parent_id   = aws_api_gateway_resource.portal_keys.id
+  path_part   = "{keyId}"
+}
+
+# --- GET /portal/api/keys (list user's keys) ---
+resource "aws_api_gateway_method" "list_keys" {
+  rest_api_id      = var.rest_api_id
+  resource_id      = aws_api_gateway_resource.portal_keys.id
+  http_method      = "GET"
+  authorization    = "COGNITO_USER_POOLS"
+  authorizer_id    = aws_api_gateway_authorizer.cognito.id
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "list_keys" {
+  rest_api_id             = var.rest_api_id
+  resource_id             = aws_api_gateway_resource.portal_keys.id
+  http_method             = aws_api_gateway_method.list_keys.http_method
+  type                    = "AWS_PROXY"
+  integration_http_method = "POST"
+  uri                     = aws_lambda_function.key_manager.invoke_arn
+}
+
+# --- POST /portal/api/keys (create key) ---
+resource "aws_api_gateway_method" "create_key" {
+  rest_api_id      = var.rest_api_id
+  resource_id      = aws_api_gateway_resource.portal_keys.id
+  http_method      = "POST"
+  authorization    = "COGNITO_USER_POOLS"
+  authorizer_id    = aws_api_gateway_authorizer.cognito.id
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "create_key" {
+  rest_api_id             = var.rest_api_id
+  resource_id             = aws_api_gateway_resource.portal_keys.id
+  http_method             = aws_api_gateway_method.create_key.http_method
+  type                    = "AWS_PROXY"
+  integration_http_method = "POST"
+  uri                     = aws_lambda_function.key_manager.invoke_arn
+}
+
+# --- PATCH /portal/api/keys/{keyId} (disable/enable) ---
+resource "aws_api_gateway_method" "update_key" {
+  rest_api_id      = var.rest_api_id
+  resource_id      = aws_api_gateway_resource.portal_key_by_id.id
+  http_method      = "PATCH"
+  authorization    = "COGNITO_USER_POOLS"
+  authorizer_id    = aws_api_gateway_authorizer.cognito.id
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "update_key" {
+  rest_api_id             = var.rest_api_id
+  resource_id             = aws_api_gateway_resource.portal_key_by_id.id
+  http_method             = aws_api_gateway_method.update_key.http_method
+  type                    = "AWS_PROXY"
+  integration_http_method = "POST"
+  uri                     = aws_lambda_function.key_manager.invoke_arn
+}
+
+# --- DELETE /portal/api/keys/{keyId} (revoke) ---
+resource "aws_api_gateway_method" "delete_key" {
+  rest_api_id      = var.rest_api_id
+  resource_id      = aws_api_gateway_resource.portal_key_by_id.id
+  http_method      = "DELETE"
+  authorization    = "COGNITO_USER_POOLS"
+  authorizer_id    = aws_api_gateway_authorizer.cognito.id
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "delete_key" {
+  rest_api_id             = var.rest_api_id
+  resource_id             = aws_api_gateway_resource.portal_key_by_id.id
+  http_method             = aws_api_gateway_method.delete_key.http_method
+  type                    = "AWS_PROXY"
+  integration_http_method = "POST"
+  uri                     = aws_lambda_function.key_manager.invoke_arn
+}
+
+# --- OPTIONS /portal/api/keys (CORS preflight) ---
+resource "aws_api_gateway_method" "keys_options" {
+  rest_api_id      = var.rest_api_id
+  resource_id      = aws_api_gateway_resource.portal_keys.id
+  http_method      = "OPTIONS"
+  authorization    = "NONE"
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "keys_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.portal_keys.id
+  http_method = aws_api_gateway_method.keys_options.http_method
+  type        = "MOCK"
+
+  request_templates = {
+    "application/json" = "{\"statusCode\": 200}"
+  }
+}
+
+resource "aws_api_gateway_method_response" "keys_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.portal_keys.id
+  http_method = aws_api_gateway_method.keys_options.http_method
+  status_code = "200"
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = true
+    "method.response.header.Access-Control-Allow-Methods" = true
+    "method.response.header.Access-Control-Allow-Origin"  = true
+  }
+}
+
+resource "aws_api_gateway_integration_response" "keys_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.portal_keys.id
+  http_method = aws_api_gateway_method.keys_options.http_method
+  status_code = "200"
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type,Authorization'"
+    "method.response.header.Access-Control-Allow-Methods" = "'GET,POST,OPTIONS'"
+    "method.response.header.Access-Control-Allow-Origin"  = "'https://${var.cloudfront_domain}'"
+  }
+
+  depends_on = [aws_api_gateway_integration.keys_options]
+}
+
+# --- OPTIONS /portal/api/keys/{keyId} (CORS preflight) ---
+resource "aws_api_gateway_method" "key_by_id_options" {
+  rest_api_id      = var.rest_api_id
+  resource_id      = aws_api_gateway_resource.portal_key_by_id.id
+  http_method      = "OPTIONS"
+  authorization    = "NONE"
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "key_by_id_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.portal_key_by_id.id
+  http_method = aws_api_gateway_method.key_by_id_options.http_method
+  type        = "MOCK"
+
+  request_templates = {
+    "application/json" = "{\"statusCode\": 200}"
+  }
+}
+
+resource "aws_api_gateway_method_response" "key_by_id_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.portal_key_by_id.id
+  http_method = aws_api_gateway_method.key_by_id_options.http_method
+  status_code = "200"
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = true
+    "method.response.header.Access-Control-Allow-Methods" = true
+    "method.response.header.Access-Control-Allow-Origin"  = true
+  }
+}
+
+resource "aws_api_gateway_integration_response" "key_by_id_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.portal_key_by_id.id
+  http_method = aws_api_gateway_method.key_by_id_options.http_method
+  status_code = "200"
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type,Authorization'"
+    "method.response.header.Access-Control-Allow-Methods" = "'PATCH,DELETE,OPTIONS'"
+    "method.response.header.Access-Control-Allow-Origin"  = "'https://${var.cloudfront_domain}'"
+  }
+
+  depends_on = [aws_api_gateway_integration.key_by_id_options]
+}
+
+# ==============================================================================
+# API GATEWAY — Redeployment (updates existing prod stage)
+# ==============================================================================
+
+resource "aws_api_gateway_deployment" "portal" {
+  rest_api_id = var.rest_api_id
+
+  triggers = {
+    redeployment = sha1(jsonencode([
+      aws_api_gateway_method.list_keys,
+      aws_api_gateway_method.create_key,
+      aws_api_gateway_method.update_key,
+      aws_api_gateway_method.delete_key,
+      aws_api_gateway_authorizer.cognito,
+    ]))
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  depends_on = [
+    aws_api_gateway_integration.list_keys,
+    aws_api_gateway_integration.create_key,
+    aws_api_gateway_integration.update_key,
+    aws_api_gateway_integration.delete_key,
+    aws_api_gateway_integration.keys_options,
+    aws_api_gateway_integration.key_by_id_options,
+    aws_api_gateway_integration_response.keys_options,
+    aws_api_gateway_integration_response.key_by_id_options,
+  ]
+}
+
+# Point the existing prod stage to this new deployment
+resource "null_resource" "update_stage" {
+  triggers = {
+    deployment_id = aws_api_gateway_deployment.portal.id
+  }
+
+  provisioner "local-exec" {
+    command = "aws apigateway update-stage --rest-api-id ${var.rest_api_id} --stage-name prod --patch-operations op=replace,path=/deploymentId,value=${aws_api_gateway_deployment.portal.id} --region ${var.region}"
+  }
+}
