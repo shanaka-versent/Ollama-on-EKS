@@ -481,7 +481,7 @@ module "observability" {
   eks_oidc_issuer_url      = module.eks.oidc_issuer_url
   enable_grafana            = true  # Temporarily enabled alongside AMG until SSO access is resolved
   grafana_oauth_secret_name = "grafana-oauth-cognito"  # Cognito OAuth via GF_ env vars
-  grafana_root_url          = "https://${module.cdn_waf.cloudfront_domain}/grafana/"
+  grafana_root_url          = "https://${var.cloudfront_domain}/grafana/"
 
   # AMP integration: when managed Grafana is enabled, Prometheus remote-writes to AMP
   amp_remote_write_endpoint = var.enable_managed_grafana ? module.managed_grafana[0].amp_remote_write_endpoint : ""
@@ -528,7 +528,7 @@ module "cognito" {
   source = "./modules/cognito"
 
   project_name       = var.project_name
-  cloudfront_domain  = module.cdn_waf.cloudfront_domain
+  cloudfront_domain  = var.cloudfront_domain
   admin_email        = var.cognito_admin_email
   notification_email = var.cognito_notification_email
   tags               = var.tags
@@ -561,7 +561,7 @@ module "grafana_cognito" {
   source = "./modules/grafana-cognito"
 
   project_name       = var.project_name
-  cloudfront_domain  = module.cdn_waf.cloudfront_domain
+  cloudfront_domain  = var.cloudfront_domain
   admin_email        = var.cognito_admin_email
   notification_email = var.cognito_notification_email
   tags               = var.tags
@@ -576,7 +576,7 @@ resource "kubernetes_secret" "grafana_oauth" {
   }
 
   data = {
-    GF_SERVER_ROOT_URL                           = "https://${module.cdn_waf.cloudfront_domain}/grafana/"
+    GF_SERVER_ROOT_URL                           = "https://${var.cloudfront_domain}/grafana/"
     GF_SERVER_SERVE_FROM_SUB_PATH                = "true"
     GF_AUTH_DISABLE_LOGIN_FORM                   = "true"
     GF_AUTH_GENERIC_OAUTH_ENABLED                = "true"
