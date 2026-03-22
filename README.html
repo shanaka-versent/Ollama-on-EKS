@@ -633,8 +633,10 @@ Web UIs: Client → CloudFront (WAF) → VPC Origin (private) → Internal NLB �
     Dev->>CF: POST /v1/chat/completions (HTTPS)
 
     rect rgb(255, 248, 240)
+        Note over CF: CloudFront Function (viewer-request)
+        CF->>CF: No token cookie? → 302 to /oauth/oidc/login
         Note over CF: WAF rule chain
-        CF->>CF: Rate limit — 100 req/5min per IP
+        CF->>CF: Rate limit — 2000 req/5min per IP
         CF->>CF: IP allowlist — corporate CIDRs only
         CF->>CF: Geo-block — AU + US only
         CF->>CF: SQL/XSS — AWSManagedRulesCommonRuleSet
@@ -797,13 +799,16 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 <p><strong>Authentication:</strong> All login is handled by <strong>AWS Cognito</strong> (OAuth/OIDC). Local login and password management are completely disabled (<code>ENABLE_PASSWORD_AUTH=false</code>). Users authenticate via Cognito with <strong>mandatory TOTP MFA</strong> (authenticator app). Roles are synced from Cognito groups on every login (<code>ENABLE_OAUTH_ROLE_MANAGEMENT=true</code>) — Cognito is the source of truth, any local role changes are overwritten on next login.</p>
 <p><strong>Password changes:</strong> A banner in Open WebUI links to the Cognito hosted UI <code>/forgotPassword</code> page. Users enter their email, receive a verification code, and set a new password. The URL is injected by Terraform into a K8s secret.</p>
 <p><strong>Access URL:</strong> <code>https://&lt;CLOUDFRONT_DOMAIN&gt;</code> (e.g., <code>https://d3f4nz5crzf5t8.cloudfront.net</code>)</p>
+<p><strong>Auto-redirect:</strong> A CloudFront Function intercepts all viewer requests at the edge. Unauthenticated users (no <code>token</code> cookie) are automatically redirected to the Cognito login page via <code>/oauth/oidc/login</code> — they never see a landing page. Authenticated users pass through to the Open WebUI dashboard. OAuth callback, static asset, API, and portal paths are excluded from the redirect.</p>
+<p><strong>Static asset caching:</strong> SvelteKit bundles (<code>/_app/*</code>) and static files (<code>/static/*</code>) are cached at CloudFront edge locations using the <code>CachingOptimized</code> policy, eliminating the CloudFront → NLB → Istio → Pod round-trip for every JS/CSS/image file. This reduces page load time from ~10s to &lt;1s after the first request.</p>
 <h4 id="user-signup-flow">User Signup Flow</h4>
 <ol>
-<li>User visits CloudFront URL → clicks <strong>"Request Access"</strong></li>
-<li>Redirected to Cognito hosted UI → creates account with email + password</li>
+<li>User visits CloudFront URL → auto-redirected to Cognito login (CloudFront Function)</li>
+<li>Clicks <strong>"Sign up"</strong> on the Cognito hosted UI → creates account with email + password</li>
 <li>Sets up TOTP MFA (authenticator app) on first login</li>
 <li>Admin receives email notification via SNS</li>
 <li>Admin adds user to <code>user</code> or <code>admin</code> group in <strong>Cognito Console</strong></li>
+<li>User receives "Access Granted" email via SES</li>
 <li>User logs in again → role mapped from Cognito group → access granted</li>
 </ol>
 <blockquote>
@@ -1211,6 +1216,10 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 <tr>
 <td><strong>CloudFront + WAF</strong></td>
 <td>Rate limiting (2000/5min), IP allowlist, geo-blocking (AU/US), SQL/XSS rules, DDoS protection (Shield Standard)</td>
+</tr>
+<tr>
+<td><strong>CloudFront Function</strong></td>
+<td>Edge-level auth redirect — unauthenticated requests (no <code>token</code> cookie) are 302'd to Cognito login; excludes OAuth, API, static asset, and portal paths</td>
 </tr>
 <tr>
 <td><strong>Origin Lockdown</strong></td>

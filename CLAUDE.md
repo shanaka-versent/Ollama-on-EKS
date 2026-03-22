@@ -45,7 +45,7 @@ Both Open WebUI and Grafana use **separate Cognito User Pools** with:
 
 #### New User Flow (Access Request)
 
-1. User visits the app → clicks login button → redirected to Cognito hosted UI
+1. User visits CloudFront URL → CloudFront Function detects no `token` cookie → auto-redirects to `/oauth/oidc/login` → Cognito hosted UI
 2. User clicks "Sign up" → enters email + password → account auto-confirmed (Pre Sign-up Lambda)
 3. Admin receives SNS email notification with the user's email and instructions
 4. Admin goes to AWS Cognito Console → finds user → adds to group ("user"/"viewer" or "admin")
@@ -73,6 +73,8 @@ Both Open WebUI and Grafana use **separate Cognito User Pools** with:
 - SES email identity must be verified for access-granted notifications to work. If SES is in sandbox mode, recipient emails must also be verified
 - Password changes redirect to Cognito hosted UI `/forgotPassword` via banner link (URL injected by Terraform into K8s secret)
 - `WEBUI_BANNERS` env var is stored in the `webui-oauth-cognito` K8s secret (not hardcoded in deployment YAML) so Terraform can inject the Cognito change-password URL dynamically
+- CloudFront Function (`auth_redirect`) runs on `viewer-request` event — checks for `token` cookie, redirects unauthenticated users to `/oauth/oidc/login`. Excludes: `/oauth/*`, `/_app/*`, `/static/*`, `/api/*`, `/v1/*`, `/portal/*`, `/grafana/*`, favicons
+- Static assets (`/_app/*`, `/static/*`) use `CachingOptimized` policy at CloudFront edge — eliminates the full CloudFront → NLB → Istio → Pod round-trip for JS/CSS/images, reducing page load from ~10s to <1s
 
 > **TEMPORARY:** In-cluster Grafana + Cognito auth is a stopgap while AMG (AWS Managed Grafana) SSO access is being resolved (Stax ticket pending). Once AMG is accessible: set `enable_grafana = !var.enable_managed_grafana`, remove `grafana_cognito` module + K8s secret + Grafana HTTPRoute, delete `terraform/modules/grafana-cognito/`.
 

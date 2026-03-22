@@ -218,8 +218,10 @@ sequenceDiagram
     Dev->>CF: POST /v1/chat/completions (HTTPS)
 
     rect rgb(255, 248, 240)
+        Note over CF: CloudFront Function (viewer-request)
+        CF->>CF: No token cookie? → 302 to /oauth/oidc/login
         Note over CF: WAF rule chain
-        CF->>CF: Rate limit — 100 req/5min per IP
+        CF->>CF: Rate limit — 2000 req/5min per IP
         CF->>CF: IP allowlist — corporate CIDRs only
         CF->>CF: Geo-block — AU + US only
         CF->>CF: SQL/XSS — AWSManagedRulesCommonRuleSet
@@ -427,14 +429,19 @@ Open WebUI (v0.8.10) provides a ChatGPT-like interface for Ollama. Deployed on E
 
 **Access URL:** `https://<CLOUDFRONT_DOMAIN>` (e.g., `https://d3f4nz5crzf5t8.cloudfront.net`)
 
+**Auto-redirect:** A CloudFront Function intercepts all viewer requests at the edge. Unauthenticated users (no `token` cookie) are automatically redirected to the Cognito login page via `/oauth/oidc/login` — they never see a landing page. Authenticated users pass through to the Open WebUI dashboard. OAuth callback, static asset, API, and portal paths are excluded from the redirect.
+
+**Static asset caching:** SvelteKit bundles (`/_app/*`) and static files (`/static/*`) are cached at CloudFront edge locations using the `CachingOptimized` policy, eliminating the CloudFront → NLB → Istio → Pod round-trip for every JS/CSS/image file. This reduces page load time from ~10s to <1s after the first request.
+
 #### User Signup Flow
 
-1. User visits CloudFront URL → clicks **"Request Access"**
-2. Redirected to Cognito hosted UI → creates account with email + password
+1. User visits CloudFront URL → auto-redirected to Cognito login (CloudFront Function)
+2. Clicks **"Sign up"** on the Cognito hosted UI → creates account with email + password
 3. Sets up TOTP MFA (authenticator app) on first login
 4. Admin receives email notification via SNS
 5. Admin adds user to `user` or `admin` group in **Cognito Console**
-6. User logs in again → role mapped from Cognito group → access granted
+6. User receives "Access Granted" email via SES
+7. User logs in again → role mapped from Cognito group → access granted
 
 > **Initial admin:** Bootstrapped via Terraform. Receives temporary password by email. Already in `admin` group.
 
@@ -629,6 +636,7 @@ flowchart LR
 | Layer | Protection |
 |-------|-----------|
 | **CloudFront + WAF** | Rate limiting (2000/5min), IP allowlist, geo-blocking (AU/US), SQL/XSS rules, DDoS protection (Shield Standard) |
+| **CloudFront Function** | Edge-level auth redirect — unauthenticated requests (no `token` cookie) are 302'd to Cognito login; excludes OAuth, API, static asset, and portal paths |
 | **Origin Lockdown** | CloudFront sends a shared secret via `Referer` header; API Gateway resource policy denies requests without it — blocks direct API Gateway access |
 | **API Gateway + API Key** | x-api-key header required (native usage plans + API keys, managed via Console), REST API with VPC Link — no public NLB exposure |
 | **CloudFront VPC Origin** | Private connectivity from CloudFront to internal NLB — no internet-facing load balancer |

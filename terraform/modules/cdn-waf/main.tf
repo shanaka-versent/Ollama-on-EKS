@@ -20,6 +20,55 @@ locals {
   portal_enabled          = var.portal_s3_bucket_regional_domain != ""
 }
 
+# --- CloudFront Function: Auth Redirect ---
+# Redirects unauthenticated users directly to the OIDC login endpoint,
+# skipping the Open WebUI landing page. Logged-in users (with session cookie)
+# pass through to the dashboard. Excludes OAuth callback, static assets,
+# and API paths from redirect.
+resource "aws_cloudfront_function" "auth_redirect" {
+  count = local.webui_enabled ? 1 : 0
+
+  name    = "${var.project_name}-auth-redirect"
+  runtime = "cloudfront-js-2.0"
+  publish = true
+
+  code = <<-JS
+    function handler(event) {
+      var request = event.request;
+      var uri = request.uri;
+      var cookies = request.cookies || {};
+
+      // Paths that must NOT be redirected (OAuth flow, static assets, APIs)
+      if (uri.startsWith('/oauth/') ||
+          uri.startsWith('/_app/') ||
+          uri.startsWith('/static/') ||
+          uri.startsWith('/api/') ||
+          uri.startsWith('/v1/') ||
+          uri.startsWith('/portal/') ||
+          uri.startsWith('/grafana/') ||
+          uri === '/favicon.ico' ||
+          uri === '/favicon.png') {
+        return request;
+      }
+
+      // If user has a session cookie, let them through
+      if (cookies['token']) {
+        return request;
+      }
+
+      // No session — redirect to OIDC login (Open WebUI initiates OAuth flow)
+      return {
+        statusCode: 302,
+        statusDescription: 'Found',
+        headers: {
+          location: { value: '/oauth/oidc/login' },
+          'cache-control': { value: 'no-cache, no-store, must-revalidate' }
+        }
+      };
+    }
+  JS
+}
+
 # --- CloudFront VPC Origin (private connectivity to internal NLB) ---
 # This is the key pattern: CloudFront connects privately to the internal NLB
 # via VPC Origins, no internet-facing NLB needed. This is why we use the
@@ -285,6 +334,15 @@ resource "aws_cloudfront_distribution" "ollama" {
 
     viewer_protocol_policy = "https-only"
     compress               = true
+
+    # Auto-redirect unauthenticated users to Cognito login (skip landing page)
+    dynamic "function_association" {
+      for_each = local.webui_enabled ? [1] : []
+      content {
+        event_type   = "viewer-request"
+        function_arn = aws_cloudfront_function.auth_redirect[0].arn
+      }
+    }
   }
 
   # Open WebUI static assets → NLB (cached at CloudFront edge)
