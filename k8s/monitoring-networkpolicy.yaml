@@ -10,7 +10,7 @@
 #   - Grafana pod needs HTTPS egress to CloudWatch APIs (for FinOps dashboard)
 #   - Apply the grafana-cloudwatch policy below
 #
-# Current config: AMG mode (enable_managed_grafana=true)
+# Current config: In-cluster Grafana via CloudFront (temporary until AMG SSO resolved)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -19,7 +19,22 @@ metadata:
 spec:
   podSelector: {}
   policyTypes:
+    - Ingress
     - Egress
+  ingress:
+    # Allow traffic from Istio Gateway (internet-facing NLB → Grafana)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: istio-ingress
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: istio-system
+    # Allow intra-namespace (Prometheus → Grafana, etc.)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
   egress:
     # Scrape targets in any namespace (Prometheus needs this)
     - to:

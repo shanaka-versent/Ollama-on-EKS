@@ -33,9 +33,10 @@ flowchart TB
                 subgraph L3["Layer 3 — ArgoCD GitOps (Waves 0-7)"]
                     direction LR
                     ISTIO["Istio Gateway\nAmbient mTLS"]
-                    OLLAMA["Ollama Pod\nv0.6.2 · 4x A10G"]
+                    OLLAMA["Ollama Pod\nv0.18.2 · 4x A10G"]
                     EBS["EBS gp3 200GB\n6000 IOPS · 400 MB/s\nSnapshot Pre-loaded"]
-                    WEBUI["Open WebUI\nChat Interface (model locked)"]
+                    WEBUI["Open WebUI v0.8.10\nCognito Auth (MFA)"]
+                    COG["Cognito User Pool\nOAuth/OIDC + TOTP MFA"]
                     MON["Prometheus + Grafana\nDCGM Exporter"]
                 end
             end
@@ -66,12 +67,13 @@ flowchart TB
     style EBS fill:#2e7d32,color:#fff
 ```
 
-**Traffic flow:**
+**Traffic flows:**
 ```
-Client → CloudFront (WAF rate limit + IP allowlist + geo-block) → API Gateway (REST API, x-api-key auth) → VPC Link → Internal NLB → Istio Gateway (mTLS) → Ollama Pod
+API:     Client → CloudFront (WAF) → API Gateway (x-api-key) → VPC Link → Internal NLB → Istio → Ollama
+Web UIs: Client → CloudFront (WAF) → VPC Origin (private) → Internal NLB → Istio → Open WebUI / Grafana
 ```
 
-All traffic stays on the AWS backbone. No Transit Gateway. No third-party gateway.
+CloudFront connects to the internal NLB via **VPC Origins** — private connectivity, no internet-facing load balancer needed. All traffic stays on the AWS backbone.
 
 ### Architecture (4 Layers)
 
@@ -122,7 +124,8 @@ Switch tiers using the `/model` command in Claude Code, or directly via:
 | Self-managed observability | Prometheus + Grafana + DCGM Exporter, all air-gapped (no AMP/AMG dependency) |
 | Spot with on-demand fallback | Karpenter tries spot first (~65% savings), auto-falls back to on-demand if reclaimed |
 | Dual-mode pipeline | Two separate stacks (not config flag) — compliance by design, eliminates human error risk |
-| Ollama image pinned to v0.6.2 | Reproducible builds, no surprise breaking changes from `:latest` |
+| Ollama image pinned to v0.18.2 | Reproducible builds, no surprise breaking changes from `:latest` |
+| Cognito authentication for Open WebUI | Centralized auth with MFA — Cognito handles signup, login, TOTP, and role mapping. No local passwords stored in Open WebUI |
 | cert-manager (not manual openssl) | Automated TLS lifecycle — 90d duration, 30d auto-renewal, no manual cert rotation |
 
 ### Dual-Mode Pipeline — Two Separate Stacks
@@ -416,51 +419,51 @@ Use the `/model` command in Claude Code for an interactive picker, or specify di
 
 ### Open WebUI (Browser-Based Chat Interface)
 
-Open WebUI provides a ChatGPT-like interface for Ollama. Deployed on EKS system nodes (no GPU needed), air-gapped via NetworkPolicy. Model switching is **restricted to admins only** — regular users see only the default flagship model, preventing accidental model swaps that would spin up additional GPU nodes.
+Open WebUI (v0.8.10) provides a ChatGPT-like interface for Ollama. Deployed on EKS system nodes (no GPU needed), air-gapped via NetworkPolicy. Accessible via CloudFront — no port-forwarding needed.
 
-```bash
-# Access via port-forward
-kubectl port-forward -n open-webui svc/open-webui 8080:80
-# Open http://localhost:8080
-```
+**Authentication:** All login is handled by **AWS Cognito** (OAuth/OIDC). Local login is completely disabled. Users authenticate via Cognito with **mandatory TOTP MFA** (authenticator app). Roles are mapped from Cognito groups to Open WebUI roles automatically.
 
-On first login, create an admin account (signup is disabled after the first user for security).
+**Access URL:** `https://<CLOUDFRONT_DOMAIN>` (e.g., `https://d3f4nz5crzf5t8.cloudfront.net`)
+
+#### User Signup Flow
+
+1. User visits CloudFront URL → clicks **"Request Access"**
+2. Redirected to Cognito hosted UI → creates account with email + password
+3. Sets up TOTP MFA (authenticator app) on first login
+4. Admin receives email notification via SNS
+5. Admin adds user to `user` or `admin` group in **Cognito Console**
+6. User logs in again → role mapped from Cognito group → access granted
+
+> **Initial admin:** Bootstrapped via Terraform. Receives temporary password by email. Already in `admin` group.
+
+#### Roles and Model Access
 
 | Role | Model Access | How to Assign |
 |------|-------------|---------------|
-| **Admin** (first user) | All 3 tiers visible in model selector | Automatic — first signup becomes admin |
-| **Admin** (additional) | All 3 tiers visible in model selector | Admin Settings → Users → Promote to admin |
-| **User** (regular) | Flagship only (`qwen3.5:122b-a10b`) | Default for all subsequent signups |
+| **Admin** | All 3 tiers visible in model selector | Add to `admin` group in Cognito Console |
+| **User** | Flagship only (`qwen3.5:122b-a10b`) | Add to `user` group in Cognito Console |
+
+Model switching is **restricted to admins only** — regular users see only the default flagship model, preventing accidental model swaps that would spin up additional GPU nodes.
+
+#### Managing Users (Cognito Console)
+
+| Action | How |
+|--------|-----|
+| View users | AWS Console → Cognito → User Pools → `ollama-webui` |
+| Approve new user | Cognito Console → Users → select user → Groups → Add to `user` or `admin` |
+| Promote to admin | Cognito Console → Users → select user → Groups → Add to `admin` |
+| Reset password/MFA | Cognito Console → Users → select user → Actions |
+| Disable user | Cognito Console → Users → select user → Disable |
 
 To change the locked model for regular users, update `MODEL_FILTER_LIST` in `k8s/open-webui/deployment.yaml` and redeploy. Admins can also switch the cluster-wide default via `./switch-model.sh use <tier>`.
 
-**Connecting an external Open WebUI instance:**
-
-If you already run Open WebUI elsewhere, point it at your CloudFront endpoint with your API key:
-
-```bash
-# Get your API key (or copy from Console: API Gateway → API Keys)
-API_KEY=$(aws apigateway get-api-key \
-  --api-key $(terraform output -raw api_key_id) \
-  --include-value --query value --output text)
-
-docker run -d -p 3000:8080 \
-  -e OLLAMA_BASE_URL=https://<CLOUDFRONT_DOMAIN> \
-  -e OLLAMA_API_KEY=$API_KEY \
-  -v open-webui:/app/backend/data \
-  ghcr.io/open-webui/open-webui:v0.6.5
-```
-
-Replace `<CLOUDFRONT_DOMAIN>` with `terraform output -raw cloudfront_domain`.
-
 ### Observability (Prometheus + Grafana)
 
-Self-managed, air-gapped monitoring — no AWS managed services (AMP/AMG). GPU metrics stay in-cluster alongside the workloads they monitor.
+Self-managed, air-gapped monitoring. GPU metrics stay in-cluster alongside the workloads they monitor. Grafana is accessible via CloudFront with Cognito authentication (separate user pool from Open WebUI).
 
-```bash
-kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
-# Open http://localhost:3000
-```
+**Access URL:** `https://<CLOUDFRONT_DOMAIN>/grafana/` — authenticated via Cognito (TOTP MFA required)
+
+> **Note:** AWS Managed Grafana (AMG) is provisioned but SSO access is pending. In-cluster Grafana with Cognito is a temporary stopgap.
 
 | Component | What It Monitors |
 |-----------|-----------------|
@@ -582,7 +585,7 @@ Terraform provisions ArgoCD during `terraform apply`. ArgoCD then auto-syncs all
 | 4 | `model-loader` | Job: pulls models to EBS PVC |
 | 5 | `gateway` | Istio Gateway → AWS LB Controller provisions internal NLB |
 | 6 | `httproutes` | HTTPRoute: `/*` → `ollama.ollama.svc.cluster.local:11434` |
-| 7 | `open-webui` | Open WebUI deployment, service, PVC, NetworkPolicy (model locked to admins) |
+| 7 | `open-webui` | Open WebUI v0.8.10, Cognito OAuth/OIDC, model locked to admins |
 
 ```mermaid
 flowchart LR
@@ -625,14 +628,16 @@ flowchart LR
 | **CloudFront + WAF** | Rate limiting (100/5min), IP allowlist, geo-blocking (AU/US), SQL/XSS rules, DDoS protection (Shield Standard) |
 | **Origin Lockdown** | CloudFront sends a shared secret via `Referer` header; API Gateway resource policy denies requests without it — blocks direct API Gateway access |
 | **API Gateway + API Key** | x-api-key header required (native usage plans + API keys, managed via Console), REST API with VPC Link — no public NLB exposure |
+| **CloudFront VPC Origin** | Private connectivity from CloudFront to internal NLB — no internet-facing load balancer |
 | **VPC Link** | Private connectivity from API Gateway to internal NLB |
-| **Internal NLB** | Not internet-facing — only reachable via VPC Link |
+| **Internal NLB** | Not internet-facing — only reachable via VPC Link and VPC Origin |
 | **Istio Ambient** | Automatic L4 mTLS between all pods |
 | **Ollama Service** | `ClusterIP` — never directly exposed outside the cluster |
 | **NetworkPolicy** | Air-gap enforced: ingress from `istio-system` and `istio-ingress` on port 11434; egress DNS + intra-cluster only |
 | **AWS VPC** | Nodes in private subnets, NAT for outbound only |
 | **Node Isolation** | System nodes tainted `CriticalAddonsOnly`, GPU nodes tainted `nvidia.com/gpu` |
 | **EBS Snapshot** | Pre-loaded models — no internet needed for model loading |
+| **Cognito (Open WebUI)** | OAuth/OIDC with mandatory TOTP MFA, role mapping from Cognito groups, admin approval for new signups, no local passwords |
 | **IRSA** | EBS CSI + LB Controller + Bedrock (Stack B) use least-privilege IAM roles via OIDC |
 | **cert-manager** | Automated TLS certificate lifecycle (90d duration, 30d auto-renewal) |
 
@@ -738,6 +743,8 @@ terraform/
     api-gateway/                   # REST API Gateway + VPC Link + API Keys + origin lockdown
     cdn-waf/                       # CloudFront + WAFv2 (5 rules) + origin lockdown header
     cert-manager/                  # cert-manager Helm release
+    cognito/                       # Cognito User Pool for Open WebUI (OAuth, MFA, groups)
+    grafana-cognito/               # Cognito User Pool for Grafana (temporary until AMG SSO)
     managed-grafana/               # Optional: AMG + AMP (replaces in-cluster Grafana)
     bedrock-integration/           # Stack B: VPC endpoint + IRSA for Bedrock
 
@@ -746,7 +753,7 @@ k8s/
   model-loader/                    # Job to pull models
   nodepools/                       # Karpenter NodePool + EC2NodeClass
   cert-manager/                    # ClusterIssuer + Certificate
-  open-webui/                      # Open WebUI — chat interface (model locked to admins)
+  open-webui/                      # Open WebUI — Cognito auth, model locked to admins
   gateway.yaml                     # Istio Gateway
   httproutes.yaml                  # HTTPRoutes to Ollama
   monitoring-networkpolicy.yaml    # Monitoring namespace air-gap

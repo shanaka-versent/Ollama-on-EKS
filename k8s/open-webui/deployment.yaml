@@ -6,8 +6,8 @@
 # only the default model (flagship). Admins can switch via the UI or CLI.
 # Runs on system nodes (no GPU needed). Connects to Ollama via ClusterIP.
 #
-# Access: kubectl port-forward -n open-webui svc/open-webui 8080:80
-# Then open: http://localhost:8080
+# Access: via CloudFront URL (Cognito login with MFA)
+# Auth: Cognito User Pool (OAuth/OIDC) — all user management in Cognito Console
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -65,9 +65,41 @@ spec:
               value: "true"
             - name: MODEL_FILTER_LIST
               value: "qwen3.5:122b-a10b"
-            # Disable signup after first user (security)
+            # --- Cognito OAuth/OIDC Authentication ---
+            # Disable local login/signup — all auth via Cognito
             - name: ENABLE_SIGNUP
+              value: "false"
+            - name: ENABLE_LOGIN_FORM
+              value: "false"
+            - name: ENABLE_OAUTH_SIGNUP
               value: "true"
+            - name: OAUTH_MERGE_ACCOUNTS_BY_EMAIL
+              value: "true"
+            - name: OAUTH_PROVIDER_NAME
+              value: "Request Access"
+            # Role mapping from Cognito groups
+            - name: OAUTH_ROLES_CLAIM
+              value: "cognito:groups"
+            - name: OAUTH_ADMIN_ROLES
+              value: "admin"
+            - name: OAUTH_ALLOWED_ROLES
+              value: "admin,user"
+            # OAuth credentials from Kubernetes Secret (created by Terraform)
+            - name: OAUTH_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: webui-oauth-cognito
+                  key: OAUTH_CLIENT_ID
+            - name: OAUTH_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: webui-oauth-cognito
+                  key: OAUTH_CLIENT_SECRET
+            - name: OPENID_PROVIDER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: webui-oauth-cognito
+                  key: OPENID_PROVIDER_URL
           resources:
             requests:
               cpu: "250m"

@@ -2,12 +2,12 @@
 # @author Shanaka Jayasundera - shanakaj@gmail.com
 #
 # Routes traffic from the Istio Gateway (internal NLB) to Open WebUI.
-# CloudFront sends web UI traffic directly to the NLB (bypassing API Gateway),
-# which uses this HTTPRoute to reach the Open WebUI pod.
+# CloudFront connects to the internal NLB via VPC Origins (private connectivity).
 #
-# Path routing priority (handled by CloudFront behaviors):
-#   /v1/*, /api/tags  → API Gateway origin (API key required)
-#   /*                → NLB origin → this HTTPRoute → Open WebUI
+# Path routing (handled by CloudFront behaviors + Istio HTTPRoute priority):
+#   /v1/*, /api/*     → API Gateway origin → VPC Link → NLB → Ollama
+#   /grafana/*        → VPC Origin → NLB → Grafana (via monitoring HTTPRoute)
+#   /*                → VPC Origin → NLB → this HTTPRoute → Open WebUI
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:

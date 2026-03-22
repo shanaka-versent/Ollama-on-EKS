@@ -16,7 +16,30 @@ locals {
   # Skip IP allowlist rule when "0.0.0.0/0" is set (means "allow all")
   ip_allowlist_enabled    = !contains(var.allowed_ips, "0.0.0.0/0")
   origin_lockdown_enabled = var.enable_origin_lockdown
-  webui_enabled           = var.nlb_dns_name != ""
+  webui_enabled           = var.nlb_dns_name != "" && var.nlb_arn != ""
+}
+
+# --- CloudFront VPC Origin (private connectivity to internal NLB) ---
+# This is the key pattern: CloudFront connects privately to the internal NLB
+# via VPC Origins, no internet-facing NLB needed. This is why we use the
+# Gateway API pattern — the internal NLB stays fully private.
+resource "aws_cloudfront_vpc_origin" "nlb" {
+  count = local.webui_enabled ? 1 : 0
+
+  vpc_origin_endpoint_config {
+    name                 = "${var.project_name}-nlb-origin"
+    arn                  = var.nlb_arn
+    http_port            = 80
+    https_port           = 443
+    origin_protocol_policy = "http-only"
+
+    origin_ssl_protocols {
+      items    = ["TLSv1.2"]
+      quantity = 1
+    }
+  }
+
+  tags = var.tags
 }
 
 # --- WAFv2 Web ACL (must be in us-east-1 for CloudFront) ---
@@ -216,18 +239,16 @@ resource "aws_cloudfront_distribution" "ollama" {
     }
   }
 
-  # NLB origin for Open WebUI (internal NLB → Istio Gateway → Open WebUI)
+  # NLB origin via VPC Origins (private connectivity to internal NLB)
+  # CloudFront connects privately — no internet-facing NLB needed
   dynamic "origin" {
     for_each = local.webui_enabled ? [1] : []
     content {
       domain_name = var.nlb_dns_name
       origin_id   = "nlb-webui"
 
-      custom_origin_config {
-        http_port              = 80
-        https_port             = 443
-        origin_protocol_policy = "http-only"
-        origin_ssl_protocols   = ["TLSv1.2"]
+      vpc_origin_config {
+        vpc_origin_id = aws_cloudfront_vpc_origin.nlb[0].id
       }
     }
   }

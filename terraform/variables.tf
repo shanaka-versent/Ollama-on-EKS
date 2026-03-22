@@ -322,6 +322,20 @@ variable "grafana_viewer_group_ids" {
 }
 
 # ==============================================================================
+# COGNITO AUTHENTICATION (Open WebUI)
+# ==============================================================================
+
+variable "cognito_admin_email" {
+  description = "Email for the initial admin user (receives temporary password)"
+  type        = string
+}
+
+variable "cognito_notification_email" {
+  description = "Email to receive new user signup notifications"
+  type        = string
+}
+
+# ==============================================================================
 # OBSERVABILITY
 # ==============================================================================
 
@@ -329,6 +343,7 @@ variable "grafana_admin_password" {
   description = "Admin password for Grafana"
   type        = string
   sensitive   = true
+  default     = "OllamaAdmin2024!"
 }
 
 variable "prometheus_retention_days" {

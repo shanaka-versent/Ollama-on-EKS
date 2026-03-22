@@ -7,7 +7,8 @@
 
 ---
 # Ollama Route — handles Ollama API paths
-# Specific path prefixes for API Gateway traffic
+# Only Ollama-native endpoints; Open WebUI has its own /api/* paths
+# API Gateway traffic arrives via VPC Link → NLB → these routes
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -22,9 +23,26 @@ spec:
         - path:
             type: PathPrefix
             value: /v1/
+      backendRefs:
+        - name: ollama
+          port: 11434
+    # Ollama-native API endpoints (distinct from Open WebUI /api/*)
+    - matches:
         - path:
-            type: PathPrefix
-            value: /api/
+            type: Exact
+            value: /api/tags
+        - path:
+            type: Exact
+            value: /api/generate
+        - path:
+            type: Exact
+            value: /api/chat
+        - path:
+            type: Exact
+            value: /api/show
+        - path:
+            type: Exact
+            value: /api/ps
       backendRefs:
         - name: ollama
           port: 11434

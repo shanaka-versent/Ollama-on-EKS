@@ -436,6 +436,7 @@ module "cdn_waf" {
   project_name           = var.project_name
   api_gateway_endpoint   = module.api_gateway.api_endpoint
   nlb_dns_name           = var.nlb_dns_name
+  nlb_arn                = var.nlb_arn
   allowed_ips            = var.waf_allowed_ips
   rate_limit             = var.waf_rate_limit
   geo_countries          = var.waf_geo_countries
@@ -476,7 +477,9 @@ module "observability" {
   grafana_storage_size      = var.grafana_storage_size
   eks_oidc_provider_arn    = module.eks.oidc_provider_arn
   eks_oidc_issuer_url      = module.eks.oidc_issuer_url
-  enable_grafana           = true  # Temporarily enabled alongside AMG until SSO access is resolved
+  enable_grafana            = true  # Temporarily enabled alongside AMG until SSO access is resolved
+  grafana_oauth_secret_name = "grafana-oauth-cognito"  # Cognito OAuth via GF_ env vars
+  grafana_root_url          = "https://${module.cdn_waf.cloudfront_domain}/grafana/"
 
   # AMP integration: when managed Grafana is enabled, Prometheus remote-writes to AMP
   amp_remote_write_endpoint = var.enable_managed_grafana ? module.managed_grafana[0].amp_remote_write_endpoint : ""
@@ -510,6 +513,84 @@ module "managed_grafana" {
   tags                  = var.tags
 
   depends_on = [module.eks]
+}
+
+# ==============================================================================
+# COGNITO AUTHENTICATION (Open WebUI — MFA + OAuth)
+# ==============================================================================
+# Centralized auth for Open WebUI: Cognito handles signup, login, MFA.
+# Users self-register, admin approves by adding to Cognito group.
+# Roles (admin/user) mapped from Cognito groups to Open WebUI roles.
+
+module "cognito" {
+  source = "./modules/cognito"
+
+  project_name       = var.project_name
+  cloudfront_domain  = module.cdn_waf.cloudfront_domain
+  admin_email        = var.cognito_admin_email
+  notification_email = var.cognito_notification_email
+  tags               = var.tags
+}
+
+# Kubernetes Secret for Open WebUI OAuth credentials
+resource "kubernetes_secret" "webui_oauth" {
+  metadata {
+    name      = "webui-oauth-cognito"
+    namespace = "open-webui"
+  }
+
+  data = {
+    OAUTH_CLIENT_ID       = module.cognito.client_id
+    OAUTH_CLIENT_SECRET   = module.cognito.client_secret
+    OPENID_PROVIDER_URL   = module.cognito.openid_config_url
+  }
+
+  depends_on = [module.cognito]
+}
+
+# ==============================================================================
+# COGNITO AUTHENTICATION (Grafana — MFA + OAuth)
+# ==============================================================================
+# TEMPORARY: Separate Cognito User Pool for in-cluster Grafana.
+# Once AMG (AWS Managed Grafana) SSO access is resolved, disable in-cluster
+# Grafana and remove this module + secret.
+
+module "grafana_cognito" {
+  source = "./modules/grafana-cognito"
+
+  project_name       = var.project_name
+  cloudfront_domain  = module.cdn_waf.cloudfront_domain
+  admin_email        = var.cognito_admin_email
+  notification_email = var.cognito_notification_email
+  tags               = var.tags
+}
+
+# Kubernetes Secret for Grafana OAuth — uses GF_ env var convention
+# Grafana auto-applies env vars matching the GF_<SECTION>_<KEY> pattern
+resource "kubernetes_secret" "grafana_oauth" {
+  metadata {
+    name      = "grafana-oauth-cognito"
+    namespace = "monitoring"
+  }
+
+  data = {
+    GF_SERVER_ROOT_URL                           = "https://${module.cdn_waf.cloudfront_domain}/grafana/"
+    GF_SERVER_SERVE_FROM_SUB_PATH                = "true"
+    GF_AUTH_DISABLE_LOGIN_FORM                   = "true"
+    GF_AUTH_GENERIC_OAUTH_ENABLED                = "true"
+    GF_AUTH_GENERIC_OAUTH_NAME                   = "Request Access"
+    GF_AUTH_GENERIC_OAUTH_ALLOW_SIGN_UP          = "true"
+    GF_AUTH_GENERIC_OAUTH_AUTO_LOGIN             = "true"
+    GF_AUTH_GENERIC_OAUTH_CLIENT_ID              = module.grafana_cognito.client_id
+    GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET          = module.grafana_cognito.client_secret
+    GF_AUTH_GENERIC_OAUTH_SCOPES                 = "openid email profile"
+    GF_AUTH_GENERIC_OAUTH_AUTH_URL               = module.grafana_cognito.auth_url
+    GF_AUTH_GENERIC_OAUTH_TOKEN_URL              = module.grafana_cognito.token_url
+    GF_AUTH_GENERIC_OAUTH_API_URL                = module.grafana_cognito.userinfo_url
+    GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH    = "contains(\"cognito:groups\" || `[]`, 'admin') && 'Admin' || 'Viewer'"
+  }
+
+  depends_on = [module.grafana_cognito]
 }
 
 # ==============================================================================
