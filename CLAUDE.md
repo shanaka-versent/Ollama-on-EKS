@@ -25,8 +25,8 @@ CloudFront connects to the internal NLB via **VPC Origins** (private connectivit
 Both Open WebUI and Grafana use **separate Cognito User Pools** with:
 - TOTP MFA required on first login
 - OAuth/OIDC flow (no local login forms)
-- "Request Access" button instead of "Register"
 - Admin notification via SNS on new signups
+- Access-granted notification via SES when user is added to a group
 - Role mapping from Cognito groups
 - User management exclusively via Cognito Console
 
@@ -34,6 +34,39 @@ Both Open WebUI and Grafana use **separate Cognito User Pools** with:
 |-----|-------------|-------|-----------------|
 | Open WebUI | `ollama-webui` | admin, user | `/` (default) |
 | Grafana | `ollama-grafana` | admin, viewer | `/grafana/` |
+
+#### Admin User Flow (Initial Setup)
+
+1. Terraform creates admin user (`cognito_admin_email`) in both Cognito pools
+2. Admin receives **two separate emails** with temp passwords — one for Open WebUI, one for Grafana
+3. Admin is automatically added to the "admin" group in both pools
+4. Admin logs in → changes password → sets up MFA (TOTP authenticator app)
+5. Admin can now access Open WebUI (as admin) and Grafana (as admin)
+
+#### New User Flow (Access Request)
+
+1. User visits the app → clicks login button → redirected to Cognito hosted UI
+2. User clicks "Sign up" → enters email + password → account auto-confirmed (Pre Sign-up Lambda)
+3. Admin receives SNS email notification with the user's email and instructions
+4. Admin goes to AWS Cognito Console → finds user → adds to group ("user"/"viewer" or "admin")
+5. User receives "Access Granted" email via SES with login URL and role info
+6. User logs in → sets up MFA (TOTP authenticator app) on first login
+7. User can now access the app with role-mapped permissions
+
+#### Access Control Layers
+
+- **Cognito group membership** = primary gate (managed by admin in AWS Console)
+- **OAUTH_ALLOWED_ROLES** = Open WebUI rejects users not in admin/user Cognito groups
+- **OAUTH_ADMIN_ROLES** = elevates users in "admin" Cognito group to Open WebUI admin
+- **DEFAULT_USER_ROLE=user** = auto-activates OAuth users who pass Cognito group gate
+
+#### Key Implementation Details
+
+- `WEBUI_URL` and `OPENID_REDIRECT_URI` env vars on Open WebUI ensure OAuth redirect uses CloudFront domain (not internal NLB hostname)
+- CloudFront adds `X-Forwarded-Proto: https` as custom origin header (CloudFront uses `CloudFront-Forwarded-Proto`, but uvicorn reads `X-Forwarded-Proto`)
+- VPC Origins require `AllViewerExceptHostHeader` origin request policy — `AllViewer` breaks the private NLB connection
+- WAF rate limit set to 2000/5min (web UIs load many assets; 100/5min caused false 403s)
+- SES email identity must be verified for access-granted notifications to work. If SES is in sandbox mode, recipient emails must also be verified
 
 > **TEMPORARY:** In-cluster Grafana + Cognito auth is a stopgap while AMG (AWS Managed Grafana) SSO access is being resolved (Stax ticket pending). Once AMG is accessible: set `enable_grafana = !var.enable_managed_grafana`, remove `grafana_cognito` module + K8s secret + Grafana HTTPRoute, delete `terraform/modules/grafana-cognito/`.
 

@@ -78,6 +78,10 @@ spec:
             - name: WEBUI_BANNERS
               value: '[{"id":"api-key-portal","type":"info","title":"API Access","content":"Need CLI/API access? <a href=/portal/ style=color:white;font-weight:bold>Generate your API key</a>","dismissible":true,"timestamp":"2026-03-22"}]'
             # --- Cognito OAuth/OIDC Authentication ---
+            # Auto-activate OAuth users — Cognito group membership is the gate
+            # (OAUTH_ALLOWED_ROLES rejects users not in admin/user group)
+            - name: DEFAULT_USER_ROLE
+              value: "user"
             # Disable local login/signup — all auth via Cognito
             - name: ENABLE_SIGNUP
               value: "false"

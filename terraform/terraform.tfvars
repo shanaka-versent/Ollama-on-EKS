@@ -70,9 +70,12 @@ nlb_dns_name = "k8s-istioing-ollamaga-d67dab2c37-8a64fd762757025b.elb.ap-southea
 api_key_required      = true
 throttle_rate         = 10
 throttle_burst        = 20
-waf_rate_limit        = 100
+waf_rate_limit        = 2000
 waf_geo_countries     = ["AU", "US"]
 waf_enable_bot_control = false
+
+# CloudFront domain (set after first apply — used by Cognito callback URLs)
+cloudfront_domain = "d3f4nz5crzf5t8.cloudfront.net"
 
 # Observability — AWS Managed Grafana (replaces in-cluster Grafana)
 # Requires IAM Identity Center (AWS SSO) to be enabled in the account.
