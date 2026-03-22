@@ -322,7 +322,7 @@ resource "aws_cognito_user_pool_ui_customization" "ollama" {
   client_id    = aws_cognito_user_pool_client.webui.id
 
   css = <<-CSS
-    .banner-customizable { background-color: #1a1a2e; }
+    .banner-customizable { background-color: #0f3460; }
     .submitButton-customizable { background-color: #0f3460; }
     .submitButton-customizable:hover { background-color: #16213e; }
     .label-customizable { font-weight: bold; }

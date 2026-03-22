@@ -580,7 +580,7 @@ resource "kubernetes_secret" "grafana_oauth" {
     GF_SERVER_SERVE_FROM_SUB_PATH                = "true"
     GF_AUTH_DISABLE_LOGIN_FORM                   = "true"
     GF_AUTH_GENERIC_OAUTH_ENABLED                = "true"
-    GF_AUTH_GENERIC_OAUTH_NAME                   = "Request Access"
+    GF_AUTH_GENERIC_OAUTH_NAME                   = "Sign in to Grafana"
     GF_AUTH_GENERIC_OAUTH_ALLOW_SIGN_UP          = "true"
     GF_AUTH_GENERIC_OAUTH_AUTO_LOGIN             = "true"
     GF_AUTH_GENERIC_OAUTH_CLIENT_ID              = module.grafana_cognito.client_id
