@@ -36,3 +36,8 @@ output "signup_sns_topic_arn" {
   description = "SNS topic ARN for signup notifications"
   value       = aws_sns_topic.signup_notifications.arn
 }
+
+output "user_pool_arn" {
+  description = "Cognito User Pool ARN (for API Gateway authorizer)"
+  value       = aws_cognito_user_pool.ollama.arn
+}

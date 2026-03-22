@@ -38,3 +38,8 @@ output "usage_plan_id" {
   description = "Usage plan ID (for adding keys via Console)"
   value       = var.api_key_required ? aws_api_gateway_usage_plan.standard[0].id : null
 }
+
+output "root_resource_id" {
+  description = "REST API root resource ID (for adding portal resources)"
+  value       = aws_api_gateway_rest_api.ollama.root_resource_id
+}

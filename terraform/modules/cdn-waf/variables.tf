@@ -32,7 +32,7 @@ variable "allowed_ips" {
 variable "rate_limit" {
   description = "WAF rate limit — requests per 5-minute window per IP"
   type        = number
-  default     = 100
+  default     = 2000
 }
 
 variable "geo_countries" {
@@ -57,6 +57,18 @@ variable "origin_verify_secret" {
   description = "Shared secret header value for CloudFront → API Gateway origin lockdown."
   type        = string
   sensitive   = true
+  default     = ""
+}
+
+variable "portal_s3_bucket_regional_domain" {
+  description = "S3 bucket regional domain for the API Key Portal (OAC origin)"
+  type        = string
+  default     = ""
+}
+
+variable "portal_oac_id" {
+  description = "CloudFront Origin Access Control ID for the Portal S3 bucket"
+  type        = string
   default     = ""
 }
 

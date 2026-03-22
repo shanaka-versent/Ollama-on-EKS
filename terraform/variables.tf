@@ -252,7 +252,7 @@ variable "waf_allowed_ips" {
 variable "waf_rate_limit" {
   description = "WAF rate limit — requests per 5-minute window per IP"
   type        = number
-  default     = 100
+  default     = 2000
 }
 
 variable "waf_geo_countries" {
@@ -271,6 +271,12 @@ variable "enable_origin_lockdown" {
   description = "Enable CloudFront → API Gateway origin lockdown (blocks direct API Gateway access)"
   type        = bool
   default     = true
+}
+
+variable "cloudfront_domain" {
+  description = "CloudFront domain name (set after first apply, used for portal Cognito callbacks)"
+  type        = string
+  default     = ""
 }
 
 # ==============================================================================

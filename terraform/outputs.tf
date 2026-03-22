@@ -126,6 +126,11 @@ output "usage_plan_id" {
   value       = module.api_gateway.usage_plan_id
 }
 
+output "api_key_portal_url" {
+  description = "URL for self-service API key management portal"
+  value       = module.api_key_portal.portal_url
+}
+
 # ==============================================================================
 # BEDROCK INTEGRATION (Stack B Only)
 # ==============================================================================
