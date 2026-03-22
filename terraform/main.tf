@@ -546,6 +546,8 @@ resource "kubernetes_secret" "webui_oauth" {
     OAUTH_CLIENT_SECRET   = module.cognito.client_secret
     OPENID_PROVIDER_URL   = module.cognito.openid_config_url
     CHANGE_PASSWORD_URL   = module.cognito.change_password_url
+    OAUTH_LOGOUT_URL      = module.cognito.logout_url
+    # Banner timestamp must be Unix epoch (number), not a date string
     WEBUI_BANNERS = jsonencode([
       {
         id          = "api-key-portal"
@@ -553,7 +555,7 @@ resource "kubernetes_secret" "webui_oauth" {
         title       = "API Access"
         content     = "Need CLI/API access? <a href=/portal/ style=color:white;font-weight:bold>Generate your API key</a>"
         dismissible = true
-        timestamp   = "2026-03-22"
+        timestamp   = 1774051200
       },
       {
         id          = "change-password"
@@ -561,7 +563,7 @@ resource "kubernetes_secret" "webui_oauth" {
         title       = "Account"
         content     = "Need to change your password? <a href='${module.cognito.change_password_url}' style=color:white;font-weight:bold target=_blank>Reset Password</a>"
         dismissible = true
-        timestamp   = "2026-03-22"
+        timestamp   = 1774051200
       }
     ])
   }

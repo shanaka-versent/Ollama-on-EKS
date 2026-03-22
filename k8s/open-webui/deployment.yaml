@@ -131,6 +131,12 @@ spec:
                 secretKeyRef:
                   name: webui-oauth-cognito
                   key: OPENID_PROVIDER_URL
+            # Logout redirects to Cognito logout endpoint (clears Cognito session)
+            - name: OAUTH_LOGOUT_REDIRECT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: webui-oauth-cognito
+                  key: OAUTH_LOGOUT_URL
           resources:
             requests:
               cpu: "250m"
