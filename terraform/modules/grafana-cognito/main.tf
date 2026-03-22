@@ -302,9 +302,9 @@ resource "aws_cognito_user_pool_ui_customization" "grafana" {
   client_id    = aws_cognito_user_pool_client.grafana.id
 
   css = <<-CSS
-    .banner-customizable { background-color: #1a1a2e; }
-    .submitButton-customizable { background-color: #0f3460; }
-    .submitButton-customizable:hover { background-color: #16213e; }
+    .banner-customizable { background-color: #4a2f0f; }
+    .submitButton-customizable { background-color: #e67e22; }
+    .submitButton-customizable:hover { background-color: #d35400; }
     .label-customizable { font-weight: bold; }
   CSS
 

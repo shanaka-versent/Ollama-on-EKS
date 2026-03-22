@@ -88,7 +88,7 @@ spec:
             - name: OAUTH_MERGE_ACCOUNTS_BY_EMAIL
               value: "true"
             - name: OAUTH_PROVIDER_NAME
-              value: "Request Access"
+              value: "Sign in to Open WebUI"
             # Role mapping from Cognito groups
             - name: OAUTH_ROLES_CLAIM
               value: "cognito:groups"
