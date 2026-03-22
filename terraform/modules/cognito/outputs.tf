@@ -41,3 +41,8 @@ output "user_pool_arn" {
   description = "Cognito User Pool ARN (for API Gateway authorizer)"
   value       = aws_cognito_user_pool.ollama.arn
 }
+
+output "change_password_url" {
+  description = "Cognito hosted UI URL for password reset (self-service)"
+  value       = "https://${aws_cognito_user_pool_domain.ollama.domain}.auth.${data.aws_region.current.name}.amazoncognito.com/forgotPassword?client_id=${aws_cognito_user_pool_client.webui.id}&response_type=code&scope=openid+email+profile&redirect_uri=https://${var.cloudfront_domain}/oauth/oidc/callback"
+}
