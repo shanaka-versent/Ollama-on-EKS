@@ -57,6 +57,12 @@ variable "enable_grafana" {
   default     = true
 }
 
+variable "grafana_oauth_secret_name" {
+  description = "K8s Secret name containing GF_ env vars for Cognito OAuth. Empty to skip."
+  type        = string
+  default     = ""
+}
+
 variable "amp_remote_write_endpoint" {
   description = "AMP remote write endpoint. When set, Prometheus sends all metrics to AMP for AMG to read."
   type        = string

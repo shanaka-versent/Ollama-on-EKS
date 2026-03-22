@@ -12,7 +12,13 @@ variable "api_gateway_endpoint" {
 }
 
 variable "nlb_dns_name" {
-  description = "Internal NLB DNS name (used as CloudFront origin for Open WebUI)"
+  description = "Internal NLB DNS name (used as CloudFront origin domain for web UIs)"
+  type        = string
+  default     = ""
+}
+
+variable "nlb_arn" {
+  description = "Internal NLB ARN (used to create CloudFront VPC Origin for private connectivity)"
   type        = string
   default     = ""
 }

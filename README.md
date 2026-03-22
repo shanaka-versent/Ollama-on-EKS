@@ -67,12 +67,13 @@ flowchart TB
     style EBS fill:#2e7d32,color:#fff
 ```
 
-**Traffic flow:**
+**Traffic flows:**
 ```
-Client → CloudFront (WAF rate limit + IP allowlist + geo-block) → API Gateway (REST API, x-api-key auth) → VPC Link → Internal NLB → Istio Gateway (mTLS) → Ollama Pod
+API:     Client → CloudFront (WAF) → API Gateway (x-api-key) → VPC Link → Internal NLB → Istio → Ollama
+Web UIs: Client → CloudFront (WAF) → VPC Origin (private) → Internal NLB → Istio → Open WebUI / Grafana
 ```
 
-All traffic stays on the AWS backbone. No Transit Gateway. No third-party gateway.
+CloudFront connects to the internal NLB via **VPC Origins** — private connectivity, no internet-facing load balancer needed. All traffic stays on the AWS backbone.
 
 ### Architecture (4 Layers)
 
@@ -458,12 +459,11 @@ To change the locked model for regular users, update `MODEL_FILTER_LIST` in `k8s
 
 ### Observability (Prometheus + Grafana)
 
-Self-managed, air-gapped monitoring — no AWS managed services (AMP/AMG). GPU metrics stay in-cluster alongside the workloads they monitor.
+Self-managed, air-gapped monitoring. GPU metrics stay in-cluster alongside the workloads they monitor. Grafana is accessible via CloudFront with Cognito authentication (separate user pool from Open WebUI).
 
-```bash
-kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
-# Open http://localhost:3000
-```
+**Access URL:** `https://<CLOUDFRONT_DOMAIN>/grafana/` — authenticated via Cognito (TOTP MFA required)
+
+> **Note:** AWS Managed Grafana (AMG) is provisioned but SSO access is pending. In-cluster Grafana with Cognito is a temporary stopgap.
 
 | Component | What It Monitors |
 |-----------|-----------------|
@@ -628,8 +628,9 @@ flowchart LR
 | **CloudFront + WAF** | Rate limiting (100/5min), IP allowlist, geo-blocking (AU/US), SQL/XSS rules, DDoS protection (Shield Standard) |
 | **Origin Lockdown** | CloudFront sends a shared secret via `Referer` header; API Gateway resource policy denies requests without it — blocks direct API Gateway access |
 | **API Gateway + API Key** | x-api-key header required (native usage plans + API keys, managed via Console), REST API with VPC Link — no public NLB exposure |
+| **CloudFront VPC Origin** | Private connectivity from CloudFront to internal NLB — no internet-facing load balancer |
 | **VPC Link** | Private connectivity from API Gateway to internal NLB |
-| **Internal NLB** | Not internet-facing — only reachable via VPC Link |
+| **Internal NLB** | Not internet-facing — only reachable via VPC Link and VPC Origin |
 | **Istio Ambient** | Automatic L4 mTLS between all pods |
 | **Ollama Service** | `ClusterIP` — never directly exposed outside the cluster |
 | **NetworkPolicy** | Air-gap enforced: ingress from `istio-system` and `istio-ingress` on port 11434; egress DNS + intra-cluster only |
@@ -742,7 +743,8 @@ terraform/
     api-gateway/                   # REST API Gateway + VPC Link + API Keys + origin lockdown
     cdn-waf/                       # CloudFront + WAFv2 (5 rules) + origin lockdown header
     cert-manager/                  # cert-manager Helm release
-    cognito/                       # Cognito User Pool, OAuth, MFA, groups, pre-signup Lambda
+    cognito/                       # Cognito User Pool for Open WebUI (OAuth, MFA, groups)
+    grafana-cognito/               # Cognito User Pool for Grafana (temporary until AMG SSO)
     managed-grafana/               # Optional: AMG + AMP (replaces in-cluster Grafana)
     bedrock-integration/           # Stack B: VPC endpoint + IRSA for Bedrock
 

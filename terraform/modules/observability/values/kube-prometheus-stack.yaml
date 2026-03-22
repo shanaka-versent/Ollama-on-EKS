@@ -77,6 +77,11 @@ grafana:
     storageClassName: gp3
     size: "${grafana_storage_size}"
 
+%{ if grafana_oauth_secret_name != "" }
+  # Mount Cognito OAuth config as GF_ env vars (overrides grafana.ini)
+  envFromSecret: "${grafana_oauth_secret_name}"
+%{ endif }
+
   # Auto-discover dashboards from ConfigMaps with label grafana_dashboard=1
   sidecar:
     dashboards:

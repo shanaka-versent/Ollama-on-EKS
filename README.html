@@ -321,11 +321,12 @@
     style EBS fill:#2e7d32,color:#fff
 </div>
 
-<p><strong>Traffic flow:</strong></p>
-<pre class="highlight"><code>Client → CloudFront (WAF rate limit + IP allowlist + geo-block) → API Gateway (REST API, x-api-key auth) → VPC Link → Internal NLB → Istio Gateway (mTLS) → Ollama Pod
+<p><strong>Traffic flows:</strong></p>
+<pre class="highlight"><code>API:     Client → CloudFront (WAF) → API Gateway (x-api-key) → VPC Link → Internal NLB → Istio → Ollama
+Web UIs: Client → CloudFront (WAF) → VPC Origin (private) → Internal NLB → Istio → Open WebUI / Grafana
 </code></pre>
 
-<p>All traffic stays on the AWS backbone. No Transit Gateway. No third-party gateway.</p>
+<p>CloudFront connects to the internal NLB via <strong>VPC Origins</strong> — private connectivity, no internet-facing load balancer needed. All traffic stays on the AWS backbone.</p>
 <h3 id="architecture-4-layers">Architecture (4 Layers)</h3>
 <table>
 <thead>
@@ -863,11 +864,11 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 </table>
 <p>To change the locked model for regular users, update <code>MODEL_FILTER_LIST</code> in <code>k8s/open-webui/deployment.yaml</code> and redeploy. Admins can also switch the cluster-wide default via <code>./switch-model.sh use &lt;tier&gt;</code>.</p>
 <h3 id="observability-prometheus-grafana">Observability (Prometheus + Grafana)</h3>
-<p>Self-managed, air-gapped monitoring — no AWS managed services (AMP/AMG). GPU metrics stay in-cluster alongside the workloads they monitor.</p>
-<pre class="highlight"><code class="language-bash">kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
-# Open http://localhost:3000
-</code></pre>
-
+<p>Self-managed, air-gapped monitoring. GPU metrics stay in-cluster alongside the workloads they monitor. Grafana is accessible via CloudFront with Cognito authentication (separate user pool from Open WebUI).</p>
+<p><strong>Access URL:</strong> <code>https://&lt;CLOUDFRONT_DOMAIN&gt;/grafana/</code> — authenticated via Cognito (TOTP MFA required)</p>
+<blockquote>
+<p><strong>Note:</strong> AWS Managed Grafana (AMG) is provisioned but SSO access is pending. In-cluster Grafana with Cognito is a temporary stopgap.</p>
+</blockquote>
 <table>
 <thead>
 <tr>
@@ -1215,12 +1216,16 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 <td>x-api-key header required (native usage plans + API keys, managed via Console), REST API with VPC Link — no public NLB exposure</td>
 </tr>
 <tr>
+<td><strong>CloudFront VPC Origin</strong></td>
+<td>Private connectivity from CloudFront to internal NLB — no internet-facing load balancer</td>
+</tr>
+<tr>
 <td><strong>VPC Link</strong></td>
 <td>Private connectivity from API Gateway to internal NLB</td>
 </tr>
 <tr>
 <td><strong>Internal NLB</strong></td>
-<td>Not internet-facing — only reachable via VPC Link</td>
+<td>Not internet-facing — only reachable via VPC Link and VPC Origin</td>
 </tr>
 <tr>
 <td><strong>Istio Ambient</strong></td>
@@ -1415,7 +1420,8 @@ aws apigateway update-api-key --api-key $OLD_KEY_ID --patch-operations op=replac
     api-gateway/                   # REST API Gateway + VPC Link + API Keys + origin lockdown
     cdn-waf/                       # CloudFront + WAFv2 (5 rules) + origin lockdown header
     cert-manager/                  # cert-manager Helm release
-    cognito/                       # Cognito User Pool, OAuth, MFA, groups, pre-signup Lambda
+    cognito/                       # Cognito User Pool for Open WebUI (OAuth, MFA, groups)
+    grafana-cognito/               # Cognito User Pool for Grafana (temporary until AMG SSO)
     managed-grafana/               # Optional: AMG + AMP (replaces in-cluster Grafana)
     bedrock-integration/           # Stack B: VPC endpoint + IRSA for Bedrock
 
