@@ -272,16 +272,16 @@ resource "aws_cloudfront_distribution" "ollama" {
   }
 
   # Default behavior: Open WebUI (when enabled), otherwise API Gateway
-  # NLB behaviors use AllViewer (forwards Host header) so Open WebUI sees the
-  # CloudFront domain — required for OAuth redirect_uri to match Cognito callbacks.
-  # API Gateway behaviors use AllViewerExceptHostHeader (API GW needs its own Host).
+  # VPC Origins require AllViewerExceptHostHeader — forwarding the viewer Host
+  # header breaks the private NLB connection. OPENID_REDIRECT_URI env var on
+  # Open WebUI handles OAuth redirect_uri separately.
   default_cache_behavior {
     allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
     cached_methods   = ["GET", "HEAD"]
     target_origin_id = local.webui_enabled ? "nlb-webui" : "api-gateway"
 
     cache_policy_id          = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # CachingDisabled
-    origin_request_policy_id = local.webui_enabled ? "216adef6-5c7f-47e4-b989-5492eafa07d3" : "b689b0a8-53d0-40ab-baf2-68738e2966ac" # AllViewer (NLB) or AllViewerExceptHostHeader (APIGW)
+    origin_request_policy_id = "b689b0a8-53d0-40ab-baf2-68738e2966ac" # AllViewerExceptHostHeader
 
     viewer_protocol_policy = "https-only"
     compress               = true
@@ -332,7 +332,7 @@ resource "aws_cloudfront_distribution" "ollama" {
       target_origin_id = "nlb-webui"
 
       cache_policy_id          = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # CachingDisabled
-      origin_request_policy_id = "216adef6-5c7f-47e4-b989-5492eafa07d3" # AllViewer (forwards Host for Grafana OAuth)
+      origin_request_policy_id = "b689b0a8-53d0-40ab-baf2-68738e2966ac" # AllViewerExceptHostHeader
 
       viewer_protocol_policy = "https-only"
       compress               = true
