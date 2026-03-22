@@ -266,6 +266,24 @@ resource "aws_cloudfront_distribution" "ollama" {
     compress               = true
   }
 
+  # Grafana → NLB (same origin, Istio routes by path)
+  # TEMPORARY: Remove when AMG SSO access is resolved
+  dynamic "ordered_cache_behavior" {
+    for_each = local.webui_enabled ? [1] : []
+    content {
+      path_pattern     = "/grafana/*"
+      allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+      cached_methods   = ["GET", "HEAD"]
+      target_origin_id = "nlb-webui"
+
+      cache_policy_id          = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # CachingDisabled
+      origin_request_policy_id = "b689b0a8-53d0-40ab-baf2-68738e2966ac" # AllViewerExceptHostHeader
+
+      viewer_protocol_policy = "https-only"
+      compress               = true
+    }
+  }
+
   # API paths → API Gateway (with API key auth)
   dynamic "ordered_cache_behavior" {
     for_each = local.webui_enabled ? ["/v1/*", "/api/tags"] : []
