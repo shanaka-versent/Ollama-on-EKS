@@ -11,6 +11,22 @@
 #   - Groups: admin, viewer (mapped to Grafana roles)
 #   - OAuth 2.0 / OIDC via Grafana's generic_oauth provider
 #   - Pre Sign-up Lambda for admin notification via SNS
+#   - Access-granted Lambda for user notification via SES (EventBridge)
+#
+# Admin flow:
+#   1. Terraform creates admin user → receives temp password via email
+#   2. Admin logs in → changes password → sets up MFA (TOTP)
+#   3. Admin can now access Grafana as admin
+#
+# New user flow:
+#   1. User opens Grafana URL → clicks "Sign in to Grafana"
+#   2. Redirected to Cognito hosted UI → clicks "Sign up"
+#   3. User enters email + password → account auto-confirmed
+#   4. Admin receives SNS notification of new signup
+#   5. Admin adds user to group in Cognito Console
+#   6. User receives "Access Granted" email via SES
+#   7. User logs in → sets up MFA (TOTP) on first login
+#   8. User can now access Grafana (role mapped from Cognito group)
 
 # ==============================================================================
 # USER POOL
@@ -291,6 +307,183 @@ resource "aws_lambda_permission" "grafana_cognito_pre_signup" {
   function_name = aws_lambda_function.grafana_pre_signup.function_name
   principal     = "cognito-idp.amazonaws.com"
   source_arn    = aws_cognito_user_pool.grafana.arn
+}
+
+# ==============================================================================
+# ACCESS GRANTED NOTIFICATION — Notifies user via SES when added to a group
+# ==============================================================================
+
+resource "aws_ses_email_identity" "grafana_notification_sender" {
+  email = var.notification_email
+}
+
+resource "aws_cloudwatch_event_rule" "grafana_user_added_to_group" {
+  name        = "${var.project_name}-grafana-access-granted"
+  description = "Triggers when a user is added to a group in the Grafana Cognito pool"
+
+  event_pattern = jsonencode({
+    source      = ["aws.cognito-idp"]
+    detail-type = ["AWS API Call via CloudTrail"]
+    detail = {
+      eventName = ["AdminAddUserToGroup"]
+      requestParameters = {
+        userPoolId = [aws_cognito_user_pool.grafana.id]
+      }
+    }
+  })
+
+  tags = var.tags
+}
+
+resource "aws_cloudwatch_event_target" "grafana_access_granted_lambda" {
+  rule = aws_cloudwatch_event_rule.grafana_user_added_to_group.name
+  arn  = aws_lambda_function.grafana_access_granted.arn
+}
+
+resource "aws_lambda_permission" "eventbridge_grafana_access_granted" {
+  statement_id  = "AllowEventBridgeInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.grafana_access_granted.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.grafana_user_added_to_group.arn
+}
+
+resource "aws_iam_role" "grafana_access_granted_lambda" {
+  name = "${var.project_name}-grafana-access-granted"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+
+  tags = var.tags
+}
+
+resource "aws_iam_role_policy" "grafana_access_granted_lambda" {
+  name = "ses-send-and-cognito-read"
+  role = aws_iam_role.grafana_access_granted_lambda.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "ses:SendEmail"
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = "cognito-idp:AdminGetUser"
+        Resource = aws_cognito_user_pool.grafana.arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:*"
+      }
+    ]
+  })
+}
+
+resource "aws_lambda_function" "grafana_access_granted" {
+  function_name = "${var.project_name}-grafana-access-granted"
+  role          = aws_iam_role.grafana_access_granted_lambda.arn
+  handler       = "index.handler"
+  runtime       = "python3.12"
+  timeout       = 10
+
+  filename         = data.archive_file.grafana_access_granted.output_path
+  source_code_hash = data.archive_file.grafana_access_granted.output_base64sha256
+
+  environment {
+    variables = {
+      USER_POOL_ID = aws_cognito_user_pool.grafana.id
+      SENDER_EMAIL = var.notification_email
+      APP_NAME     = "Ollama Grafana"
+      LOGIN_URL    = "https://${var.cloudfront_domain}/grafana/"
+    }
+  }
+
+  tags = var.tags
+}
+
+data "archive_file" "grafana_access_granted" {
+  type        = "zip"
+  output_path = "${path.module}/lambda/grafana_access_granted.zip"
+
+  source {
+    content = <<-PYTHON
+import os
+import json
+import boto3
+
+cognito = boto3.client('cognito-idp')
+ses = boto3.client('ses')
+
+def handler(event, context):
+    """Notifies user via SES when added to a Cognito group."""
+    detail = event.get('detail', {})
+    params = detail.get('requestParameters', {})
+
+    username = params.get('username', '')
+    group_name = params.get('groupName', '')
+    user_pool_id = os.environ['USER_POOL_ID']
+
+    # Get user email from Cognito
+    try:
+        user = cognito.admin_get_user(
+            UserPoolId=user_pool_id,
+            Username=username
+        )
+        email = next(
+            (a['Value'] for a in user['UserAttributes'] if a['Name'] == 'email'),
+            None
+        )
+    except Exception as e:
+        print(f'Failed to get user: {e}')
+        return
+
+    if not email:
+        print(f'No email found for user: {username}')
+        return
+
+    app_name = os.environ['APP_NAME']
+    login_url = os.environ['LOGIN_URL']
+    role_desc = 'full access (admin)' if group_name == 'admin' else 'read-only (viewer)'
+
+    try:
+        ses.send_email(
+            Source=os.environ['SENDER_EMAIL'],
+            Destination={'ToAddresses': [email]},
+            Message={
+                'Subject': {'Data': f'{app_name} — Access Granted'},
+                'Body': {
+                    'Text': {'Data': (
+                        f'Your access to {app_name} (Monitoring Dashboards) has been approved.\n\n'
+                        f'Role: {group_name} ({role_desc})\n\n'
+                        f'You can now log in at:\n{login_url}\n\n'
+                        f'On first login, you will be asked to set up MFA '
+                        f'(authenticator app).\n\n'
+                        f'If you have any issues, contact your administrator.'
+                    )}
+                }
+            }
+        )
+        print(f'Access-granted email sent to {email} for {app_name} ({group_name})')
+    except Exception as e:
+        print(f'Failed to send email via SES: {e}')
+        print('Ensure SES sender is verified and account is out of sandbox mode.')
+PYTHON
+    filename = "index.py"
+  }
 }
 
 # ==============================================================================

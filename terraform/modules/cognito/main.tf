@@ -7,15 +7,23 @@
 #   - OAuth 2.0 / OIDC app client for Open WebUI
 #   - Cognito hosted UI domain
 #   - Pre Sign-up Lambda for admin notification via SNS
+#   - Access-granted Lambda for user notification via SES (EventBridge)
 #   - Initial admin user (receives temp password via email)
 #
-# User flow:
-#   1. User opens CloudFront URL → redirected to Cognito hosted UI
-#   2. Signs up (or logs in) with email + password
-#   3. First login forces MFA setup (authenticator app QR code)
-#   4. Admin gets SNS notification of new signup
-#   5. Admin assigns user to group in Cognito Console
-#   6. User can now access Open WebUI (role mapped from Cognito group)
+# Admin flow:
+#   1. Terraform creates admin user → receives temp password via email
+#   2. Admin logs in → changes password → sets up MFA (TOTP)
+#   3. Admin can now access Open WebUI as admin
+#
+# New user flow:
+#   1. User opens CloudFront URL → clicks "Request Access"
+#   2. Redirected to Cognito hosted UI → clicks "Sign up"
+#   3. User enters email + password → account auto-confirmed
+#   4. Admin receives SNS notification of new signup
+#   5. Admin adds user to group in Cognito Console
+#   6. User receives "Access Granted" email via SES
+#   7. User logs in → sets up MFA (TOTP) on first login
+#   8. User can now access Open WebUI (role mapped from Cognito group)
 
 # ==============================================================================
 # USER POOL
@@ -311,6 +319,186 @@ resource "aws_lambda_permission" "cognito_pre_signup" {
   function_name = aws_lambda_function.pre_signup.function_name
   principal     = "cognito-idp.amazonaws.com"
   source_arn    = aws_cognito_user_pool.ollama.arn
+}
+
+# ==============================================================================
+# ACCESS GRANTED NOTIFICATION — Notifies user via SES when added to a group
+# ==============================================================================
+# EventBridge captures CloudTrail management events (no explicit trail needed).
+# When admin adds a user to a group, Lambda sends "Access Granted" email via SES.
+# NOTE: SES must be out of sandbox mode OR recipient email must be verified.
+
+resource "aws_ses_email_identity" "notification_sender" {
+  email = var.notification_email
+}
+
+resource "aws_cloudwatch_event_rule" "user_added_to_group" {
+  name        = "${var.project_name}-webui-access-granted"
+  description = "Triggers when a user is added to a group in the WebUI Cognito pool"
+
+  event_pattern = jsonencode({
+    source      = ["aws.cognito-idp"]
+    detail-type = ["AWS API Call via CloudTrail"]
+    detail = {
+      eventName = ["AdminAddUserToGroup"]
+      requestParameters = {
+        userPoolId = [aws_cognito_user_pool.ollama.id]
+      }
+    }
+  })
+
+  tags = var.tags
+}
+
+resource "aws_cloudwatch_event_target" "access_granted_lambda" {
+  rule = aws_cloudwatch_event_rule.user_added_to_group.name
+  arn  = aws_lambda_function.access_granted.arn
+}
+
+resource "aws_lambda_permission" "eventbridge_access_granted" {
+  statement_id  = "AllowEventBridgeInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.access_granted.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.user_added_to_group.arn
+}
+
+resource "aws_iam_role" "access_granted_lambda" {
+  name = "${var.project_name}-webui-access-granted"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+
+  tags = var.tags
+}
+
+resource "aws_iam_role_policy" "access_granted_lambda" {
+  name = "ses-send-and-cognito-read"
+  role = aws_iam_role.access_granted_lambda.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "ses:SendEmail"
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = "cognito-idp:AdminGetUser"
+        Resource = aws_cognito_user_pool.ollama.arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:*"
+      }
+    ]
+  })
+}
+
+resource "aws_lambda_function" "access_granted" {
+  function_name = "${var.project_name}-webui-access-granted"
+  role          = aws_iam_role.access_granted_lambda.arn
+  handler       = "index.handler"
+  runtime       = "python3.12"
+  timeout       = 10
+
+  filename         = data.archive_file.access_granted.output_path
+  source_code_hash = data.archive_file.access_granted.output_base64sha256
+
+  environment {
+    variables = {
+      USER_POOL_ID = aws_cognito_user_pool.ollama.id
+      SENDER_EMAIL = var.notification_email
+      APP_NAME     = "Ollama Open WebUI"
+      LOGIN_URL    = "https://${var.cloudfront_domain}/"
+    }
+  }
+
+  tags = var.tags
+}
+
+data "archive_file" "access_granted" {
+  type        = "zip"
+  output_path = "${path.module}/lambda/access_granted.zip"
+
+  source {
+    content = <<-PYTHON
+import os
+import json
+import boto3
+
+cognito = boto3.client('cognito-idp')
+ses = boto3.client('ses')
+
+def handler(event, context):
+    """Notifies user via SES when added to a Cognito group."""
+    detail = event.get('detail', {})
+    params = detail.get('requestParameters', {})
+
+    username = params.get('username', '')
+    group_name = params.get('groupName', '')
+    user_pool_id = os.environ['USER_POOL_ID']
+
+    # Get user email from Cognito
+    try:
+        user = cognito.admin_get_user(
+            UserPoolId=user_pool_id,
+            Username=username
+        )
+        email = next(
+            (a['Value'] for a in user['UserAttributes'] if a['Name'] == 'email'),
+            None
+        )
+    except Exception as e:
+        print(f'Failed to get user: {e}')
+        return
+
+    if not email:
+        print(f'No email found for user: {username}')
+        return
+
+    app_name = os.environ['APP_NAME']
+    login_url = os.environ['LOGIN_URL']
+    role_desc = 'full access (admin)' if group_name == 'admin' else 'standard access'
+
+    try:
+        ses.send_email(
+            Source=os.environ['SENDER_EMAIL'],
+            Destination={'ToAddresses': [email]},
+            Message={
+                'Subject': {'Data': f'{app_name} — Access Granted'},
+                'Body': {
+                    'Text': {'Data': (
+                        f'Your access to {app_name} has been approved.\n\n'
+                        f'Role: {group_name} ({role_desc})\n\n'
+                        f'You can now log in at:\n{login_url}\n\n'
+                        f'On first login, you will be asked to set up MFA '
+                        f'(authenticator app).\n\n'
+                        f'If you have any issues, contact your administrator.'
+                    )}
+                }
+            }
+        )
+        print(f'Access-granted email sent to {email} for {app_name} ({group_name})')
+    except Exception as e:
+        print(f'Failed to send email via SES: {e}')
+        print('Ensure SES sender is verified and account is out of sandbox mode.')
+PYTHON
+    filename = "index.py"
+  }
 }
 
 # ==============================================================================
