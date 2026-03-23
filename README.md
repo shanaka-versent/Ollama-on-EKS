@@ -341,7 +341,7 @@ This provisions VPC, EKS, IAM, LB Controller, API Gateway, CloudFront + WAF, cer
 ./scripts/create-model-snapshot.sh
 ```
 
-This launches a temporary GPU instance, pulls all 3 model tiers, snapshots the volume, and terminates the instance. Update `k8s/nodepools/gpu-ec2nodeclass.yaml` with the output snapshot ID.
+This launches a temporary GPU instance, pulls all 3 model tiers, snapshots the volume, and terminates the instance. Model weights are attached via PersistentVolume backed by the EBS snapshot.
 
 **Verify before continuing:**
 
@@ -588,7 +588,7 @@ Terraform provisions ArgoCD during `terraform apply`. ArgoCD then auto-syncs all
 |------|-------------|-------------------|
 | -2 | `gateway-api-crds` | `Gateway`, `HTTPRoute`, `GRPCRoute` CRDs v1.2.0 |
 | -1 | `istio-base` | Istio CRDs and cluster-wide resources |
-| 0 | `istiod`, `istio-cni`, `ztunnel`, `nvidia-device-plugin` | Ambient mesh + GPU plugin |
+| 0 | `istiod`, `istio-cni`, `ztunnel` | Ambient mesh (NVIDIA plugin managed by EKS Auto Mode) |
 | 1 | `namespaces` | `ollama`, `istio-system` namespaces with ambient mesh label |
 | 2 | `ollama-storage` | StorageClass `gp3` (Retain, WaitForFirstConsumer) + PVC 200Gi |
 | 3 | `ollama` | Deployment (4 GPUs, `strategy: Recreate`), Service, NetworkPolicy |
@@ -602,7 +602,6 @@ flowchart LR
     subgraph W0["Wave -2 to 0"]
         CRD["Gateway API CRDs"]
         ISTIO["Istio Base + Istiod\nCNI + ztunnel"]
-        NV["NVIDIA Device Plugin"]
     end
 
     subgraph W1["Waves 1-2"]
@@ -621,7 +620,7 @@ flowchart LR
         WUI["Open WebUI"]
     end
 
-    CRD --> ISTIO --> NV --> NS --> ST --> OLM --> ML --> GW --> HR --> WUI
+    CRD --> ISTIO --> NS --> ST --> OLM --> ML --> GW --> HR --> WUI
 
     style W0 fill:#e8eaf6,stroke:#3f51b5,stroke-width:2px
     style W1 fill:#e0f7fa,stroke:#00bcd4,stroke-width:2px
@@ -762,7 +761,7 @@ terraform/
 k8s/
   ollama/                          # Deployment, Service, NetworkPolicy (air-gapped)
   model-loader/                    # Job to pull models
-  nodepools/                       # Karpenter NodePool + EC2NodeClass
+  nodepools/                       # EKS Auto Mode NodePool (karpenter.sh/v1) + NodeClass (eks.amazonaws.com/v1)
   cert-manager/                    # ClusterIssuer + Certificate
   open-webui/                      # Open WebUI — Cognito auth, model locked to admins
   gateway.yaml                     # Istio Gateway
@@ -805,7 +804,7 @@ switch-model.sh                    # Model tier switching (repo root)
 | Model pull fails | `kubectl exec -n ollama deploy/ollama -- df -h` | Disk full — check EBS snapshot volume |
 | Air-gap test fails | `curl` from pod reaches internet | Check `k8s/ollama/networkpolicy.yaml` — should block all egress except DNS |
 | NLB not provisioning | `kubectl get gateway -n istio-system` | Check LB Controller logs |
-| Cold start slow | Node provisioning takes >5 min | Verify EBS snapshot ID in EC2NodeClass, check gp3 throughput settings |
+| Cold start slow | Node provisioning takes >5 min | Verify EBS snapshot PV, check NodeClass ephemeralStorage throughput (400 MB/s) |
 | Spot reclaimed | Pod evicted mid-session | Karpenter auto-provisions replacement — ~2-3 min recovery |
 | Ollama returns 500 | Model failed to load | Check `OLLAMA_CONTEXT_LENGTH` is set to `32768` |
 

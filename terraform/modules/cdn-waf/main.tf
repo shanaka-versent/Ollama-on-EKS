@@ -18,6 +18,7 @@ locals {
   origin_lockdown_enabled = var.enable_origin_lockdown
   webui_enabled           = var.nlb_dns_name != "" && var.nlb_arn != ""
   portal_enabled          = var.portal_s3_bucket_regional_domain != ""
+  login_enabled           = var.login_s3_bucket_regional_domain != ""
 }
 
 # --- CloudFront Function: Auth Redirect ---
@@ -38,30 +39,33 @@ resource "aws_cloudfront_function" "auth_redirect" {
       var uri = request.uri;
       var cookies = request.cookies || {};
 
-      // Paths that must NOT be redirected (OAuth flow, static assets, APIs)
+      // Paths that must NOT be redirected
       if (uri.startsWith('/oauth/') ||
           uri.startsWith('/_app/') ||
           uri.startsWith('/static/') ||
           uri.startsWith('/api/') ||
           uri.startsWith('/v1/') ||
           uri.startsWith('/portal/') ||
+          uri.startsWith('/auth/') ||
           uri.startsWith('/grafana/') ||
           uri === '/favicon.ico' ||
-          uri === '/favicon.png') {
+          uri === '/favicon.png' ||
+          uri === '/health' ||
+          uri === '/manifest.json') {
         return request;
       }
 
-      // If user has a session cookie, let them through
+      // If user has a valid session cookie, let them through to Open WebUI
       if (cookies['token']) {
         return request;
       }
 
-      // No session — redirect to OIDC login (Open WebUI initiates OAuth flow)
+      // No session — redirect to custom login page (hosted on separate S3 bucket)
       return {
         statusCode: 302,
         statusDescription: 'Found',
         headers: {
-          location: { value: '/oauth/oidc/login' },
+          location: { value: '/auth/login.html' },
           'cache-control': { value: 'no-cache, no-store, must-revalidate' }
         }
       };
@@ -320,6 +324,16 @@ resource "aws_cloudfront_distribution" "ollama" {
     }
   }
 
+  # S3 origin for Login SPA (separate bucket, OAC access)
+  dynamic "origin" {
+    for_each = local.login_enabled ? [1] : []
+    content {
+      domain_name              = var.login_s3_bucket_regional_domain
+      origin_id                = "login-s3"
+      origin_access_control_id = var.login_oac_id
+    }
+  }
+
   # Default behavior: Open WebUI (when enabled), otherwise API Gateway
   # VPC Origins require AllViewerExceptHostHeader — forwarding the viewer Host
   # header breaks the private NLB connection. OPENID_REDIRECT_URI env var on
@@ -392,6 +406,23 @@ resource "aws_cloudfront_distribution" "ollama" {
       target_origin_id = "portal-s3"
 
       cache_policy_id          = "658327ea-f89d-4fab-a63d-7e88639e58f6" # CachingOptimized
+      origin_request_policy_id = "88a5eaf4-2fd4-4709-b370-b4c650ea3fcf" # CORS-S3Origin
+
+      viewer_protocol_policy = "https-only"
+      compress               = true
+    }
+  }
+
+  # Login SPA → separate S3 bucket (OAC)
+  dynamic "ordered_cache_behavior" {
+    for_each = local.login_enabled ? [1] : []
+    content {
+      path_pattern     = "/auth/*"
+      allowed_methods  = ["GET", "HEAD", "OPTIONS"]
+      cached_methods   = ["GET", "HEAD"]
+      target_origin_id = "login-s3"
+
+      cache_policy_id          = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # CachingDisabled (login page should never be cached)
       origin_request_policy_id = "88a5eaf4-2fd4-4709-b370-b4c650ea3fcf" # CORS-S3Origin
 
       viewer_protocol_policy = "https-only"

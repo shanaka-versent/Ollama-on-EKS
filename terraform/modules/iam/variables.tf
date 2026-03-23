@@ -24,6 +24,12 @@ variable "oidc_provider_url" {
   default     = ""
 }
 
+variable "enable_auto_mode" {
+  description = "Enable EKS Auto Mode IAM policies (compute, storage, networking, load balancing)"
+  type        = bool
+  default     = false
+}
+
 variable "tags" {
   description = "Tags for resources"
   type        = map(string)

@@ -60,7 +60,7 @@ resource "aws_s3_bucket_policy" "portal" {
       Action    = "s3:GetObject"
       Resource  = "${aws_s3_bucket.portal.arn}/*"
       Condition = {
-        StringEquals = {
+        StringLike = {
           "AWS:SourceArn" = "arn:aws:cloudfront::${data.aws_caller_identity.current.account_id}:distribution/*"
         }
       }
@@ -86,6 +86,77 @@ resource "aws_s3_object" "index_html" {
     client_id         = aws_cognito_user_pool_client.portal.id
     cloudfront_domain = var.cloudfront_domain
     api_base_url      = "https://${var.cloudfront_domain}"
+  }))
+}
+
+# ==============================================================================
+# S3 BUCKET — Login SPA (separate bucket for custom login page)
+# ==============================================================================
+
+resource "aws_s3_bucket" "login" {
+  bucket = "${var.project_name}-login-portal-${data.aws_caller_identity.current.account_id}"
+  tags   = var.tags
+}
+
+resource "aws_s3_bucket_public_access_block" "login" {
+  bucket                  = aws_s3_bucket.login.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "login" {
+  bucket = aws_s3_bucket.login.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+# OAC policy — only CloudFront can read from this bucket
+resource "aws_s3_bucket_policy" "login" {
+  bucket = aws_s3_bucket.login.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "AllowCloudFrontOAC"
+      Effect    = "Allow"
+      Principal = { Service = "cloudfront.amazonaws.com" }
+      Action    = "s3:GetObject"
+      Resource  = "${aws_s3_bucket.login.arn}/*"
+      Condition = {
+        StringLike = {
+          "AWS:SourceArn" = "arn:aws:cloudfront::${data.aws_caller_identity.current.account_id}:distribution/*"
+        }
+      }
+    }]
+  })
+
+  depends_on = [aws_s3_bucket_public_access_block.login]
+}
+
+resource "aws_cloudfront_origin_access_control" "login" {
+  name                              = "${var.project_name}-login-oac"
+  origin_access_control_origin_type = "s3"
+  signing_behavior                  = "always"
+  signing_protocol                  = "sigv4"
+}
+
+resource "aws_s3_object" "login_html" {
+  bucket       = aws_s3_bucket.login.id
+  key          = "auth/login.html"
+  content      = templatefile("${path.module}/static/login.html", {
+    signup_client_id    = var.signup_client_id
+    region              = var.region
+    change_password_url = var.change_password_url
+  })
+  content_type = "text/html"
+  etag         = md5(templatefile("${path.module}/static/login.html", {
+    signup_client_id    = var.signup_client_id
+    region              = var.region
+    change_password_url = var.change_password_url
   }))
 }
 
@@ -595,6 +666,239 @@ resource "aws_api_gateway_integration_response" "key_by_id_options" {
 }
 
 # ==============================================================================
+# LAMBDA — Auth Proxy (bridges custom login form to Cognito + Open WebUI OAuth)
+# ==============================================================================
+# Proxies the full Cognito hosted UI login flow server-side so users see our
+# custom login form instead of the Cognito hosted UI. Handles password auth
+# and MFA (TOTP) in two steps.
+
+data "archive_file" "auth_proxy" {
+  type        = "zip"
+  source_file = "${path.module}/lambda/auth_proxy.py"
+  output_path = "${path.module}/lambda/auth_proxy.zip"
+}
+
+resource "aws_lambda_function" "auth_proxy" {
+  function_name    = "${var.project_name}-auth-proxy"
+  handler          = "auth_proxy.handler"
+  runtime          = "python3.12"
+  timeout          = 29
+  memory_size      = 256
+  filename         = data.archive_file.auth_proxy.output_path
+  source_code_hash = data.archive_file.auth_proxy.output_base64sha256
+  role             = aws_iam_role.auth_proxy.arn
+
+  environment {
+    variables = {
+      CLOUDFRONT_DOMAIN = var.cloudfront_domain
+    }
+  }
+
+  tags = var.tags
+}
+
+resource "aws_iam_role" "auth_proxy" {
+  name = "${var.project_name}-auth-proxy"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+    }]
+  })
+
+  tags = var.tags
+}
+
+resource "aws_iam_role_policy" "auth_proxy" {
+  name = "cloudwatch-logs"
+  role = aws_iam_role.auth_proxy.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+      ]
+      Resource = "arn:aws:logs:${var.region}:${data.aws_caller_identity.current.account_id}:*"
+    }]
+  })
+}
+
+resource "aws_lambda_permission" "auth_proxy_apigw" {
+  statement_id  = "AllowAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.auth_proxy.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${var.rest_api_execution_arn}/*/*"
+}
+
+# ==============================================================================
+# API GATEWAY — Auth Proxy Resources (/portal/api/auth/login, /portal/api/auth/mfa)
+# ==============================================================================
+# No Cognito authorizer — these are the login endpoints themselves.
+
+# /portal/api/auth
+resource "aws_api_gateway_resource" "portal_auth" {
+  rest_api_id = var.rest_api_id
+  parent_id   = aws_api_gateway_resource.portal_api.id
+  path_part   = "auth"
+}
+
+# /portal/api/auth/login
+resource "aws_api_gateway_resource" "portal_auth_login" {
+  rest_api_id = var.rest_api_id
+  parent_id   = aws_api_gateway_resource.portal_auth.id
+  path_part   = "login"
+}
+
+# /portal/api/auth/mfa
+resource "aws_api_gateway_resource" "portal_auth_mfa" {
+  rest_api_id = var.rest_api_id
+  parent_id   = aws_api_gateway_resource.portal_auth.id
+  path_part   = "mfa"
+}
+
+# --- POST /portal/api/auth/login ---
+resource "aws_api_gateway_method" "auth_login" {
+  rest_api_id      = var.rest_api_id
+  resource_id      = aws_api_gateway_resource.portal_auth_login.id
+  http_method      = "POST"
+  authorization    = "NONE"
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "auth_login" {
+  rest_api_id             = var.rest_api_id
+  resource_id             = aws_api_gateway_resource.portal_auth_login.id
+  http_method             = aws_api_gateway_method.auth_login.http_method
+  type                    = "AWS_PROXY"
+  integration_http_method = "POST"
+  uri                     = aws_lambda_function.auth_proxy.invoke_arn
+  timeout_milliseconds    = 29000 # Max for REST API; VPC Origin cold start can be slow
+}
+
+# --- POST /portal/api/auth/mfa ---
+resource "aws_api_gateway_method" "auth_mfa" {
+  rest_api_id      = var.rest_api_id
+  resource_id      = aws_api_gateway_resource.portal_auth_mfa.id
+  http_method      = "POST"
+  authorization    = "NONE"
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "auth_mfa" {
+  rest_api_id             = var.rest_api_id
+  resource_id             = aws_api_gateway_resource.portal_auth_mfa.id
+  http_method             = aws_api_gateway_method.auth_mfa.http_method
+  type                    = "AWS_PROXY"
+  integration_http_method = "POST"
+  uri                     = aws_lambda_function.auth_proxy.invoke_arn
+  timeout_milliseconds    = 29000 # Max for REST API; VPC Origin cold start can be slow
+}
+
+# --- OPTIONS /portal/api/auth/login (CORS preflight) ---
+resource "aws_api_gateway_method" "auth_login_options" {
+  rest_api_id      = var.rest_api_id
+  resource_id      = aws_api_gateway_resource.portal_auth_login.id
+  http_method      = "OPTIONS"
+  authorization    = "NONE"
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "auth_login_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.portal_auth_login.id
+  http_method = aws_api_gateway_method.auth_login_options.http_method
+  type        = "MOCK"
+
+  request_templates = {
+    "application/json" = "{\"statusCode\": 200}"
+  }
+}
+
+resource "aws_api_gateway_method_response" "auth_login_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.portal_auth_login.id
+  http_method = aws_api_gateway_method.auth_login_options.http_method
+  status_code = "200"
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = true
+    "method.response.header.Access-Control-Allow-Methods" = true
+    "method.response.header.Access-Control-Allow-Origin"  = true
+  }
+}
+
+resource "aws_api_gateway_integration_response" "auth_login_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.portal_auth_login.id
+  http_method = aws_api_gateway_method.auth_login_options.http_method
+  status_code = "200"
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type'"
+    "method.response.header.Access-Control-Allow-Methods" = "'POST,OPTIONS'"
+    "method.response.header.Access-Control-Allow-Origin"  = "'https://${var.cloudfront_domain}'"
+  }
+
+  depends_on = [aws_api_gateway_integration.auth_login_options]
+}
+
+# --- OPTIONS /portal/api/auth/mfa (CORS preflight) ---
+resource "aws_api_gateway_method" "auth_mfa_options" {
+  rest_api_id      = var.rest_api_id
+  resource_id      = aws_api_gateway_resource.portal_auth_mfa.id
+  http_method      = "OPTIONS"
+  authorization    = "NONE"
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "auth_mfa_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.portal_auth_mfa.id
+  http_method = aws_api_gateway_method.auth_mfa_options.http_method
+  type        = "MOCK"
+
+  request_templates = {
+    "application/json" = "{\"statusCode\": 200}"
+  }
+}
+
+resource "aws_api_gateway_method_response" "auth_mfa_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.portal_auth_mfa.id
+  http_method = aws_api_gateway_method.auth_mfa_options.http_method
+  status_code = "200"
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = true
+    "method.response.header.Access-Control-Allow-Methods" = true
+    "method.response.header.Access-Control-Allow-Origin"  = true
+  }
+}
+
+resource "aws_api_gateway_integration_response" "auth_mfa_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.portal_auth_mfa.id
+  http_method = aws_api_gateway_method.auth_mfa_options.http_method
+  status_code = "200"
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type'"
+    "method.response.header.Access-Control-Allow-Methods" = "'POST,OPTIONS'"
+    "method.response.header.Access-Control-Allow-Origin"  = "'https://${var.cloudfront_domain}'"
+  }
+
+  depends_on = [aws_api_gateway_integration.auth_mfa_options]
+}
+
+# ==============================================================================
 # API GATEWAY — Redeployment (updates existing prod stage)
 # ==============================================================================
 
@@ -607,6 +911,8 @@ resource "aws_api_gateway_deployment" "portal" {
       aws_api_gateway_method.create_key,
       aws_api_gateway_method.update_key,
       aws_api_gateway_method.delete_key,
+      aws_api_gateway_method.auth_login,
+      aws_api_gateway_method.auth_mfa,
       aws_api_gateway_authorizer.cognito,
     ]))
   }
@@ -624,6 +930,12 @@ resource "aws_api_gateway_deployment" "portal" {
     aws_api_gateway_integration.key_by_id_options,
     aws_api_gateway_integration_response.keys_options,
     aws_api_gateway_integration_response.key_by_id_options,
+    aws_api_gateway_integration.auth_login,
+    aws_api_gateway_integration.auth_mfa,
+    aws_api_gateway_integration.auth_login_options,
+    aws_api_gateway_integration.auth_mfa_options,
+    aws_api_gateway_integration_response.auth_login_options,
+    aws_api_gateway_integration_response.auth_mfa_options,
   ]
 }
 

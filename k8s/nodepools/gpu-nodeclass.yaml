@@ -1,0 +1,32 @@
+# NodeClass for GPU Ollama Nodes (EKS Auto Mode)
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# EKS Auto Mode NodeClass for GPU nodes. Configures networking, storage,
+# and subnet/security group discovery.
+#
+# IMPORTANT: EKS Auto Mode uses eks.amazonaws.com/v1 NodeClass (NOT
+# karpenter.k8s.aws EC2NodeClass). The NodeClass spec is different —
+# no blockDeviceMappings or userData fields. EBS snapshot mounting for
+# pre-loaded models is handled via the Ollama deployment's init container
+# and PVC (see k8s/ollama/deployment.yaml and k8s/model-loader/).
+#
+# Model weights storage: The EBS snapshot with pre-loaded models is attached
+# via a PersistentVolume backed by the snapshot, not via the NodeClass.
+apiVersion: eks.amazonaws.com/v1
+kind: NodeClass
+metadata:
+  name: gpu-ollama
+spec:
+  # Subnet discovery — finds subnets tagged for Karpenter
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "ollama-eks"
+  # Security group discovery — finds SGs tagged for Karpenter
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "ollama-eks"
+  # Ephemeral storage for the node (root volume)
+  ephemeralStorage:
+    size: 80Gi
+    iops: 6000
+    throughput: 400

@@ -72,6 +72,18 @@ variable "portal_oac_id" {
   default     = ""
 }
 
+variable "login_s3_bucket_regional_domain" {
+  description = "S3 bucket regional domain for the Login SPA (OAC origin)"
+  type        = string
+  default     = ""
+}
+
+variable "login_oac_id" {
+  description = "CloudFront Origin Access Control ID for the Login SPA S3 bucket"
+  type        = string
+  default     = ""
+}
+
 variable "tags" {
   description = "Tags for all resources"
   type        = map(string)

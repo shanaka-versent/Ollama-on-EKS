@@ -54,10 +54,7 @@ output "eks_oidc_issuer_url" {
   value       = module.eks.oidc_issuer_url
 }
 
-output "gpu_node_group_name" {
-  description = "GPU node group name (for scaling)"
-  value       = module.eks.node_group_gpu_name
-}
+# GPU node group output — REMOVED: Auto Mode manages GPU nodes via Karpenter.
 
 # ==============================================================================
 # ARGOCD BOOTSTRAP

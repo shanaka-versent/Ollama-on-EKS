@@ -66,7 +66,7 @@ resource "aws_cognito_user_pool" "ollama" {
     }
   }
 
-  # Schema: email is required
+  # Schema: email and name are required (shown on Cognito signup form)
   schema {
     name                = "email"
     attribute_data_type = "String"
@@ -76,6 +76,18 @@ resource "aws_cognito_user_pool" "ollama" {
     string_attribute_constraints {
       min_length = 5
       max_length = 128
+    }
+  }
+
+  schema {
+    name                = "name"
+    attribute_data_type = "String"
+    required            = true
+    mutable             = true
+
+    string_attribute_constraints {
+      min_length = 1
+      max_length = 256
     }
   }
 
@@ -165,6 +177,25 @@ resource "aws_cognito_user_pool_client" "webui" {
   explicit_auth_flows = [
     "ALLOW_REFRESH_TOKEN_AUTH",
     "ALLOW_USER_SRP_AUTH",
+  ]
+}
+
+# ==============================================================================
+# PUBLIC APP CLIENT (for custom signup form — no client secret)
+# ==============================================================================
+# Used by the custom login page to call the Cognito SignUp API directly.
+# No secret required — signup is public (Pre Sign-up Lambda auto-confirms,
+# but admin must add user to a group before they can access the app).
+
+resource "aws_cognito_user_pool_client" "signup_public" {
+  name         = "${var.project_name}-signup-public"
+  user_pool_id = aws_cognito_user_pool.ollama.id
+
+  generate_secret = false
+
+  explicit_auth_flows = [
+    "ALLOW_USER_SRP_AUTH",
+    "ALLOW_REFRESH_TOKEN_AUTH",
   ]
 }
 

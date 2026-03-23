@@ -58,6 +58,18 @@ variable "max_keys_per_user" {
   default     = 5
 }
 
+variable "signup_client_id" {
+  description = "Public Cognito app client ID for signup form (no secret)"
+  type        = string
+  default     = ""
+}
+
+variable "change_password_url" {
+  description = "Cognito hosted UI URL for password reset (self-service)"
+  type        = string
+  default     = ""
+}
+
 variable "tags" {
   description = "Tags for all resources"
   type        = map(string)

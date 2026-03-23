@@ -8,7 +8,7 @@ resource "aws_iam_role" "cluster" {
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Action = "sts:AssumeRole"
+      Action = var.enable_auto_mode ? ["sts:AssumeRole", "sts:TagSession"] : ["sts:AssumeRole"]
       Effect = "Allow"
       Principal = {
         Service = "eks.amazonaws.com"
@@ -26,6 +26,31 @@ resource "aws_iam_role_policy_attachment" "cluster_policy" {
 
 resource "aws_iam_role_policy_attachment" "cluster_vpc_controller" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSVPCResourceController"
+  role       = aws_iam_role.cluster.name
+}
+
+# Auto Mode — additional managed policies for compute, storage, networking, and load balancing
+resource "aws_iam_role_policy_attachment" "cluster_compute" {
+  count      = var.enable_auto_mode ? 1 : 0
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSComputePolicy"
+  role       = aws_iam_role.cluster.name
+}
+
+resource "aws_iam_role_policy_attachment" "cluster_block_storage" {
+  count      = var.enable_auto_mode ? 1 : 0
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSBlockStoragePolicy"
+  role       = aws_iam_role.cluster.name
+}
+
+resource "aws_iam_role_policy_attachment" "cluster_load_balancing" {
+  count      = var.enable_auto_mode ? 1 : 0
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSLoadBalancingPolicy"
+  role       = aws_iam_role.cluster.name
+}
+
+resource "aws_iam_role_policy_attachment" "cluster_networking" {
+  count      = var.enable_auto_mode ? 1 : 0
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSNetworkingPolicy"
   role       = aws_iam_role.cluster.name
 }
 
@@ -59,6 +84,19 @@ resource "aws_iam_role_policy_attachment" "node_cni_policy" {
 
 resource "aws_iam_role_policy_attachment" "node_ecr_policy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+  role       = aws_iam_role.node.name
+}
+
+# Auto Mode — minimal node policy + ECR pull-only (for Auto Mode managed nodes)
+resource "aws_iam_role_policy_attachment" "node_minimal_policy" {
+  count      = var.enable_auto_mode ? 1 : 0
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodeMinimalPolicy"
+  role       = aws_iam_role.node.name
+}
+
+resource "aws_iam_role_policy_attachment" "node_ecr_pull_only" {
+  count      = var.enable_auto_mode ? 1 : 0
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly"
   role       = aws_iam_role.node.name
 }
 

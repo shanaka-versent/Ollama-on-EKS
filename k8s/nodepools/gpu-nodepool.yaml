@@ -1,15 +1,18 @@
-# GPU NodePool for Ollama LLM Inference
+# GPU NodePool for Ollama LLM Inference (EKS Auto Mode)
 # @author Shanaka Jayasundera - shanakaj@gmail.com
 #
-# Karpenter NodePool for GPU workloads. Provisions g5 instances with spot
-# preference and on-demand fallback. Nodes stay warm for 30 minutes after
-# becoming empty, then terminate to save costs.
+# EKS Auto Mode NodePool for GPU workloads. Provisions g5 instances with spot
+# preference and on-demand fallback. Nodes terminate 30 minutes after becoming
+# empty to save costs.
+#
+# IMPORTANT: EKS Auto Mode uses karpenter.sh/v1 API (NOT v1beta1) and
+# eks.amazonaws.com NodeClass (NOT karpenter.k8s.aws EC2NodeClass).
 #
 # Instance types:
 #   g5.xlarge   — 1x A10G (24GB) — Tier 1 (27b) / Tier 2 (coder:30b)
 #   g5.2xlarge  — 1x A10G (24GB) — Same GPU, more CPU/RAM
 #   g5.12xlarge — 4x A10G (96GB) — Tier 3 flagship (122b-a10b)
-apiVersion: karpenter.sh/v1beta1
+apiVersion: karpenter.sh/v1
 kind: NodePool
 metadata:
   name: gpu-ollama
@@ -19,32 +22,59 @@ spec:
       labels:
         workload-type: gpu-inference
     spec:
+      # Reference the EKS Auto Mode NodeClass (NOT EC2NodeClass)
+      nodeClassRef:
+        group: eks.amazonaws.com
+        kind: NodeClass
+        name: gpu-ollama
       requirements:
-        - key: node.kubernetes.io/instance-type
+        # GPU instance family
+        - key: eks.amazonaws.com/instance-category
+          operator: In
+          values: ["g"]
+        - key: eks.amazonaws.com/instance-family
+          operator: In
+          values: ["g5"]
+        # Specific sizes for our model tiers
+        - key: eks.amazonaws.com/instance-size
           operator: In
           values:
-            - g5.xlarge
-            - g5.2xlarge
-            - g5.12xlarge
+            - xlarge
+            - 2xlarge
+            - 12xlarge
+        # NVIDIA GPUs only
+        - key: eks.amazonaws.com/instance-gpu-manufacturer
+          operator: In
+          values: ["nvidia"]
+        # Spot first, on-demand fallback
         - key: karpenter.sh/capacity-type
           operator: In
           values:
             - spot
             - on-demand
+        # Sydney region AZs
         - key: topology.kubernetes.io/zone
           operator: In
           values:
             - ap-southeast-2a
             - ap-southeast-2b
-      nodeClassRef:
-        name: gpu-ollama
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+      # Taint to ensure only GPU workloads land here
       taints:
         - key: nvidia.com/gpu
           effect: NoSchedule
+      # Auto-expire nodes after 14 days (forces refresh, picks up new AMIs)
+      expireAfter: 336h
+  # Resource limits for the entire NodePool
   limits:
     cpu: "48"
     memory: 192Gi
     nvidia.com/gpu: "4"
+  # Disruption — scale to zero after 30 min idle
   disruption:
     consolidationPolicy: WhenEmpty
     consolidateAfter: 30m
+    budgets:
+      - nodes: "100%"

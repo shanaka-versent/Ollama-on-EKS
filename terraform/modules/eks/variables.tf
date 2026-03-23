@@ -37,11 +37,6 @@ variable "node_subnet_ids" {
   type        = list(string)
 }
 
-variable "gpu_subnet_ids" {
-  description = "Subnet IDs for GPU nodes. Pin to a single AZ to match EBS volume affinity. Defaults to node_subnet_ids if not set."
-  type        = list(string)
-  default     = []
-}
 
 variable "cluster_security_group_ids" {
   description = "Additional security group IDs for cluster"
@@ -98,54 +93,8 @@ variable "system_capacity_type" {
   default     = "ON_DEMAND"
 }
 
-# GPU Node Pool
-variable "enable_gpu_node_pool" {
-  description = "Enable GPU node pool for LLM inference"
-  type        = bool
-  default     = true
-}
-
-variable "gpu_node_count" {
-  description = "Number of GPU nodes"
-  type        = number
-  default     = 1
-}
-
-variable "gpu_node_instance_type" {
-  description = "Instance type for GPU nodes"
-  type        = string
-  default     = "g5.12xlarge"
-}
-
-variable "gpu_ami_type" {
-  description = "AMI type for GPU nodes (AL2_x86_64_GPU for NVIDIA support)"
-  type        = string
-  default     = "AL2_x86_64_GPU"
-}
-
-variable "gpu_node_disk_size" {
-  description = "Disk size for GPU nodes (GB) - needs space for container images"
-  type        = number
-  default     = 300
-}
-
-variable "gpu_node_min_count" {
-  description = "Minimum GPU nodes (set to 0 for cost savings when not in use)"
-  type        = number
-  default     = 0
-}
-
-variable "gpu_node_max_count" {
-  description = "Maximum GPU nodes"
-  type        = number
-  default     = 2
-}
-
-variable "gpu_capacity_type" {
-  description = "Capacity type for GPU nodes (ON_DEMAND or SPOT)"
-  type        = string
-  default     = "ON_DEMAND"
-}
+# GPU Node Pool — REMOVED: Auto Mode manages GPU nodes via Karpenter.
+# GPU instances provision automatically when pods request nvidia.com/gpu.
 
 # Logging
 variable "enable_logging" {
