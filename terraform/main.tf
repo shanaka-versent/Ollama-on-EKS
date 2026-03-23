@@ -79,16 +79,10 @@ module "eks" {
   node_role_arn      = module.iam.node_role_arn
 
   # Network
-  subnet_ids      = concat(module.vpc.public_subnet_ids, module.vpc.private_subnet_ids)
-  node_subnet_ids = module.vpc.private_subnet_ids
+  subnet_ids = concat(module.vpc.public_subnet_ids, module.vpc.private_subnet_ids)
 
-  # System Node Pool (managed node group — coexists with Auto Mode)
-  system_node_count         = var.system_node_count
-  system_node_instance_type = var.system_node_instance_type
-  system_node_min_count     = var.system_node_min_count
-  system_node_max_count     = var.system_node_max_count
-
-  # GPU nodes managed by Auto Mode (Karpenter) — no managed node group needed.
+  # All nodes managed by Auto Mode (Karpenter) — no managed node groups needed.
+  # System nodes provision automatically via built-in "system" pool.
   # GPU instances provision automatically when pods request nvidia.com/gpu.
 
   # Logging
@@ -556,7 +550,7 @@ resource "kubernetes_secret" "webui_oauth" {
     ])
   }
 
-  depends_on = [module.cognito]
+  depends_on = [module.cognito, module.argocd]
 }
 
 # ==============================================================================

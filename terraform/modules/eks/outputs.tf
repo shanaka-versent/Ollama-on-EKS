@@ -46,9 +46,5 @@ output "cluster_security_group_id" {
   value       = aws_eks_cluster.main.vpc_config[0].cluster_security_group_id
 }
 
-output "node_group_system_name" {
-  description = "System node group name"
-  value       = aws_eks_node_group.system.node_group_name
-}
-
+# System node group output — REMOVED: Auto Mode manages all nodes.
 # GPU node group output — REMOVED: Auto Mode manages GPU nodes via Karpenter.
