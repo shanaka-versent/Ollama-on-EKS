@@ -4,7 +4,7 @@
 # Provides a ChatGPT-like web interface for Ollama.
 # Model switching is restricted to admin users only — regular users see
 # only the default model. Admins can switch via the UI or CLI.
-# DEV: Tier 1 fallback (qwen3.5:27b, g5.xlarge) — PROD: switch to flagship
+# Model name set per environment via Kustomize overlays in k8s/overlays/
 # Runs on system nodes (no GPU needed). Connects to Ollama via ClusterIP.
 #
 # Access: via CloudFront URL (Cognito login with MFA)
@@ -62,9 +62,7 @@ spec:
               value: "true"
             - name: DO_NOT_TRACK
               value: "true"
-            # Default model — locked for regular users
-            # DEV: Tier 1 fallback (g5.xlarge, $0.35/hr spot)
-            # PROD: Change to qwen3.5:122b-a10b (g5.12xlarge, $1.90/hr spot)
+            # Default model — locked for regular users (set per env via Kustomize)
             - name: DEFAULT_MODELS
               value: "qwen3.5:27b"
             # Model filtering — only show the default model to users

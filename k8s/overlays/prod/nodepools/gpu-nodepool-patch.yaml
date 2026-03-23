@@ -1,0 +1,46 @@
+# PROD patch for GPU NodePool
+# Adds g5.12xlarge for flagship model (4x A10G, 48 vCPU)
+# Increases resource limits to accommodate g5.12xlarge
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: gpu-ollama
+spec:
+  template:
+    spec:
+      requirements:
+        # GPU instance family
+        - key: eks.amazonaws.com/instance-category
+          operator: In
+          values: ["g"]
+        - key: eks.amazonaws.com/instance-family
+          operator: In
+          values: ["g5"]
+        # PROD: includes 12xlarge for flagship model
+        - key: eks.amazonaws.com/instance-size
+          operator: In
+          values:
+            - xlarge
+            - 2xlarge
+            - 12xlarge
+        - key: eks.amazonaws.com/instance-gpu-manufacturer
+          operator: In
+          values: ["nvidia"]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values:
+            - spot
+            - on-demand
+        - key: topology.kubernetes.io/zone
+          operator: In
+          values:
+            - ap-southeast-2a
+            - ap-southeast-2b
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+  # PROD limits: g5.12xlarge has 48 vCPU, 192Gi, 4 GPUs
+  limits:
+    cpu: "48"
+    memory: 192Gi
+    nvidia.com/gpu: "4"

@@ -1,0 +1,8 @@
+# PROD overlay for Model Loader
+# Patches job: loads qwen3.5:122b-a10b (flagship)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../model-loader
+patches:
+  - path: job-patch.yaml

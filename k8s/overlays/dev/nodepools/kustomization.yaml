@@ -1,0 +1,6 @@
+# DEV overlay for NodePools
+# Uses base values: g5.xlarge/2xlarge, 1 GPU, 8 CPU / 32Gi limits
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../nodepools

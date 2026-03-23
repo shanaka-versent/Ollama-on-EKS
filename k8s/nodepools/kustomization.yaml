@@ -1,0 +1,9 @@
+# Base kustomization for NodePools
+# Both system and GPU NodePools + NodeClasses
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - system-nodepool.yaml
+  - system-nodeclass.yaml
+  - gpu-nodepool.yaml
+  - gpu-nodeclass.yaml

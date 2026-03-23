@@ -219,7 +219,7 @@ additionalPrometheusRulesMap:
               alert_type: spot_unavailable
             annotations:
               summary: "GPU pod stuck in Pending — spot instance likely unavailable"
-              description: "Ollama GPU pod {{ $labels.pod }} has been Pending for 5+ minutes. In DEV mode (spot-only), this means no spot capacity. Check Karpenter logs and consider switching to PROD config (spot + on-demand)."
+              description: "Ollama GPU pod {{ $labels.pod }} has been Pending for 5+ minutes. Spot capacity may be unavailable. Check Karpenter logs and AWS Service Quotas."
 
           # On-demand fallback active — cost warning (PROD only)
           # Fires when a GPU node is running on-demand instead of spot
