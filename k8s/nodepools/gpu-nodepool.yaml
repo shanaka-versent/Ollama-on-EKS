@@ -2,8 +2,10 @@
 # @author Shanaka Jayasundera - shanakaj@gmail.com
 #
 # EKS Auto Mode NodePool for GPU workloads. Provisions g5 instances with spot
-# preference and on-demand fallback. Nodes terminate 30 minutes after becoming
-# empty to save costs.
+# preference and on-demand fallback. Karpenter always tries spot first (cheaper).
+# If spot unavailable, falls back to on-demand. GPUOnDemandFallback alert fires
+# via Prometheus → SNS → email so you know you're paying full price.
+# Nodes terminate 30 minutes after becoming empty to save costs.
 #
 # IMPORTANT: EKS Auto Mode uses karpenter.sh/v1 API (NOT v1beta1) and
 # eks.amazonaws.com NodeClass (NOT karpenter.k8s.aws EC2NodeClass).
@@ -50,14 +52,15 @@ spec:
         - key: eks.amazonaws.com/instance-gpu-manufacturer
           operator: In
           values: ["nvidia"]
-        # Spot ONLY — no on-demand fallback. Ensures cost control.
-        # If spot capacity is unavailable, pod stays Pending until capacity returns.
-        # WARNING: To temporarily allow on-demand (e.g., spot capacity issues),
-        #   add "on-demand" to values below. Monitor GPUOnDemandFallback alert.
+        # Spot preferred, on-demand fallback — Karpenter always tries spot first
+        # because it's cheaper. Only falls back to on-demand when spot capacity is
+        # genuinely unavailable. GPUOnDemandFallback Prometheus alert fires via
+        # Alertmanager → SNS → email when on-demand is used.
         - key: karpenter.sh/capacity-type
           operator: In
           values:
             - spot
+            - on-demand
         # Sydney region AZs
         - key: topology.kubernetes.io/zone
           operator: In
