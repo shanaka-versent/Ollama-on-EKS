@@ -63,8 +63,9 @@ module "vpc" {
 module "iam" {
   source = "./modules/iam"
 
-  name_prefix = local.name_prefix
-  tags        = var.tags
+  name_prefix      = local.name_prefix
+  enable_auto_mode = true
+  tags             = var.tags
 }
 
 # EKS Module - Kubernetes cluster with System + GPU node groups
@@ -80,25 +81,15 @@ module "eks" {
   # Network
   subnet_ids      = concat(module.vpc.public_subnet_ids, module.vpc.private_subnet_ids)
   node_subnet_ids = module.vpc.private_subnet_ids
-  # Pin GPU nodes to the first private subnet (AZ-a) so they always land in the
-  # same AZ as the EBS PVC. EBS volumes are AZ-scoped — a GPU node in a different
-  # AZ causes a volume affinity conflict and the Ollama pod stays Pending.
-  gpu_subnet_ids  = [module.vpc.private_subnet_ids[0]]
 
-  # System Node Pool
+  # System Node Pool (managed node group — coexists with Auto Mode)
   system_node_count         = var.system_node_count
   system_node_instance_type = var.system_node_instance_type
   system_node_min_count     = var.system_node_min_count
   system_node_max_count     = var.system_node_max_count
 
-  # GPU Node Pool
-  enable_gpu_node_pool   = var.enable_gpu_node_pool
-  gpu_node_count         = var.gpu_node_count
-  gpu_node_instance_type = var.gpu_node_instance_type
-  gpu_node_disk_size     = var.gpu_node_disk_size
-  gpu_node_min_count     = var.gpu_node_min_count
-  gpu_node_max_count     = var.gpu_node_max_count
-  gpu_capacity_type      = var.gpu_capacity_type
+  # GPU nodes managed by Auto Mode (Karpenter) — no managed node group needed.
+  # GPU instances provision automatically when pods request nvidia.com/gpu.
 
   # Logging
   enable_logging = var.enable_logging
@@ -445,6 +436,8 @@ module "cdn_waf" {
   origin_verify_secret                 = var.enable_origin_lockdown ? random_password.origin_verify_secret[0].result : ""
   portal_s3_bucket_regional_domain     = var.cloudfront_domain != "" ? module.api_key_portal.s3_bucket_regional_domain : ""
   portal_oac_id                        = var.cloudfront_domain != "" ? module.api_key_portal.oac_id : ""
+  login_s3_bucket_regional_domain      = var.cloudfront_domain != "" ? module.api_key_portal.login_s3_bucket_regional_domain : ""
+  login_oac_id                         = var.cloudfront_domain != "" ? module.api_key_portal.login_oac_id : ""
   tags                                 = var.tags
 }
 
@@ -548,20 +541,21 @@ resource "kubernetes_secret" "webui_oauth" {
     CHANGE_PASSWORD_URL   = module.cognito.change_password_url
     OAUTH_LOGOUT_URL      = module.cognito.logout_url
     # Banner timestamp must be Unix epoch (number), not a date string
+    # HTML content with styled button links for better visibility
     WEBUI_BANNERS = jsonencode([
       {
         id          = "api-key-portal"
         type        = "info"
-        title       = "API Access"
-        content     = "Need CLI/API access? <a href=/portal/ style=color:white;font-weight:bold>Generate your API key</a>"
+        title       = ""
+        content     = "<div style='display:flex;align-items:center;gap:12px;padding:4px 0'><span style='font-size:14px'>Need CLI or API access?</span><a href='/portal/' style='display:inline-block;background:#fff;color:#1e40af;font-weight:600;padding:6px 16px;border-radius:6px;text-decoration:none;font-size:13px;box-shadow:0 1px 3px rgba(0,0,0,0.2);transition:all 0.2s'>Generate API Key</a></div>"
         dismissible = true
         timestamp   = 1774051200
       },
       {
         id          = "change-password"
-        type        = "info"
-        title       = "Account"
-        content     = "Need to change your password? <a href='${module.cognito.change_password_url}' style=color:white;font-weight:bold target=_blank>Reset Password</a>"
+        type        = "warning"
+        title       = ""
+        content     = "<div style='display:flex;align-items:center;gap:12px;padding:4px 0'><span style='font-size:14px'>Password changes are managed via Cognito.</span><a href='${module.cognito.change_password_url}' target='_blank' style='display:inline-block;background:#fff;color:#92400e;font-weight:600;padding:6px 16px;border-radius:6px;text-decoration:none;font-size:13px;box-shadow:0 1px 3px rgba(0,0,0,0.2);transition:all 0.2s'>Reset Password</a></div>"
         dismissible = true
         timestamp   = 1774051200
       }
@@ -630,13 +624,18 @@ module "api_key_portal" {
   cognito_user_pool_id      = module.cognito.user_pool_id
   cognito_domain            = module.cognito.cognito_domain
   cloudfront_domain         = var.cloudfront_domain
+  signup_client_id          = module.cognito.signup_client_id
+  change_password_url       = module.cognito.change_password_url
   rest_api_id               = module.api_gateway.api_id
   rest_api_root_resource_id = module.api_gateway.root_resource_id
   rest_api_execution_arn    = module.api_gateway.api_execution_arn
   usage_plan_id             = module.api_gateway.usage_plan_id
   tags                      = var.tags
 
-  depends_on = [module.api_gateway, module.cognito]
+  # Note: depends_on removed — variable references create implicit dependencies.
+  # Explicit depends_on defers ALL data sources in the module to apply time,
+  # which causes aws_caller_identity to be (known after apply) and forces
+  # S3 bucket replacement on every plan.
 }
 
 # ==============================================================================

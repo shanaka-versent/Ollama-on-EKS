@@ -35,3 +35,13 @@ output "lambda_manager_function_name" {
   description = "Lambda function name for the key manager"
   value       = aws_lambda_function.key_manager.function_name
 }
+
+output "login_s3_bucket_regional_domain" {
+  description = "Login SPA S3 bucket regional domain name (for CloudFront origin)"
+  value       = aws_s3_bucket.login.bucket_regional_domain_name
+}
+
+output "login_oac_id" {
+  description = "CloudFront Origin Access Control ID for login SPA S3 origin"
+  value       = aws_cloudfront_origin_access_control.login.id
+}

@@ -218,8 +218,10 @@ sequenceDiagram
     Dev->>CF: POST /v1/chat/completions (HTTPS)
 
     rect rgb(255, 248, 240)
+        Note over CF: CloudFront Function (viewer-request)
+        CF->>CF: No token cookie? → 302 to /oauth/oidc/login
         Note over CF: WAF rule chain
-        CF->>CF: Rate limit — 100 req/5min per IP
+        CF->>CF: Rate limit — 2000 req/5min per IP
         CF->>CF: IP allowlist — corporate CIDRs only
         CF->>CF: Geo-block — AU + US only
         CF->>CF: SQL/XSS — AWSManagedRulesCommonRuleSet
@@ -339,7 +341,7 @@ This provisions VPC, EKS, IAM, LB Controller, API Gateway, CloudFront + WAF, cer
 ./scripts/create-model-snapshot.sh
 ```
 
-This launches a temporary GPU instance, pulls all 3 model tiers, snapshots the volume, and terminates the instance. Update `k8s/nodepools/gpu-ec2nodeclass.yaml` with the output snapshot ID.
+This launches a temporary GPU instance, pulls all 3 model tiers, snapshots the volume, and terminates the instance. Model weights are attached via PersistentVolume backed by the EBS snapshot.
 
 **Verify before continuing:**
 
@@ -427,14 +429,19 @@ Open WebUI (v0.8.10) provides a ChatGPT-like interface for Ollama. Deployed on E
 
 **Access URL:** `https://<CLOUDFRONT_DOMAIN>` (e.g., `https://d3f4nz5crzf5t8.cloudfront.net`)
 
+**Auto-redirect:** A CloudFront Function intercepts all viewer requests at the edge. Unauthenticated users (no `token` cookie) are automatically redirected to the Cognito login page via `/oauth/oidc/login` — they never see a landing page. Authenticated users pass through to the Open WebUI dashboard. OAuth callback, static asset, API, and portal paths are excluded from the redirect.
+
+**Static asset caching:** SvelteKit bundles (`/_app/*`) and static files (`/static/*`) are cached at CloudFront edge locations using the `CachingOptimized` policy, eliminating the CloudFront → NLB → Istio → Pod round-trip for every JS/CSS/image file. This reduces page load time from ~10s to <1s after the first request.
+
 #### User Signup Flow
 
-1. User visits CloudFront URL → clicks **"Request Access"**
-2. Redirected to Cognito hosted UI → creates account with email + password
+1. User visits CloudFront URL → auto-redirected to Cognito login (CloudFront Function)
+2. Clicks **"Sign up"** on the Cognito hosted UI → creates account with email + password
 3. Sets up TOTP MFA (authenticator app) on first login
 4. Admin receives email notification via SNS
 5. Admin adds user to `user` or `admin` group in **Cognito Console**
-6. User logs in again → role mapped from Cognito group → access granted
+6. User receives "Access Granted" email via SES
+7. User logs in again → role mapped from Cognito group → access granted
 
 > **Initial admin:** Bootstrapped via Terraform. Receives temporary password by email. Already in `admin` group.
 
@@ -581,7 +588,7 @@ Terraform provisions ArgoCD during `terraform apply`. ArgoCD then auto-syncs all
 |------|-------------|-------------------|
 | -2 | `gateway-api-crds` | `Gateway`, `HTTPRoute`, `GRPCRoute` CRDs v1.2.0 |
 | -1 | `istio-base` | Istio CRDs and cluster-wide resources |
-| 0 | `istiod`, `istio-cni`, `ztunnel`, `nvidia-device-plugin` | Ambient mesh + GPU plugin |
+| 0 | `istiod`, `istio-cni`, `ztunnel` | Ambient mesh (NVIDIA plugin managed by EKS Auto Mode) |
 | 1 | `namespaces` | `ollama`, `istio-system` namespaces with ambient mesh label |
 | 2 | `ollama-storage` | StorageClass `gp3` (Retain, WaitForFirstConsumer) + PVC 200Gi |
 | 3 | `ollama` | Deployment (4 GPUs, `strategy: Recreate`), Service, NetworkPolicy |
@@ -595,7 +602,6 @@ flowchart LR
     subgraph W0["Wave -2 to 0"]
         CRD["Gateway API CRDs"]
         ISTIO["Istio Base + Istiod\nCNI + ztunnel"]
-        NV["NVIDIA Device Plugin"]
     end
 
     subgraph W1["Waves 1-2"]
@@ -614,7 +620,7 @@ flowchart LR
         WUI["Open WebUI"]
     end
 
-    CRD --> ISTIO --> NV --> NS --> ST --> OLM --> ML --> GW --> HR --> WUI
+    CRD --> ISTIO --> NS --> ST --> OLM --> ML --> GW --> HR --> WUI
 
     style W0 fill:#e8eaf6,stroke:#3f51b5,stroke-width:2px
     style W1 fill:#e0f7fa,stroke:#00bcd4,stroke-width:2px
@@ -629,6 +635,7 @@ flowchart LR
 | Layer | Protection |
 |-------|-----------|
 | **CloudFront + WAF** | Rate limiting (2000/5min), IP allowlist, geo-blocking (AU/US), SQL/XSS rules, DDoS protection (Shield Standard) |
+| **CloudFront Function** | Edge-level auth redirect — unauthenticated requests (no `token` cookie) are 302'd to Cognito login; excludes OAuth, API, static asset, and portal paths |
 | **Origin Lockdown** | CloudFront sends a shared secret via `Referer` header; API Gateway resource policy denies requests without it — blocks direct API Gateway access |
 | **API Gateway + API Key** | x-api-key header required (native usage plans + API keys, managed via Console), REST API with VPC Link — no public NLB exposure |
 | **CloudFront VPC Origin** | Private connectivity from CloudFront to internal NLB — no internet-facing load balancer |
@@ -754,7 +761,7 @@ terraform/
 k8s/
   ollama/                          # Deployment, Service, NetworkPolicy (air-gapped)
   model-loader/                    # Job to pull models
-  nodepools/                       # Karpenter NodePool + EC2NodeClass
+  nodepools/                       # EKS Auto Mode NodePool (karpenter.sh/v1) + NodeClass (eks.amazonaws.com/v1)
   cert-manager/                    # ClusterIssuer + Certificate
   open-webui/                      # Open WebUI — Cognito auth, model locked to admins
   gateway.yaml                     # Istio Gateway
@@ -797,7 +804,7 @@ switch-model.sh                    # Model tier switching (repo root)
 | Model pull fails | `kubectl exec -n ollama deploy/ollama -- df -h` | Disk full — check EBS snapshot volume |
 | Air-gap test fails | `curl` from pod reaches internet | Check `k8s/ollama/networkpolicy.yaml` — should block all egress except DNS |
 | NLB not provisioning | `kubectl get gateway -n istio-system` | Check LB Controller logs |
-| Cold start slow | Node provisioning takes >5 min | Verify EBS snapshot ID in EC2NodeClass, check gp3 throughput settings |
+| Cold start slow | Node provisioning takes >5 min | Verify EBS snapshot PV, check NodeClass ephemeralStorage throughput (400 MB/s) |
 | Spot reclaimed | Pod evicted mid-session | Karpenter auto-provisions replacement — ~2-3 min recovery |
 | Ollama returns 500 | Model failed to load | Check `OLLAMA_CONTEXT_LENGTH` is set to `32768` |
 

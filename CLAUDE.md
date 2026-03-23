@@ -12,7 +12,7 @@ A fully private, air-gapped LLM inference platform on AWS EKS. Ollama serves Qwe
 
 Layer 1 — VPC (10.0.0.0/16) with private/public subnets + NAT Gateway.
 Layer 2 — EKS Control Plane + system node group (t3.medium) + GPU node group (g5.12xlarge, 4x A10G). EBS CSI Driver + AWS LB Controller.
-Layer 3 — ArgoCD with wave orchestration (waves 0-6). Wave 0: Istio + NVIDIA Plugin → Wave 1-2: Namespaces + Storage → Wave 3-4: Ollama + Model Loader → Wave 5-6: Gateway + Routes.
+Layer 3 — ArgoCD with wave orchestration (waves 0-7). Wave 0: Istio (ambient mesh) → Wave 1-2: Namespaces + Storage → Wave 3-4: Ollama + Model Loader → Wave 5-6: Gateway + Routes → Wave 7: Open WebUI. NVIDIA device plugin is managed by EKS Auto Mode (NOT deployed via ArgoCD).
 Layer 4 — CloudFront (+ WAF + Shield Standard) → API Gateway (REST API, native API key auth) → VPC Link → Internal NLB → Istio Gateway (mTLS) → Ollama Pod.
 
 Traffic flow (API): Client → CloudFront (WAF) → API Gateway (x-api-key) → VPC Link → Internal NLB → Istio Gateway → Ollama Pod.
@@ -45,7 +45,7 @@ Both Open WebUI and Grafana use **separate Cognito User Pools** with:
 
 #### New User Flow (Access Request)
 
-1. User visits the app → clicks login button → redirected to Cognito hosted UI
+1. User visits CloudFront URL → CloudFront Function detects no `token` cookie → auto-redirects to `/oauth/oidc/login` → Cognito hosted UI
 2. User clicks "Sign up" → enters email + password → account auto-confirmed (Pre Sign-up Lambda)
 3. Admin receives SNS email notification with the user's email and instructions
 4. Admin goes to AWS Cognito Console → finds user → adds to group ("user"/"viewer" or "admin")
@@ -73,6 +73,8 @@ Both Open WebUI and Grafana use **separate Cognito User Pools** with:
 - SES email identity must be verified for access-granted notifications to work. If SES is in sandbox mode, recipient emails must also be verified
 - Password changes redirect to Cognito hosted UI `/forgotPassword` via banner link (URL injected by Terraform into K8s secret)
 - `WEBUI_BANNERS` env var is stored in the `webui-oauth-cognito` K8s secret (not hardcoded in deployment YAML) so Terraform can inject the Cognito change-password URL dynamically
+- CloudFront Function (`auth_redirect`) runs on `viewer-request` event — checks for `token` cookie, redirects unauthenticated users to `/oauth/oidc/login`. Excludes: `/oauth/*`, `/_app/*`, `/static/*`, `/api/*`, `/v1/*`, `/portal/*`, `/grafana/*`, favicons
+- Static assets (`/_app/*`, `/static/*`) use `CachingOptimized` policy at CloudFront edge — eliminates the full CloudFront → NLB → Istio → Pod round-trip for JS/CSS/images, reducing page load from ~10s to <1s
 
 > **TEMPORARY:** In-cluster Grafana + Cognito auth is a stopgap while AMG (AWS Managed Grafana) SSO access is being resolved (Stax ticket pending). Once AMG is accessible: set `enable_grafana = !var.enable_managed_grafana`, remove `grafana_cognito` module + K8s secret + Grafana HTTPRoute, delete `terraform/modules/grafana-cognito/`.
 
@@ -129,7 +131,7 @@ The orchestrator is a separate product built on top of the Ollama-on-EKS infrast
 
 Terraform modules: `terraform/modules/` — vpc, iam, eks, argocd, lb-controller, observability (IMPLEMENTED), api-gateway (IMPLEMENTED, with origin lockdown), cdn-waf (IMPLEMENTED, with origin lockdown), cert-manager (IMPLEMENTED), bedrock-integration (IMPLEMENTED, Stack B only), managed-grafana (IMPLEMENTED, optional — replaces in-cluster Grafana). Each module follows the pattern: `main.tf`, `variables.tf`, `outputs.tf`, `versions.tf`.
 
-K8s manifests: `k8s/ollama/` — deployment.yaml (pinned to v0.6.2), service.yaml (ClusterIP :11434), networkpolicy.yaml (air-gap enforced). Plus: `k8s/model-loader/`, `k8s/gateway.yaml`, `k8s/httproutes.yaml`, `k8s/monitoring-networkpolicy.yaml` (IMPLEMENTED), `k8s/nodepools/` (IMPLEMENTED — GPU NodePool + EC2NodeClass with EBS snapshot), `k8s/open-webui/` (IMPLEMENTED — browser-based model switching, air-gapped).
+K8s manifests: `k8s/ollama/` — deployment.yaml (pinned to v0.6.2), service.yaml (ClusterIP :11434), networkpolicy.yaml (air-gap enforced). Plus: `k8s/model-loader/`, `k8s/gateway.yaml`, `k8s/httproutes.yaml`, `k8s/monitoring-networkpolicy.yaml` (IMPLEMENTED), `k8s/nodepools/` (IMPLEMENTED — GPU NodePool `karpenter.sh/v1` + NodeClass `eks.amazonaws.com/v1` for EKS Auto Mode), `k8s/open-webui/` (IMPLEMENTED — Cognito auth, model locked to admins).
 
 ArgoCD: `argocd/apps/` — wave-based Application manifests (waves 00-12, including Open WebUI at wave 7).
 
@@ -151,13 +153,17 @@ Workflows: `.github/workflows/kong-sync.yml` (DEPRECATED — Kong removed). `ter
 
 ### Sprint 2 — EKS Auto Mode + Cost (Week 2, ~8 hrs)
 
-**Gap 7: GPU NodePool + EC2NodeClass.** Create `k8s/nodepools/gpu-nodepool.yaml` — NodePool `gpu-ollama`: instance types g5.xlarge/g5.2xlarge/g5.12xlarge, capacity types spot + on-demand, zones ap-southeast-2a/2b, nodeClassRef to EC2NodeClass `gpu-ollama`, taint `nvidia.com/gpu: NoSchedule`, limits: 48 CPU / 192Gi memory / 4 GPU, disruption: WhenEmpty with `consolidateAfter: 30m`.
+**Gap 7: GPU NodePool + NodeClass (EKS Auto Mode).** CRITICAL: EKS Auto Mode uses different APIs than standalone Karpenter.
 
-Create `k8s/nodepools/gpu-ec2nodeclass.yaml` — EC2NodeClass `gpu-ollama`: AMI alias `al2023@latest`, subnet/SG discovery tags `karpenter.sh/discovery: "ollama-eks"`, two block device mappings: (1) root `/dev/xvda` gp3 50Gi encrypted, (2) data `/dev/xvdb` gp3 200Gi with iops 6000, throughput 400, encrypted, snapshotID from pre-loaded models snapshot. userData mounts `/dev/xvdb` to `/data/ollama` and sets `OLLAMA_MODELS` env var.
+- **NodePool** (`karpenter.sh/v1`, NOT v1beta1): `k8s/nodepools/gpu-nodepool.yaml` — NodePool `gpu-ollama` with `eks.amazonaws.com` instance selectors (instance-category: g, instance-family: g5, instance-size: xlarge/2xlarge/12xlarge), `karpenter.sh/capacity-type: spot + on-demand` (spot preferred), NVIDIA GPU manufacturer filter, zones ap-southeast-2a/2b, taint `nvidia.com/gpu: NoSchedule`, limits: 48 CPU / 192Gi / 4 GPU, disruption: `WhenEmpty` with `consolidateAfter: 30m`, `expireAfter: 336h`, `budgets: nodes 100%`.
 
-**EBS Snapshot Creation.** Create `scripts/create-model-snapshot.sh`: launch temporary g5.xlarge with 200GB gp3 volume (400 MB/s, 6000 IOPS), install Ollama, pull all 3 tiers (`qwen3.5:27b`, `qwen3-coder:30b-a3b`, `qwen3.5:122b-a10b`), stop instance, snapshot data volume, terminate instance. Output the snapshot ID for use in EC2NodeClass.
+- **NodeClass** (`eks.amazonaws.com/v1`, NOT karpenter.k8s.aws EC2NodeClass): `k8s/nodepools/gpu-nodeclass.yaml` — NodeClass `gpu-ollama` with subnet/SG discovery tags `karpenter.sh/discovery: "ollama-eks"`, ephemeralStorage: 80Gi with 6000 IOPS and 400 MB/s throughput.
 
-**EKS Auto Mode.** Enable on cluster — replaces manual Karpenter + NVIDIA device plugin. AWS manages GPU node lifecycle, NVIDIA drivers, and device plugin.
+- **nodeClassRef format**: `group: eks.amazonaws.com`, `kind: NodeClass`, `name: gpu-ollama` (NOT the old `nodeClassRef: name: gpu-ollama` shorthand).
+
+**EBS Snapshot for Models.** Pre-loaded model weights are attached via PersistentVolume backed by EBS snapshot, NOT via NodeClass blockDeviceMappings (EKS Auto Mode NodeClass doesn't support blockDeviceMappings). Script: `scripts/create-model-snapshot.sh`.
+
+**EKS Auto Mode.** Enabled on cluster — AWS manages Karpenter, NVIDIA device plugin, EBS CSI, and LB controller. The `compute_config.node_pools` in Terraform should include `["general-purpose", "system"]` for built-in pools; custom GPU NodePool is applied separately via ArgoCD.
 
 ### Sprint 3 — Hardening (Week 3, ~10 hrs)
 

@@ -14,6 +14,32 @@ resource "aws_eks_cluster" "main" {
     security_group_ids      = var.cluster_security_group_ids
   }
 
+  # Auto Mode requires API or API_AND_CONFIG_MAP authentication mode
+  access_config {
+    authentication_mode                         = "API_AND_CONFIG_MAP"
+    bootstrap_cluster_creator_admin_permissions = true
+  }
+
+  # Auto Mode — AWS manages Karpenter, NVIDIA device plugin, EBS CSI, and LB controller.
+  # GPU nodes only provision when a pod requests nvidia.com/gpu resources.
+  compute_config {
+    enabled       = true
+    node_pools    = ["general-purpose", "system"]
+    node_role_arn = var.node_role_arn
+  }
+
+  kubernetes_network_config {
+    elastic_load_balancing {
+      enabled = true
+    }
+  }
+
+  storage_config {
+    block_storage {
+      enabled = true
+    }
+  }
+
   enabled_cluster_log_types = var.enable_logging ? var.cluster_log_types : []
 
   tags = var.tags
@@ -69,48 +95,9 @@ resource "aws_eks_node_group" "system" {
   depends_on = [aws_eks_cluster.main]
 }
 
-# GPU Node Group (for Ollama / LLM inference)
-resource "aws_eks_node_group" "gpu" {
-  count           = var.enable_gpu_node_pool ? 1 : 0
-  cluster_name    = aws_eks_cluster.main.name
-  node_group_name = "gpu-${var.name_prefix}"
-  node_role_arn   = var.node_role_arn
-  # Pin GPU nodes to a single AZ to match EBS volume affinity.
-  # EBS volumes are AZ-scoped — if the GPU node comes up in a different AZ
-  # from the PVC, the pod cannot schedule (volume node affinity conflict).
-  subnet_ids = length(var.gpu_subnet_ids) > 0 ? var.gpu_subnet_ids : var.node_subnet_ids
-  ami_type   = var.gpu_ami_type
-
-  instance_types = [var.gpu_node_instance_type]
-  capacity_type  = var.gpu_capacity_type
-  disk_size      = var.gpu_node_disk_size
-
-  scaling_config {
-    desired_size = var.gpu_node_count
-    min_size     = var.gpu_node_min_count
-    max_size     = var.gpu_node_max_count
-  }
-
-  update_config {
-    max_unavailable = 1
-  }
-
-  labels = {
-    role                     = "gpu"
-    "nvidia.com/gpu.present" = "true"
-  }
-
-  # Taint GPU nodes so only GPU-requesting pods schedule here
-  taint {
-    key    = "nvidia.com/gpu"
-    value  = "true"
-    effect = "NO_SCHEDULE"
-  }
-
-  tags = var.tags
-
-  depends_on = [aws_eks_cluster.main]
-}
+# GPU Node Group — REMOVED: Auto Mode manages GPU nodes via Karpenter.
+# GPU instances (g5.xlarge/g5.12xlarge) provision automatically when pods
+# request nvidia.com/gpu resources. Spot with on-demand fallback is the default.
 
 # EKS Addons
 resource "aws_eks_addon" "vpc_cni" {

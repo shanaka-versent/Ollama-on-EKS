@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Open WebUI — Sign In</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+      background: #f0f2f5; color: #1f2937; min-height: 100vh;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .container { width: 100%; max-width: 420px; padding: 24px; }
+    .logo { text-align: center; margin-bottom: 28px; }
+    .logo svg { width: 44px; height: 44px; margin-bottom: 10px; }
+    .logo h1 { font-size: 22px; font-weight: 700; color: #111827; }
+    .logo p { font-size: 13px; color: #6b7280; margin-top: 4px; }
+    .card {
+      background: #fff; border-radius: 14px; padding: 28px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 4px 16px rgba(0,0,0,0.06);
+    }
+    .tabs {
+      display: flex; gap: 0; margin-bottom: 24px; border-bottom: 1px solid #e5e7eb;
+    }
+    .tab {
+      flex: 1; padding: 10px 0; text-align: center; cursor: pointer;
+      font-size: 14px; font-weight: 500; color: #9ca3af;
+      border: none; background: none; border-bottom: 2px solid transparent;
+      transition: all 0.2s; margin-bottom: -1px;
+    }
+    .tab.active { color: #2563eb; border-bottom-color: #2563eb; }
+    .tab:hover:not(.active) { color: #6b7280; }
+    .form-group { margin-bottom: 16px; }
+    .form-group label {
+      display: block; font-size: 13px; font-weight: 500; color: #374151;
+      margin-bottom: 6px;
+    }
+    .form-group input {
+      width: 100%; padding: 10px 12px; background: #fff;
+      border: 1px solid #d1d5db; border-radius: 8px; color: #111827;
+      font-size: 14px; outline: none; transition: border-color 0.2s;
+    }
+    .form-group input:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+    .form-group input::placeholder { color: #9ca3af; }
+    .btn {
+      width: 100%; padding: 10px; border: none; border-radius: 8px;
+      font-size: 14px; font-weight: 600; cursor: pointer;
+      transition: all 0.2s; margin-top: 8px;
+    }
+    .btn-primary { background: #2563eb; color: #fff; }
+    .btn-primary:hover { background: #1d4ed8; }
+    .btn-primary:disabled { background: #93c5fd; cursor: not-allowed; }
+    .btn-outline {
+      background: #fff; color: #374151; border: 1px solid #d1d5db;
+    }
+    .btn-outline:hover { background: #f9fafb; }
+    .divider {
+      display: flex; align-items: center; gap: 12px; margin: 18px 0;
+      color: #9ca3af; font-size: 13px;
+    }
+    .divider::before, .divider::after {
+      content: ''; flex: 1; height: 1px; background: #e5e7eb;
+    }
+    .message {
+      padding: 10px 12px; border-radius: 8px; font-size: 13px;
+      margin-bottom: 14px; display: none; line-height: 1.5;
+    }
+    .message.error { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; display: block; }
+    .message.success { background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; display: block; }
+    .message.info { background: #eff6ff; color: #2563eb; border: 1px solid #bfdbfe; display: block; }
+    .password-requirements {
+      font-size: 12px; color: #9ca3af; margin-top: 6px; line-height: 1.6;
+    }
+    .password-requirements span { display: inline-block; margin-right: 8px; }
+    .password-requirements span.met { color: #16a34a; }
+    .footer { text-align: center; margin-top: 20px; font-size: 12px; color: #9ca3af; }
+    .footer a { color: #6b7280; text-decoration: none; }
+    .footer a:hover { color: #374151; text-decoration: underline; }
+    .spinner {
+      display: inline-block; width: 16px; height: 16px;
+      border: 2px solid #93c5fd; border-top-color: transparent;
+      border-radius: 50%; animation: spin 0.6s linear infinite;
+      vertical-align: middle; margin-right: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .link { color: #2563eb; text-decoration: none; font-size: 13px; }
+    .link:hover { text-decoration: underline; }
+    .mfa-input {
+      text-align: center; font-size: 24px; letter-spacing: 8px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+    }
+    .back-link {
+      display: inline-flex; align-items: center; gap: 4px;
+      color: #6b7280; font-size: 13px; text-decoration: none; margin-bottom: 16px;
+    }
+    .back-link:hover { color: #374151; }
+    .panel { display: none; }
+    .panel.active { display: block; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="logo">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 2a7 7 0 0 1 7 7c0 3-1.5 5.5-4 7v2H9v-2c-2.5-1.5-4-4-4-7a7 7 0 0 1 7-7z"/>
+        <path d="M9 22h6"/><path d="M10 18h4"/>
+      </svg>
+      <h1>Open WebUI</h1>
+      <p>Private LLM Platform</p>
+    </div>
+
+    <div class="card">
+      <div class="tabs" id="tab-bar">
+        <button class="tab active" onclick="showPanel('signin')">Sign In</button>
+        <button class="tab" onclick="showPanel('signup')">Request Access</button>
+      </div>
+
+      <!-- Sign In Panel -->
+      <div id="signin-panel" class="panel active">
+        <div id="signin-message" class="message"></div>
+        <form id="signin-form" onsubmit="handleSignin(event)">
+          <div class="form-group">
+            <label for="signin-email">Email</label>
+            <input type="email" id="signin-email" placeholder="name@company.com" required autocomplete="email">
+          </div>
+          <div class="form-group">
+            <label for="signin-password">Password</label>
+            <input type="password" id="signin-password" placeholder="Enter your password" required autocomplete="current-password">
+          </div>
+          <button type="submit" class="btn btn-primary" id="signin-btn">Sign In</button>
+        </form>
+        <div style="display:flex;justify-content:space-between;margin-top:12px">
+          <a href="${change_password_url}" target="_blank" class="link">Forgot password?</a>
+          <a href="/oauth/oidc/login" class="link">First-time setup</a>
+        </div>
+      </div>
+
+      <!-- MFA Panel -->
+      <div id="mfa-panel" class="panel">
+        <a href="#" class="back-link" onclick="showPanel('signin');return false">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5m7-7-7 7 7 7"/></svg>
+          Back
+        </a>
+        <div style="text-align:center;margin-bottom:20px">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="5" y="11" width="14" height="10" rx="2"/><path d="M12 16v2"/><circle cx="12" cy="7" r="3"/>
+          </svg>
+          <p style="font-size:15px;font-weight:600;color:#111827;margin-top:8px">Two-Factor Authentication</p>
+          <p style="font-size:13px;color:#6b7280;margin-top:4px">Enter the 6-digit code from your authenticator app</p>
+        </div>
+        <div id="mfa-message" class="message"></div>
+        <form id="mfa-form" onsubmit="handleMfa(event)">
+          <div class="form-group">
+            <input type="text" id="mfa-code" class="mfa-input" placeholder="000000"
+                   maxlength="6" pattern="\d{6}" required autocomplete="one-time-code"
+                   inputmode="numeric">
+          </div>
+          <button type="submit" class="btn btn-primary" id="mfa-btn">Verify</button>
+        </form>
+      </div>
+
+      <!-- Sign Up Panel -->
+      <div id="signup-panel" class="panel">
+        <div id="signup-message" class="message"></div>
+        <form id="signup-form" onsubmit="handleSignup(event)">
+          <div class="form-group">
+            <label for="signup-name">Full Name</label>
+            <input type="text" id="signup-name" placeholder="Enter your name" required autocomplete="name">
+          </div>
+          <div class="form-group">
+            <label for="signup-email">Email</label>
+            <input type="email" id="signup-email" placeholder="name@company.com" required autocomplete="email">
+          </div>
+          <div class="form-group">
+            <label for="signup-password">Password</label>
+            <input type="password" id="signup-password" placeholder="Create a password" required oninput="checkPassword()" autocomplete="new-password">
+            <div class="password-requirements" id="pw-reqs">
+              <span id="pw-len">12+ chars</span>
+              <span id="pw-upper">Uppercase</span>
+              <span id="pw-lower">Lowercase</span>
+              <span id="pw-num">Number</span>
+              <span id="pw-sym">Symbol</span>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="signup-confirm">Confirm Password</label>
+            <input type="password" id="signup-confirm" placeholder="Confirm your password" required oninput="checkPassword()" autocomplete="new-password">
+          </div>
+          <button type="submit" class="btn btn-primary" id="signup-btn" disabled>Request Access</button>
+        </form>
+        <div class="divider">or</div>
+        <p style="font-size:13px;color:#6b7280;text-align:center">
+          Already have an account?
+          <a href="#" onclick="showPanel('signin');return false" class="link">Sign In</a>
+        </p>
+      </div>
+    </div>
+
+    <div class="footer">
+      <p>Secured by AWS Cognito with MFA</p>
+    </div>
+  </div>
+
+  <script>
+    var SIGNUP_CONFIG = {
+      clientId: '${signup_client_id}',
+      region: '${region}',
+      endpoint: 'https://cognito-idp.${region}.amazonaws.com/'
+    };
+    var mfaSession = null;
+
+    function showPanel(panel) {
+      document.querySelectorAll('.panel').forEach(function(p) { p.classList.remove('active'); });
+      document.getElementById(panel + '-panel').classList.add('active');
+
+      // Show/hide tab bar (hidden during MFA)
+      document.getElementById('tab-bar').style.display = panel === 'mfa' ? 'none' : 'flex';
+
+      // Update tab active state
+      document.querySelectorAll('.tab').forEach(function(t, i) {
+        t.classList.toggle('active', (panel === 'signin' && i === 0) || (panel === 'signup' && i === 1));
+      });
+
+      // Clear messages when switching panels
+      clearMessages();
+    }
+
+    function clearMessages() {
+      ['signin-message', 'mfa-message', 'signup-message'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) { el.className = 'message'; el.style.display = 'none'; }
+      });
+    }
+
+    function showMessage(panelPrefix, type, text) {
+      var el = document.getElementById(panelPrefix + '-message');
+      el.className = 'message ' + type;
+      el.textContent = text;
+      el.style.display = 'block';
+    }
+
+    // ===== SIGN IN =====
+
+    async function handleSignin(e) {
+      e.preventDefault();
+      var btn = document.getElementById('signin-btn');
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span>Signing in...';
+      clearMessages();
+
+      var email = document.getElementById('signin-email').value.trim();
+      var password = document.getElementById('signin-password').value;
+
+      try {
+        var res = await fetch('/portal/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: email, password: password })
+        });
+
+        var data = await res.json();
+
+        if (data.status === 'mfa_required') {
+          // Show MFA panel
+          mfaSession = data.session;
+          showPanel('mfa');
+          document.getElementById('mfa-code').focus();
+          btn.disabled = false;
+          btn.textContent = 'Sign In';
+          return;
+        }
+
+        if (data.status === 'success') {
+          // Token cookie set via Set-Cookie header — redirect to dashboard
+          window.location.href = '/';
+          return;
+        }
+
+        if (data.error === 'initial_setup_required') {
+          showMessage('signin', 'info', data.message || 'Please complete initial setup first.');
+          btn.disabled = false;
+          btn.textContent = 'Sign In';
+          return;
+        }
+
+        // Error
+        showMessage('signin', 'error', data.error || 'Sign in failed');
+        btn.disabled = false;
+        btn.textContent = 'Sign In';
+      } catch (err) {
+        showMessage('signin', 'error', 'Network error. Please try again.');
+        btn.disabled = false;
+        btn.textContent = 'Sign In';
+      }
+    }
+
+    // ===== MFA =====
+
+    async function handleMfa(e) {
+      e.preventDefault();
+      var btn = document.getElementById('mfa-btn');
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span>Verifying...';
+      clearMessages();
+
+      var code = document.getElementById('mfa-code').value.trim();
+
+      try {
+        var res = await fetch('/portal/api/auth/mfa', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ totp_code: code, session: mfaSession })
+        });
+
+        var data = await res.json();
+
+        if (data.status === 'success') {
+          window.location.href = '/';
+          return;
+        }
+
+        // Error — clear code field for retry
+        showMessage('mfa', 'error', data.error || 'Verification failed');
+        document.getElementById('mfa-code').value = '';
+        document.getElementById('mfa-code').focus();
+        btn.disabled = false;
+        btn.textContent = 'Verify';
+      } catch (err) {
+        showMessage('mfa', 'error', 'Network error. Please try again.');
+        btn.disabled = false;
+        btn.textContent = 'Verify';
+      }
+    }
+
+    // ===== SIGN UP =====
+
+    function checkPassword() {
+      var pw = document.getElementById('signup-password').value;
+      var cpw = document.getElementById('signup-confirm').value;
+      var checks = {
+        'pw-len': pw.length >= 12,
+        'pw-upper': /[A-Z]/.test(pw),
+        'pw-lower': /[a-z]/.test(pw),
+        'pw-num': /\d/.test(pw),
+        'pw-sym': /[^A-Za-z0-9]/.test(pw)
+      };
+      var allMet = true;
+      for (var id in checks) {
+        document.getElementById(id).classList.toggle('met', checks[id]);
+        if (!checks[id]) allMet = false;
+      }
+      var match = pw === cpw && cpw.length > 0;
+      document.getElementById('signup-btn').disabled = !(allMet && match);
+    }
+
+    async function handleSignup(e) {
+      e.preventDefault();
+      var btn = document.getElementById('signup-btn');
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span>Creating account...';
+
+      var name = document.getElementById('signup-name').value.trim();
+      var email = document.getElementById('signup-email').value.trim();
+      var password = document.getElementById('signup-password').value;
+
+      try {
+        var res = await fetch(SIGNUP_CONFIG.endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-amz-json-1.1',
+            'X-Amz-Target': 'AWSCognitoIdentityProviderService.SignUp'
+          },
+          body: JSON.stringify({
+            ClientId: SIGNUP_CONFIG.clientId,
+            Username: email,
+            Password: password,
+            UserAttributes: [
+              { Name: 'email', Value: email },
+              { Name: 'name', Value: name }
+            ]
+          })
+        });
+
+        var data = await res.json();
+
+        if (!res.ok) {
+          var msg = data.message || data.Message || 'Signup failed';
+          if (data.__type && data.__type.includes('UsernameExistsException')) {
+            msg = 'An account with this email already exists. Please sign in instead.';
+          }
+          showMessage('signup', 'error', msg);
+          btn.disabled = false;
+          btn.textContent = 'Request Access';
+          return;
+        }
+
+        document.getElementById('signup-form').style.display = 'none';
+        showMessage('signup', 'success',
+          'Account created successfully! An administrator has been notified and will grant you access. ' +
+          'You will receive an email once approved. You can then sign in using the Sign In tab.'
+        );
+      } catch (err) {
+        showMessage('signup', 'error', 'Network error. Please try again.');
+        btn.disabled = false;
+        btn.textContent = 'Request Access';
+      }
+    }
+  </script>
+</body>
+</html>

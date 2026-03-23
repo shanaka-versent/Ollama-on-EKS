@@ -86,48 +86,9 @@ variable "system_node_max_count" {
   default     = 3
 }
 
-# GPU Node Pool
-variable "enable_gpu_node_pool" {
-  description = "Enable GPU node pool for LLM inference"
-  type        = bool
-  default     = true
-}
-
-variable "gpu_node_count" {
-  description = "Number of GPU nodes"
-  type        = number
-  default     = 1
-}
-
-variable "gpu_node_instance_type" {
-  description = "GPU instance type (g5.xlarge=1xA10G, g5.12xlarge=4xA10G, p4d.24xlarge=8xA100)"
-  type        = string
-  default     = "g5.12xlarge"
-}
-
-variable "gpu_node_disk_size" {
-  description = "Disk size for GPU nodes (GB)"
-  type        = number
-  default     = 300
-}
-
-variable "gpu_node_min_count" {
-  description = "Minimum GPU nodes (0 = scale down to save costs)"
-  type        = number
-  default     = 0
-}
-
-variable "gpu_node_max_count" {
-  description = "Maximum GPU nodes"
-  type        = number
-  default     = 2
-}
-
-variable "gpu_capacity_type" {
-  description = "GPU node capacity type (ON_DEMAND or SPOT for cost savings)"
-  type        = string
-  default     = "ON_DEMAND"
-}
+# GPU Node Pool — managed by EKS Auto Mode (Karpenter).
+# GPU instances provision automatically when pods request nvidia.com/gpu.
+# No manual node group variables needed.
 
 # ==============================================================================
 # OLLAMA CONFIGURATION

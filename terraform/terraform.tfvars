@@ -34,14 +34,9 @@ system_node_instance_type = "t3.medium"
 system_node_min_count     = 2
 system_node_max_count     = 4
 
-# GPU Nodes (g5.12xlarge = 4x NVIDIA A10G, 96GB VRAM — runs qwen3.5:122b-a10b)
-enable_gpu_node_pool   = true
-gpu_node_count         = 1
-gpu_node_instance_type = "g5.12xlarge"
-gpu_node_disk_size     = 300
-gpu_node_min_count     = 0
-gpu_node_max_count     = 2
-gpu_capacity_type      = "ON_DEMAND"
+# GPU Nodes — managed by EKS Auto Mode (Karpenter).
+# GPU instances (g5.xlarge/g5.12xlarge) provision automatically when pods
+# request nvidia.com/gpu. Spot preferred with on-demand fallback.
 
 # Ollama — Flagship model (Tier 3)
 ollama_namespace         = "ollama"

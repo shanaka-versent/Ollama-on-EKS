@@ -51,7 +51,4 @@ output "node_group_system_name" {
   value       = aws_eks_node_group.system.node_group_name
 }
 
-output "node_group_gpu_name" {
-  description = "GPU node group name"
-  value       = var.enable_gpu_node_pool ? aws_eks_node_group.gpu[0].node_group_name : null
-}
+# GPU node group output — REMOVED: Auto Mode manages GPU nodes via Karpenter.

@@ -97,7 +97,7 @@ spec:
       nodeClassRef:
         group: eks.amazonaws.com
         kind: NodeClass
-        name: default              # AWS-managed, no custom EC2NodeClass needed
+        name: gpu-ollama           # Custom NodeClass (eks.amazonaws.com/v1)
       requirements:
       - key: "karpenter.sh/capacity-type"
         operator: In
@@ -283,14 +283,14 @@ terraform/variables.tf                   # New observability variables
 
 1. Launch a temporary GPU instance, pull the models you want
 2. Create an EBS snapshot of the `/root/.ollama` volume
-3. Reference the snapshot ID in Karpenter's `EC2NodeClass` block device mapping
-4. New nodes boot with models already on disk — no download needed
+3. Reference the snapshot ID in a PersistentVolume (EKS Auto Mode NodeClass doesn't support blockDeviceMappings)
+4. New nodes boot with models already on disk via PV mount — no download needed
 
 This is critical for two reasons: cold start speed (2 min vs 20 min) and air-gap compliance (nodes don't need internet to get models).
 
 **On `cost-report.sh`:** Good idea. Query AWS Cost Explorer API or just parse `kubectl get nodes` + instance type pricing. Low effort, high visibility.
 
-**Approach:** EBS snapshot script + Karpenter EC2NodeClass config. 2-3 hours. Folded into improvement #2 work.
+**Approach:** EBS snapshot script + PersistentVolume config (EKS Auto Mode manages nodes via eks.amazonaws.com/v1 NodeClass). 2-3 hours. Folded into improvement #2 work.
 
 ---
 
@@ -617,34 +617,31 @@ With scale-to-zero, the first request after idle waits for a GPU node to launch,
 
 ### Fix 1: EBS Snapshots (Eliminates Model Download)
 
-Pre-download all models to an EBS volume, snapshot it, reference the snapshot ID in Karpenter EC2NodeClass. New nodes boot with models already on disk — no internet needed.
+Pre-download all models to an EBS volume, snapshot it, and attach via PersistentVolume. New nodes boot with models already on disk — no internet needed.
 
 **Script:** `scripts/create-model-snapshot.sh` — launches a temporary GPU instance, downloads all 3 model tiers, creates an EBS snapshot, terminates the instance. Run once, update snapshot ID when models change.
 
-**EC2NodeClass config:**
+**Note:** EKS Auto Mode uses `eks.amazonaws.com/v1` NodeClass which does NOT support `blockDeviceMappings` or `userData`. Model weights are attached via a PersistentVolume backed by the EBS snapshot, mounted into the Ollama pod. The NodeClass only configures ephemeralStorage, subnet/SG discovery.
+
+**NodeClass config (EKS Auto Mode):**
 
 ```yaml
-# k8s/nodepools/gpu-ec2nodeclass.yaml
-apiVersion: karpenter.k8s.aws/v1
-kind: EC2NodeClass
+# k8s/nodepools/gpu-nodeclass.yaml
+apiVersion: eks.amazonaws.com/v1
+kind: NodeClass
 metadata:
   name: gpu-ollama
 spec:
-  blockDeviceMappings:
-    - deviceName: /dev/xvdb
-      ebs:
-        volumeType: gp3
-        volumeSize: "200Gi"
-        iops: 6000            # Fix 2: 2x default
-        throughput: 400        # Fix 2: 3.2x default (125 → 400 MB/s)
-        encrypted: true
-        snapshotID: "snap-0abc123def456"   # Fix 1: pre-loaded models
-        deleteOnTermination: true
-  userData: |
-    #!/bin/bash
-    mkdir -p /data/ollama
-    mount /dev/xvdb /data/ollama
-    echo 'OLLAMA_MODELS=/data/ollama' >> /etc/environment
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "ollama-eks"
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "ollama-eks"
+  ephemeralStorage:
+    size: 80Gi
+    iops: 6000            # Fix 2: 2x default
+    throughput: 400        # Fix 2: 3.2x default (125 → 400 MB/s)
 ```
 
 ### Fix 2: High-Throughput gp3
@@ -680,4 +677,4 @@ Default gp3 throughput is 125 MB/s. A 70GB model at 125 MB/s = ~9 min for the di
 
 ### Snapshot Refresh
 
-Re-run `create-model-snapshot.sh` when adding new models or updating Ollama. Create new snapshot → update `snapshotID` in EC2NodeClass → Karpenter uses it for next node launch. Recommend monthly refresh.
+Re-run `create-model-snapshot.sh` when adding new models or updating Ollama. Create new snapshot → update `snapshotID` in the PersistentVolume → Karpenter uses the updated PV for the next pod launch. Recommend monthly refresh.
