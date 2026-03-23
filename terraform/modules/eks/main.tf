@@ -28,7 +28,7 @@ resource "aws_eks_cluster" "main" {
   # GPU nodes only provision when a pod requests nvidia.com/gpu resources.
   compute_config {
     enabled       = true
-    node_pools    = ["general-purpose", "system"]
+    node_pools    = []  # Built-in pools disabled — custom NodePools (system + GPU) handle all nodes
     node_role_arn = var.node_role_arn
   }
 

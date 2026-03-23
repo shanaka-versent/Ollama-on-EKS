@@ -1,0 +1,25 @@
+# NodeClass for System Nodes (EKS Auto Mode)
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# EKS Auto Mode NodeClass for system workloads (ArgoCD, Prometheus, Istio,
+# Open WebUI, cert-manager, CoreDNS). Lightweight ephemeral storage — no
+# model weights or large data on these nodes.
+apiVersion: eks.amazonaws.com/v1
+kind: NodeClass
+metadata:
+  name: system
+spec:
+  # IAM role for system nodes (same role as GPU nodes, managed by EKS Auto Mode)
+  role: role-eks-node-ollama-dev
+  # Subnets — same as GPU NodeClass
+  subnetSelectorTerms:
+    - id: subnet-04a7086952eb4ddd3
+    - id: subnet-0053c07d159b9c414
+    - id: subnet-00e6d2e08c5abf256
+    - id: subnet-0344b3491c45c1943
+  # Security group — same as GPU NodeClass
+  securityGroupSelectorTerms:
+    - id: sg-07e61b81472b451d9
+  # Ephemeral storage — 30Gi is enough for system workloads (no model weights)
+  ephemeralStorage:
+    size: 30Gi

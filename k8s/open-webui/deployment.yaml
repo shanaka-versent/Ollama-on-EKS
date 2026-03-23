@@ -30,10 +30,6 @@ spec:
         app: open-webui
     spec:
       # Run on system nodes (no GPU needed)
-      tolerations:
-        - key: CriticalAddonsOnly
-          operator: Exists
-          effect: NoSchedule
       nodeSelector:
         kubernetes.io/arch: amd64
       containers:

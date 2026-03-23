@@ -1,0 +1,26 @@
+# Wave 1: System + GPU NodePools
+# Deploys custom Karpenter NodePools and NodeClasses for system (t3.large on-demand)
+# and GPU (g5 spot) workloads. Replaces built-in "general-purpose" and "system" pools.
+# Must run early (wave 1) so nodes are available before workloads in wave 2+.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nodepools
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/shanaka-versent/Ollama-on-EKS
+    targetRevision: HEAD
+    path: k8s/nodepools
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ApplyOutOfSyncOnly=true

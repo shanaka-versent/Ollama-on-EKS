@@ -11,7 +11,7 @@ A fully private, air-gapped LLM inference platform on AWS EKS. Ollama serves Qwe
 ## Architecture (4 Layers)
 
 Layer 1 — VPC (10.0.0.0/16) with private/public subnets + NAT Gateway.
-Layer 2 — EKS Control Plane + system node group (t3.medium) + GPU node group (g5.12xlarge, 4x A10G). EBS CSI Driver + AWS LB Controller.
+Layer 2 — EKS Control Plane with Auto Mode enabled. Custom Karpenter NodePools: system pool (t3.large on-demand, x86 only) + GPU pool (g5 spot, on-demand fallback). Built-in pools disabled (`node_pools = []`). EBS CSI Driver + AWS LB Controller managed by Auto Mode.
 Layer 3 — ArgoCD with wave orchestration (waves -2 to 7). Wave -2: Gateway API CRDs → Wave -1: Istio Base → Wave 0: Istiod + Istio CNI + ztunnel (ambient mesh) → Wave 1: Namespaces → Wave 2: Storage → Wave 3-4: Ollama + Model Loader → Wave 5-6: Gateway + Routes → Wave 7: Open WebUI. NVIDIA device plugin is managed by EKS Auto Mode (NOT deployed via ArgoCD — the ArgoCD app file `05-nvidia-device-plugin.yaml` is intentionally emptied).
 Layer 4 — CloudFront (+ WAF + Shield Standard) → API Gateway (REST API, native API key auth) → VPC Link → Internal NLB → Istio Gateway (mTLS) → Ollama Pod.
 
@@ -117,12 +117,14 @@ Switch with: `./switch-model.sh use 3` (flagship) or `./switch-model.sh use 1` (
 ## Key Design Decisions
 
 - CloudFront + WAF + API Gateway replaces Kong Cloud Gateway — 99% cost reduction ($756/mo → $6/mo), adds DDoS protection, eliminates Transit Gateway dependency
-- EKS Auto Mode recommended over manual Karpenter + NVIDIA device plugin — fewer moving parts, AWS manages node lifecycle
-- 30-min idle window (`consolidateAfter: 30m`) — nodes stay warm through coffee breaks and short meetings, terminate after 30 min idle
+- EKS Auto Mode with custom NodePools — Auto Mode manages Karpenter, NVIDIA plugin, EBS CSI, LB controller. Built-in pools disabled (`node_pools = []`). Custom system pool (t3.large on-demand, x86 only) and GPU pool (g5 spot with on-demand fallback) give full control over instance types and cost
+- System nodes on-demand only — CoreDNS, Istio, Prometheus, ArgoCD cannot tolerate spot interruptions (full cluster outage). GPU nodes use spot (inference tolerates 2-3 min interruptions). `GPUOnDemandFallback` alert fires if GPU falls back to on-demand
+- 30-min idle window (`consolidateAfter: 30m`) for GPU — nodes stay warm through coffee breaks, terminate after 30 min idle. System nodes use 5-min consolidation (`WhenEmptyOrUnderutilized`)
+- EKS Auto Mode NodeClass requires explicit `role` field and subnet/SG IDs (tag-based discovery not supported)
 - EBS snapshots for model weights — pre-loaded models on disk, no internet needed for model loading (air-gap compliant), cold start ~3 min instead of 15-25 min
 - High-throughput gp3 — 400 MB/s + 6000 IOPS for fast model loading from snapshot
 - Observability — Prometheus + DCGM Exporter in-cluster, remote-write to AMP; AWS Managed Grafana (AMG) via IAM Identity Center SSO for all dashboards including FinOps
-- Spot with on-demand fallback — Karpenter tries spot first, auto-falls back to on-demand
+- GPU spot with on-demand fallback — Karpenter tries spot first for GPU nodes, auto-falls back to on-demand
 - Dual-mode pipeline — two separate stacks (deploy one or the other), both maintaining data sovereignty (see below)
 - Gateway API pattern with CloudFront VPC Origins — the Istio Gateway creates an internal NLB, and CloudFront connects privately via VPC Origins. This is the core reason for the Gateway API pattern: one internal NLB serves all traffic (Ollama API, Open WebUI) with path-based HTTPRoutes, and CloudFront accesses it without exposing any load balancer to the internet
 - Cognito authentication for Open WebUI — Cognito User Pool with TOTP MFA, OAuth/OIDC, and admin-approved signups. All user management via Cognito Console. Grafana auth is via AMG SSO (IAM Identity Center)
@@ -153,7 +155,7 @@ The orchestrator is a separate product built on top of the Ollama-on-EKS infrast
 
 Terraform modules: `terraform/modules/` — vpc, iam, eks, argocd, lb-controller, observability (IMPLEMENTED), api-gateway (IMPLEMENTED, with origin lockdown), cdn-waf (IMPLEMENTED, with origin lockdown), cert-manager (IMPLEMENTED), bedrock-integration (IMPLEMENTED, Stack B only), managed-grafana (IMPLEMENTED — AMG + AMP, SSO via IAM Identity Center), cognito (IMPLEMENTED — Open WebUI Cognito User Pool + OAuth/OIDC), api-key-portal (IMPLEMENTED — self-service API key management with Cognito auth). Each module follows the pattern: `main.tf`, `variables.tf`, `outputs.tf`, `versions.tf`.
 
-K8s manifests: `k8s/ollama/` — deployment.yaml (pinned to v0.18.2), service.yaml (ClusterIP :11434), networkpolicy.yaml (air-gap enforced). Plus: `k8s/model-loader/`, `k8s/gateway.yaml`, `k8s/httproutes.yaml`, `k8s/monitoring-networkpolicy.yaml` (IMPLEMENTED), `k8s/nodepools/` (IMPLEMENTED — GPU NodePool `karpenter.sh/v1` + NodeClass `eks.amazonaws.com/v1` for EKS Auto Mode), `k8s/open-webui/` (IMPLEMENTED — Cognito auth, model locked to admins), `k8s/cert-manager/`, `k8s/namespaces.yaml`.
+K8s manifests: `k8s/ollama/` — deployment.yaml (pinned to v0.18.2), service.yaml (ClusterIP :11434), networkpolicy.yaml (air-gap enforced). Plus: `k8s/model-loader/`, `k8s/gateway.yaml`, `k8s/httproutes.yaml`, `k8s/monitoring-networkpolicy.yaml` (IMPLEMENTED), `k8s/nodepools/` (IMPLEMENTED — system NodePool `t3.large on-demand` + GPU NodePool `g5 spot` + NodeClasses for both, all `karpenter.sh/v1` + `eks.amazonaws.com/v1` APIs), `k8s/open-webui/` (IMPLEMENTED — Cognito auth, model locked to admins), `k8s/cert-manager/`, `k8s/namespaces.yaml`.
 
 ArgoCD: `argocd/apps/` — wave-based Application manifests (files 00-12, waves -2 to 7). Wave -2: Gateway API CRDs, Wave -1: Istio Base, Wave 0: Istiod + CNI + ztunnel, Wave 1: Namespaces, Wave 2: Storage, Wave 3: Ollama, Wave 4: Model Loader, Wave 5: Gateway, Wave 6: HTTPRoutes, Wave 7: Open WebUI. File `05-nvidia-device-plugin.yaml` is intentionally emptied (comments only) — EKS Auto Mode manages NVIDIA plugin.
 
@@ -249,33 +251,43 @@ Token generation: flagship produces 30-50 tok/s. A 500-token response takes ~10-
 
 ## Cost Summary
 
-### DEV Phase (current — Tier 1 fallback, g5.xlarge spot)
+### Idle Cluster (no GPU, system nodes only)
 
 | Component | Monthly Cost |
 |-----------|-------------|
-| GPU compute (fallback, 8hrs/day weekdays, spot) | ~$56 |
-| 30-min idle window overhead | ~$3 |
-| EBS snapshot storage (200GB) | ~$10 |
-| gp3 throughput upgrade (400 MB/s) | ~$4 |
+| System nodes (1x t3.large on-demand, always-on) | ~$60 |
 | EKS control plane | $73 |
 | CloudFront + WAF + API Gateway | ~$6 |
 | AWS Managed Grafana + AMP | ~$9-14 |
-| **Total (DEV)** | **~$166/mo** |
+| **Total (idle)** | **~$152/mo** |
+
+### DEV Phase (current — Tier 1 fallback, g5.2xlarge spot)
+
+| Component | Monthly Cost |
+|-----------|-------------|
+| System nodes (1x t3.large on-demand) | ~$60 |
+| GPU compute (fallback, 8hrs/day weekdays, spot) | ~$56 |
+| 30-min idle window overhead | ~$3 |
+| EBS storage (200GB gp3) | ~$14 |
+| EKS control plane | $73 |
+| CloudFront + WAF + API Gateway | ~$6 |
+| AWS Managed Grafana + AMP | ~$9-14 |
+| **Total (DEV)** | **~$226/mo** |
 
 ### PROD Phase (Tier 3 flagship, g5.12xlarge spot)
 
 | Component | Monthly Cost |
 |-----------|-------------|
+| System nodes (1-2x t3.large on-demand) | ~$60-120 |
 | GPU compute (flagship, 8hrs/day weekdays, spot) | ~$304 |
 | 30-min idle window overhead | ~$16 |
-| EBS snapshot storage (200GB) | ~$10 |
-| gp3 throughput upgrade (400 MB/s) | ~$4 |
+| EBS storage (200GB gp3) | ~$14 |
 | EKS control plane | $73 |
 | CloudFront + WAF + API Gateway | ~$6 |
 | AWS Managed Grafana + AMP | ~$9-14 |
-| **Total (PROD)** | **~$427/mo** |
+| **Total (PROD)** | **~$486/mo** |
 
-Down from $4,155/mo (24/7 on-demand + Kong) — 90% reduction. DEV phase runs at ~$166/mo.
+Down from $4,155/mo (24/7 on-demand + Kong) — 90%+ reduction.
 
 ## Working Conventions
 
@@ -286,7 +298,7 @@ Down from $4,155/mo (24/7 on-demand + Kong) — 90% reduction. DEV phase runs at
 - Branch strategy — create feature branches for each sprint, PR to main with Terraform plan output
 - Image tags — always pin to specific version + digest. Never use `:latest`
 - Region — `ap-southeast-2` (Sydney) throughout. All resources in this region
-- Cluster name — `ollama-eks`
+- Cluster name — `eks-ollama-dev`
 - Naming convention — resources prefixed with `ollama-eks-` or `ollama-` for easy identification
 
 ### Provisioning Order (must be followed for all changes)
@@ -294,7 +306,7 @@ Down from $4,155/mo (24/7 on-demand + Kong) — 90% reduction. DEV phase runs at
 Changes must respect the layered dependency chain. Never deploy an upper layer before its dependencies:
 
 1. **Cloud Foundations** — VPC, IAM, S3 backend (Terraform)
-2. **EKS Cluster** — Control plane, system node group, GPU node pool (Terraform)
+2. **EKS Cluster** — Control plane with Auto Mode, custom NodePools (system + GPU) via ArgoCD (Terraform)
 3. **Platform Services** — ArgoCD, LB Controller, cert-manager, observability (Terraform)
 4. **Edge Security** — API Gateway, CDN-WAF (Terraform — depends on EKS for NLB)
 5. **K8s Infrastructure** — Gateway API CRDs, Istio (base, istiod, CNI, ztunnel) (ArgoCD waves -2 to 0). NVIDIA device plugin is NOT deployed here — managed by EKS Auto Mode
