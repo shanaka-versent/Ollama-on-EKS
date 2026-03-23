@@ -962,42 +962,72 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 </tr>
 </tbody>
 </table>
-<p><strong>Alert Rules (6 configured):</strong></p>
+<p><strong>Alert Rules (8 configured):</strong></p>
 <table>
 <thead>
 <tr>
 <th>Alert</th>
 <th>Threshold</th>
+<th>Notification</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>GPU temperature</td>
-<td>&gt; 85°C</td>
+<td>GPU temperature high</td>
+<td>&gt; 85°C for 5 min</td>
+<td>SNS warning</td>
 </tr>
 <tr>
-<td>GPU memory usage</td>
-<td>&gt; 90%</td>
+<td>GPU memory critical</td>
+<td>&gt; 95% for 2 min</td>
+<td>SNS critical</td>
+</tr>
+<tr>
+<td>GPU memory high</td>
+<td>&gt; 85% for 5 min</td>
+<td>SNS warning</td>
 </tr>
 <tr>
 <td>Ollama pod restarts</td>
-<td>Any restart</td>
+<td>&gt; 2 restarts/hr</td>
+<td>SNS warning</td>
 </tr>
 <tr>
-<td>Node not ready</td>
-<td>Node leaves Ready state</td>
+<td>GPU pod stuck pending</td>
+<td>Pending &gt; 5 min (spot unavailable)</td>
+<td>SNS critical</td>
 </tr>
 <tr>
-<td>High API error rate</td>
-<td>Elevated 5xx responses</td>
+<td>GPU on-demand fallback</td>
+<td>GPU node using on-demand pricing</td>
+<td>SNS warning</td>
 </tr>
 <tr>
-<td>PV usage</td>
-<td>&gt; 80% capacity</td>
+<td>GPU spot interruption</td>
+<td>Spot instance reclaimed by AWS</td>
+<td>SNS warning</td>
+</tr>
+<tr>
+<td>Karpenter provisioning failed</td>
+<td>Failed to provision GPU node</td>
+<td>SNS critical</td>
 </tr>
 </tbody>
 </table>
+<p><strong>Alert Notifications (Alertmanager → SNS → Email):</strong></p>
+<p>Set the <code>alert_email</code> Terraform variable to enable alert delivery. Alertmanager routes critical alerts (spot unavailable, provisioning failures) with 10s group delay and 30-60 min repeat, and warning alerts (on-demand fallback, spot interruption) with 1-min group delay and 2-hr repeat.</p>
+<pre class="highlight"><code class="language-bash"># In terraform.tfvars:
+alert_email = &quot;your-email@example.com&quot;
+
+# After terraform apply, confirm the SNS subscription email from AWS
+</code></pre>
+
 <p>The monitoring namespace has its own air-gapped NetworkPolicy (<code>k8s/monitoring-networkpolicy.yaml</code>). Prometheus has HTTPS egress for AMP remote write and STS token exchange.</p>
+<p><strong>AMG Data Source + Dashboard Setup:</strong></p>
+<p>After the first <code>terraform apply</code>, run the AMG setup script to configure data sources (AMP + CloudWatch) and import all 4 dashboards:</p>
+<pre class="highlight"><code class="language-bash">./scripts/setup-amg.sh
+</code></pre>
+
 <h3 id="finops-showback-dashboard">FinOps Showback Dashboard</h3>
 <p>The FinOps Showback dashboard in AMG provides per-API-key cost attribution for internal showback. It combines API Gateway metrics from CloudWatch with GPU metrics from AMP (Prometheus).</p>
 <p>The dashboard is structured so you see the <strong>total cost at a glance</strong>, then drill into the breakdown:</p>
@@ -1227,6 +1257,9 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 <p>Token generation: flagship produces 30-50 tok/s. A 500-token response takes ~10-17s.</p>
 <h3 id="auto-scale-to-zero-keda">Auto-Scale-to-Zero (KEDA)</h3>
 <p>KEDA monitors container CPU usage via Prometheus. When no inference activity is detected for 15 minutes, KEDA scales the Ollama deployment to 0 replicas. Karpenter then detects the empty GPU node and terminates it after 10 minutes. Total time from last request to GPU billing stop: ~25 minutes.</p>
+<blockquote>
+<p><strong>ArgoCD compatibility:</strong> The Ollama ArgoCD app uses <code>ignoreDifferences</code> on <code>/spec/replicas</code> so ArgoCD's <code>selfHeal</code> doesn't fight KEDA's scaling. Without this, ArgoCD would constantly reset replicas to 1.</p>
+</blockquote>
 <table>
 <thead>
 <tr>
@@ -1650,6 +1683,7 @@ scripts/
   01-setup.sh                      # Post-terraform cluster setup
   04-post-setup.sh                 # NLB discovery + endpoint verification
   scale-up.sh / scale-down.sh      # GPU node scaling helpers
+  setup-amg.sh                     # AMG data source + dashboard setup (run once after first deploy)
   test-ollama-stack.sh             # Integration tests
 
 .github/workflows/

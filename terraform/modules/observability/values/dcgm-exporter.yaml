@@ -14,14 +14,14 @@ serviceMonitor:
   namespace: monitoring
   additionalLabels: {}
 
-# Resources — DCGM Exporter is lightweight
+# Resources — DCGM needs ~300-400Mi on A10G GPUs
 resources:
   requests:
     cpu: "100m"
-    memory: "128Mi"
-  limits:
-    cpu: "200m"
     memory: "256Mi"
+  limits:
+    cpu: "300m"
+    memory: "512Mi"
 
 # Metrics to collect — keep the default set which includes:
 # DCGM_FI_DEV_GPU_UTIL      — SM utilisation %

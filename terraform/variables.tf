@@ -288,6 +288,12 @@ variable "prometheus_storage_size" {
   default     = "50Gi"
 }
 
+variable "alert_email" {
+  description = "Email address for alert notifications (spot interruption, on-demand fallback, GPU termination) via SNS"
+  type        = string
+  default     = ""
+}
+
 # ==============================================================================
 # TAGS
 # ==============================================================================

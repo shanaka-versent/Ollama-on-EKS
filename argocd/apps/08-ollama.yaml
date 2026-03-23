@@ -14,6 +14,13 @@ metadata:
     argocd.argoproj.io/sync-wave: "3"
 spec:
   project: default
+  # Ignore replicas — KEDA manages scaling (including scale-to-zero).
+  # Without this, ArgoCD selfHeal resets replicas to 1, fighting KEDA.
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas
   source:
     repoURL: https://github.com/shanaka-versent/Ollama-on-EKS
     targetRevision: HEAD
