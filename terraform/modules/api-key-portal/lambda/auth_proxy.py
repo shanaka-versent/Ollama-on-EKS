@@ -89,6 +89,18 @@ def handler(event, context):
 
 
 # ==============================================================================
+# REQUEST BODY PARSER
+# ==============================================================================
+
+def parse_body(event):
+    """Parse request body, handling API Gateway base64 encoding."""
+    raw_body = event.get('body', '{}')
+    if event.get('isBase64Encoded') and raw_body:
+        raw_body = base64.b64decode(raw_body).decode('utf-8')
+    return json.loads(raw_body or '{}')
+
+
+# ==============================================================================
 # COGNITO SECRET HASH HELPER
 # ==============================================================================
 
@@ -118,11 +130,7 @@ def handle_login(event):
     the OAuth token exchange that gives us the Open WebUI session.
     """
     try:
-        raw_body = event.get('body', '{}')
-        # API Gateway may base64-encode the body
-        if event.get('isBase64Encoded') and raw_body:
-            raw_body = base64.b64decode(raw_body).decode('utf-8')
-        body = json.loads(raw_body or '{}')
+        body = parse_body(event)
     except (json.JSONDecodeError, TypeError) as e:
         print(f'Body parse error: {e}')
         return api_response(400, {'error': 'Invalid request body'})
@@ -371,7 +379,7 @@ def _initiate_first_time_setup(email, password):
 def handle_mfa(event):
     """Handle MFA verification with TOTP code."""
     try:
-        body = json.loads(event.get('body', '{}'))
+        body = parse_body(event)
     except (json.JSONDecodeError, TypeError):
         return api_response(400, {'error': 'Invalid request body'})
 
@@ -444,7 +452,10 @@ def handle_mfa(event):
 def handle_change_password(event):
     """Handle NEW_PASSWORD_REQUIRED challenge via Cognito API."""
     try:
-        body = json.loads(event.get('body', '{}'))
+        raw_body = event.get('body', '{}')
+        if event.get('isBase64Encoded') and raw_body:
+            raw_body = base64.b64decode(raw_body).decode('utf-8')
+        body = json.loads(raw_body or '{}')
     except (json.JSONDecodeError, TypeError):
         return api_response(400, {'error': 'Invalid request body'})
 
@@ -462,9 +473,13 @@ def handle_change_password(event):
         return api_response(400, {'error': 'Session expired. Please sign in again.'})
 
     try:
+        # Use the name from the request body, or default to the email prefix
+        name = body.get('name', '').strip() or email.split('@')[0]
+
         challenge_responses = {
             'USERNAME': email,
             'NEW_PASSWORD': new_password,
+            'userAttributes.name': name,
         }
         secret_hash = compute_secret_hash(email)
         if secret_hash:
@@ -561,7 +576,7 @@ def _initiate_mfa_setup(email, session):
 def handle_setup_mfa(event):
     """Verify TOTP during first-time MFA setup via Cognito API."""
     try:
-        body = json.loads(event.get('body', '{}'))
+        body = parse_body(event)
     except (json.JSONDecodeError, TypeError):
         return api_response(400, {'error': 'Invalid request body'})
 
@@ -630,7 +645,7 @@ def handle_setup_mfa(event):
 def handle_forgot_password(event):
     """Initiate forgot password flow via Cognito API."""
     try:
-        body = json.loads(event.get('body', '{}'))
+        body = parse_body(event)
     except (json.JSONDecodeError, TypeError):
         return api_response(400, {'error': 'Invalid request body'})
 
@@ -675,7 +690,7 @@ def handle_forgot_password(event):
 def handle_confirm_reset(event):
     """Confirm forgot password with verification code and new password."""
     try:
-        body = json.loads(event.get('body', '{}'))
+        body = parse_body(event)
     except (json.JSONDecodeError, TypeError):
         return api_response(400, {'error': 'Invalid request body'})
 
