@@ -962,6 +962,9 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 </tr>
 </tbody>
 </table>
+<blockquote>
+<p><strong>Note:</strong> EKS Auto Mode runs Karpenter on the control plane — native <code>karpenter_*</code> metrics are unavailable. The Karpenter dashboard uses kube-state-metrics to track GPU node count, Ollama scaling events (KEDA), and GPU node hours.</p>
+</blockquote>
 <p><strong>Alert Rules (8 configured):</strong></p>
 <table>
 <thead>

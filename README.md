@@ -516,6 +516,8 @@ Prometheus and DCGM Exporter run in-cluster, remote-writing all metrics to AWS M
 | AMP (AWS Managed Prometheus) | Managed metrics store — receives remote-write from in-cluster Prometheus |
 | AMG (AWS Managed Grafana) | 4 dashboards: GPU metrics, Ollama API, Karpenter lifecycle, FinOps showback. SSO login |
 
+> **Note:** EKS Auto Mode runs Karpenter on the control plane — native `karpenter_*` metrics are unavailable. The Karpenter dashboard uses kube-state-metrics to track GPU node count, Ollama scaling events (KEDA), and GPU node hours.
+
 **Alert Rules (8 configured):**
 
 | Alert | Threshold | Notification |
