@@ -50,14 +50,14 @@ spec:
         - key: eks.amazonaws.com/instance-gpu-manufacturer
           operator: In
           values: ["nvidia"]
-        # Spot preferred, on-demand fallback — Karpenter tries spot first.
-        # If spot unavailable (quota pending or capacity), falls back to on-demand.
-        # GPUOnDemandFallback alert fires via Prometheus → SNS when on-demand is used.
+        # Spot ONLY — no on-demand fallback. Ensures cost control.
+        # If spot capacity is unavailable, pod stays Pending until capacity returns.
+        # WARNING: To temporarily allow on-demand (e.g., spot capacity issues),
+        #   add "on-demand" to values below. Monitor GPUOnDemandFallback alert.
         - key: karpenter.sh/capacity-type
           operator: In
           values:
             - spot
-            - on-demand
         # Sydney region AZs
         - key: topology.kubernetes.io/zone
           operator: In
