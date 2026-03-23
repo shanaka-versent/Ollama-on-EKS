@@ -291,7 +291,7 @@
                     EBS["EBS gp3 200GB\n6000 IOPS · 400 MB/s\nSnapshot Pre-loaded"]
                     WEBUI["Open WebUI v0.8.10\nCognito Auth (MFA)"]
                     COG["Cognito User Pool\nOAuth/OIDC + TOTP MFA"]
-                    MON["Prometheus + Grafana\nDCGM Exporter"]
+                    MON["Prometheus + DCGM\n→ AMP → AMG (SSO)"]
                 end
             end
         end
@@ -323,7 +323,8 @@
 
 <p><strong>Traffic flows:</strong></p>
 <pre class="highlight"><code>API:     Client → CloudFront (WAF) → API Gateway (x-api-key) → VPC Link → Internal NLB → Istio → Ollama
-Web UIs: Client → CloudFront (WAF) → VPC Origin (private) → Internal NLB → Istio → Open WebUI / Grafana
+Web UI:  Client → CloudFront (WAF) → VPC Origin (private) → Internal NLB → Istio → Open WebUI
+Grafana: Admin → AWS Managed Grafana (AMG) URL → IAM Identity Center SSO
 </code></pre>
 
 <p>CloudFront connects to the internal NLB via <strong>VPC Origins</strong> — private connectivity, no internet-facing load balancer needed. All traffic stays on the AWS backbone.</p>
@@ -477,8 +478,8 @@ Web UIs: Client → CloudFront (WAF) → VPC Origin (private) → Internal NLB �
 <td>Fast model loading from snapshot — critical for reasonable cold start times</td>
 </tr>
 <tr>
-<td>Self-managed observability</td>
-<td>Prometheus + Grafana + DCGM Exporter, all air-gapped (no AMP/AMG dependency)</td>
+<td>AWS Managed Grafana (AMG)</td>
+<td>Prometheus + DCGM Exporter in-cluster → AMP → AMG (SSO via IAM Identity Center). All dashboards including FinOps</td>
 </tr>
 <tr>
 <td>Spot with on-demand fallback</td>
@@ -732,7 +733,7 @@ terraform apply
 <pre class="highlight"><code class="language-bash">./scripts/create-model-snapshot.sh
 </code></pre>
 
-<p>This launches a temporary GPU instance, pulls all 3 model tiers, snapshots the volume, and terminates the instance. Update <code>k8s/nodepools/gpu-ec2nodeclass.yaml</code> with the output snapshot ID.</p>
+<p>This launches a temporary GPU instance, pulls all 3 model tiers, snapshots the volume, and terminates the instance. Model weights are attached via PersistentVolume backed by the EBS snapshot.</p>
 <p><strong>Verify before continuing:</strong></p>
 <pre class="highlight"><code class="language-bash"># All ArgoCD apps should be Synced / Healthy
 kubectl get applications -n argocd
@@ -873,31 +874,32 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 </tbody>
 </table>
 <p>To change the locked model for regular users, update <code>MODEL_FILTER_LIST</code> in <code>k8s/open-webui/deployment.yaml</code> and redeploy. Admins can also switch the cluster-wide default via <code>./switch-model.sh use &lt;tier&gt;</code>.</p>
-<h3 id="observability-prometheus-grafana">Observability (Prometheus + Grafana)</h3>
-<p>Self-managed, air-gapped monitoring. GPU metrics stay in-cluster alongside the workloads they monitor. Grafana is accessible via CloudFront with Cognito authentication (separate user pool from Open WebUI).</p>
-<p><strong>Access URL:</strong> <code>https://&lt;CLOUDFRONT_DOMAIN&gt;/grafana/</code> — authenticated via Cognito (TOTP MFA required)</p>
-<blockquote>
-<p><strong>Note:</strong> AWS Managed Grafana (AMG) is provisioned but SSO access is pending. In-cluster Grafana with Cognito is a temporary stopgap.</p>
-</blockquote>
+<h3 id="observability-prometheus-amp-aws-managed-grafana">Observability (Prometheus → AMP → AWS Managed Grafana)</h3>
+<p>Prometheus and DCGM Exporter run in-cluster, remote-writing all metrics to AWS Managed Prometheus (AMP). AWS Managed Grafana (AMG) reads from AMP and CloudWatch natively — no in-cluster Grafana pod.</p>
+<p><strong>Access URL:</strong> AMG workspace URL (from <code>terraform output managed_grafana_url</code>) — authenticated via IAM Identity Center SSO.</p>
 <table>
 <thead>
 <tr>
 <th>Component</th>
-<th>What It Monitors</th>
+<th>What It Does</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td>Prometheus (kube-prometheus-stack)</td>
-<td>Cluster-wide metrics collection and alerting</td>
-</tr>
-<tr>
-<td>Grafana (4 dashboards)</td>
-<td>GPU metrics, Ollama API metrics, Karpenter node lifecycle, FinOps showback</td>
+<td>Cluster-wide metrics collection, alerting, remote-write to AMP</td>
 </tr>
 <tr>
 <td>DCGM Exporter (DaemonSet)</td>
 <td>NVIDIA GPU metrics — temperature, utilisation, memory</td>
+</tr>
+<tr>
+<td>AMP (AWS Managed Prometheus)</td>
+<td>Managed metrics store — receives remote-write from in-cluster Prometheus</td>
+</tr>
+<tr>
+<td>AMG (AWS Managed Grafana)</td>
+<td>4 dashboards: GPU metrics, Ollama API, Karpenter lifecycle, FinOps showback. SSO login</td>
 </tr>
 </tbody>
 </table>
@@ -936,13 +938,9 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 </tr>
 </tbody>
 </table>
-<p>The monitoring namespace has its own air-gapped NetworkPolicy (<code>k8s/monitoring-networkpolicy.yaml</code>). Grafana has a scoped HTTPS exception for CloudWatch API access (FinOps dashboard).</p>
+<p>The monitoring namespace has its own air-gapped NetworkPolicy (<code>k8s/monitoring-networkpolicy.yaml</code>). Prometheus has HTTPS egress for AMP remote write and STS token exchange.</p>
 <h3 id="finops-showback-dashboard">FinOps Showback Dashboard</h3>
-<p>A 4th Grafana dashboard (<code>FinOps Showback Report</code>) provides per-API-key cost attribution for internal showback. It combines API Gateway metrics from CloudWatch with GPU metrics from Prometheus.</p>
-<pre class="highlight"><code class="language-bash">kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
-# Open http://localhost:3000 → Dashboards → FinOps Showback Report
-</code></pre>
-
+<p>The FinOps Showback dashboard in AMG provides per-API-key cost attribution for internal showback. It combines API Gateway metrics from CloudWatch with GPU metrics from AMP (Prometheus).</p>
 <p>The dashboard is structured so you see the <strong>total cost at a glance</strong>, then drill into the breakdown:</p>
 <table>
 <thead>
@@ -982,7 +980,7 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 </ul>
 <p>Dashboard variables let you adjust the GPU spot rate ($0.35/hr for g5.xlarge, $1.90/hr for g5.12xlarge) and shared infra monthly cost ($109 default).</p>
 <blockquote>
-<p><strong>Prerequisite:</strong> Grafana uses IRSA to access CloudWatch (role: <code>ollama-eks-grafana-cloudwatch</code>). This is auto-provisioned by the observability Terraform module.</p>
+<p><strong>Note:</strong> AMG reads CloudWatch natively via its IAM role — no in-cluster IRSA needed. Dashboard JSON files are in <code>terraform/modules/observability/dashboards/</code> — import into AMG workspace via the UI or API.</p>
 </blockquote>
 <hr />
 <h2 id="cost-management">Cost Management</h2>
@@ -1059,12 +1057,12 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 <td>~$6</td>
 </tr>
 <tr>
-<td>AWS Managed Grafana + AMP (optional)</td>
+<td>AWS Managed Grafana + AMP</td>
 <td>~$9-14</td>
 </tr>
 <tr>
 <td><strong>Total</strong></td>
-<td><strong>~$413/mo</strong> (or ~$427/mo with AMG)</td>
+<td><strong>~$427/mo</strong></td>
 </tr>
 </tbody>
 </table>
@@ -1132,8 +1130,8 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 </tr>
 <tr>
 <td>0</td>
-<td><code>istiod</code>, <code>istio-cni</code>, <code>ztunnel</code>, <code>nvidia-device-plugin</code></td>
-<td>Ambient mesh + GPU plugin</td>
+<td><code>istiod</code>, <code>istio-cni</code>, <code>ztunnel</code></td>
+<td>Ambient mesh (NVIDIA plugin managed by EKS Auto Mode)</td>
 </tr>
 <tr>
 <td>1</td>
@@ -1176,7 +1174,6 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
     subgraph W0["Wave -2 to 0"]
         CRD["Gateway API CRDs"]
         ISTIO["Istio Base + Istiod\nCNI + ztunnel"]
-        NV["NVIDIA Device Plugin"]
     end
 
     subgraph W1["Waves 1-2"]
@@ -1195,7 +1192,7 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
         WUI["Open WebUI"]
     end
 
-    CRD --> ISTIO --> NV --> NS --> ST --> OLM --> ML --> GW --> HR --> WUI
+    CRD --> ISTIO --> NS --> ST --> OLM --> ML --> GW --> HR --> WUI
 
     style W0 fill:#e8eaf6,stroke:#3f51b5,stroke-width:2px
     style W1 fill:#e0f7fa,stroke:#00bcd4,stroke-width:2px
@@ -1430,19 +1427,18 @@ aws apigateway update-api-key --api-key $OLD_KEY_ID --patch-operations op=replac
     eks/                           # EKS cluster, node groups, addons
     argocd/                        # ArgoCD Helm + root Application
     lb-controller/                 # AWS Load Balancer Controller
-    observability/                 # Prometheus + Grafana + DCGM Exporter
+    observability/                 # Prometheus + DCGM Exporter (remote-write to AMP)
     api-gateway/                   # REST API Gateway + VPC Link + API Keys + origin lockdown
     cdn-waf/                       # CloudFront + WAFv2 (5 rules) + origin lockdown header
     cert-manager/                  # cert-manager Helm release
     cognito/                       # Cognito User Pool for Open WebUI (OAuth, MFA, groups)
-    grafana-cognito/               # Cognito User Pool for Grafana (temporary until AMG SSO)
-    managed-grafana/               # Optional: AMG + AMP (replaces in-cluster Grafana)
+    managed-grafana/               # AMG + AMP (all dashboards via IAM Identity Center SSO)
     bedrock-integration/           # Stack B: VPC endpoint + IRSA for Bedrock
 
 k8s/
   ollama/                          # Deployment, Service, NetworkPolicy (air-gapped)
   model-loader/                    # Job to pull models
-  nodepools/                       # Karpenter NodePool + EC2NodeClass
+  nodepools/                       # EKS Auto Mode NodePool (karpenter.sh/v1) + NodeClass (eks.amazonaws.com/v1)
   cert-manager/                    # ClusterIssuer + Certificate
   open-webui/                      # Open WebUI — Cognito auth, model locked to admins
   gateway.yaml                     # Istio Gateway
@@ -1514,7 +1510,7 @@ switch-model.sh                    # Model tier switching (repo root)
 <tr>
 <td>Cold start slow</td>
 <td>Node provisioning takes &gt;5 min</td>
-<td>Verify EBS snapshot ID in EC2NodeClass, check gp3 throughput settings</td>
+<td>Verify EBS snapshot PV, check NodeClass ephemeralStorage throughput (400 MB/s)</td>
 </tr>
 <tr>
 <td>Spot reclaimed</td>
@@ -1538,8 +1534,7 @@ kubectl logs -n ollama deploy/ollama -f
 # GPU utilisation
 kubectl exec -n ollama deploy/ollama -- nvidia-smi
 
-# Grafana dashboards
-kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
+# Grafana dashboards → use AMG URL from: terraform output managed_grafana_url
 
 # Verify air-gap
 kubectl exec -n ollama deploy/ollama -- curl -s --max-time 5 https://google.com

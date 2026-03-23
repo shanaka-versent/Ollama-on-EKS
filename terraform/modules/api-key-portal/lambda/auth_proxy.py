@@ -5,7 +5,19 @@
 Proxies the full Cognito hosted UI login flow server-side, allowing a custom
 login form to authenticate users without showing Cognito's hosted UI.
 
-Flow:
+Also handles first-time setup (password change + MFA enrollment) and forgot
+password flows via Cognito Admin APIs, so the user NEVER sees the Cognito
+hosted UI.
+
+Endpoints:
+  POST /portal/api/auth/login          — Email + password login
+  POST /portal/api/auth/mfa            — TOTP MFA verification
+  POST /portal/api/auth/change-password — First-time password change (NEW_PASSWORD_REQUIRED)
+  POST /portal/api/auth/setup-mfa      — First-time MFA enrollment (associate + verify TOTP)
+  POST /portal/api/auth/forgot-password — Initiate forgot password (sends code via email)
+  POST /portal/api/auth/confirm-reset  — Confirm forgot password (code + new password)
+
+Flow (normal login):
   1. Client POSTs email + password to /portal/api/auth/login
   2. Lambda starts Open WebUI's OAuth flow (/oauth/oidc/login)
   3. Lambda follows Cognito redirects and submits credentials
@@ -13,22 +25,45 @@ Flow:
   5. Client POSTs TOTP code to /portal/api/auth/mfa
   6. Lambda completes MFA and OAuth callback
   7. Lambda returns the Open WebUI session token via Set-Cookie
+
+Flow (first-time login):
+  1. Client POSTs email + password → Lambda detects NEW_PASSWORD_REQUIRED
+  2. Returns {status: 'new_password_required', session: ...}
+  3. Client POSTs new password to /portal/api/auth/change-password
+  4. Lambda responds to challenge → detects MFA_SETUP
+  5. Returns {status: 'mfa_setup_required', secret: ..., qr_uri: ..., session: ...}
+  6. Client shows QR code, user scans with authenticator app
+  7. Client POSTs TOTP code to /portal/api/auth/setup-mfa
+  8. Lambda verifies TOTP and completes setup → redirects to normal login
+
+Flow (forgot password):
+  1. Client POSTs email to /portal/api/auth/forgot-password
+  2. Cognito sends verification code via email
+  3. Client POSTs email + code + new password to /portal/api/auth/confirm-reset
+  4. Password is reset → user can sign in normally
 """
 
 import json
 import os
 import re
 import base64
+import hmac
+import hashlib
 import urllib.request
 import urllib.error
 import urllib.parse
 
 CLOUDFRONT_DOMAIN = os.environ['CLOUDFRONT_DOMAIN']
+USER_POOL_ID = os.environ.get('USER_POOL_ID', '')
+CLIENT_ID = os.environ.get('COGNITO_CLIENT_ID', '')
+CLIENT_SECRET = os.environ.get('COGNITO_CLIENT_SECRET', '')
+REGION = os.environ.get('AWS_REGION', 'ap-southeast-2')
 BASE_URL = f'https://{CLOUDFRONT_DOMAIN}'
+COGNITO_ENDPOINT = f'https://cognito-idp.{REGION}.amazonaws.com/'
 
 
 def handler(event, context):
-    """Route requests to login or MFA handlers."""
+    """Route requests to appropriate handlers."""
     path = event.get('path', '')
     method = event.get('httpMethod', '')
 
@@ -38,13 +73,41 @@ def handler(event, context):
     if method != 'POST':
         return api_response(405, {'error': 'Method not allowed'})
 
-    if path == '/portal/api/auth/login':
-        return handle_login(event)
-    elif path == '/portal/api/auth/mfa':
-        return handle_mfa(event)
-    else:
-        return api_response(404, {'error': 'Not found'})
+    routes = {
+        '/portal/api/auth/login': handle_login,
+        '/portal/api/auth/mfa': handle_mfa,
+        '/portal/api/auth/change-password': handle_change_password,
+        '/portal/api/auth/setup-mfa': handle_setup_mfa,
+        '/portal/api/auth/forgot-password': handle_forgot_password,
+        '/portal/api/auth/confirm-reset': handle_confirm_reset,
+    }
 
+    handler_fn = routes.get(path)
+    if handler_fn:
+        return handler_fn(event)
+    return api_response(404, {'error': 'Not found'})
+
+
+# ==============================================================================
+# COGNITO SECRET HASH HELPER
+# ==============================================================================
+
+def compute_secret_hash(username):
+    """Compute Cognito SECRET_HASH for app clients with a client secret."""
+    if not CLIENT_SECRET:
+        return None
+    msg = username + CLIENT_ID
+    dig = hmac.new(
+        CLIENT_SECRET.encode('utf-8'),
+        msg.encode('utf-8'),
+        hashlib.sha256
+    ).digest()
+    return base64.b64encode(dig).decode()
+
+
+# ==============================================================================
+# LOGIN (via Cognito hosted UI scraping for OAuth flow)
+# ==============================================================================
 
 def handle_login(event):
     """Handle initial login with email + password."""
@@ -117,10 +180,9 @@ def handle_login(event):
 
         # Check for password change required (first-time login)
         if '/newpassword' in redirect_url.lower() or '/changepassword' in redirect_url.lower() or '/confirmpassword' in redirect_url.lower():
-            return api_response(403, {
-                'error': 'initial_setup_required',
-                'message': 'Please complete your initial setup (password change + MFA) by signing in through the setup link below.',
-            })
+            # Instead of redirecting to Cognito hosted UI, use Cognito API
+            # to handle password change in our custom form
+            return _initiate_first_time_setup(email, password)
 
         # Check if MFA is required
         if '/mfa' in redirect_url:
@@ -153,6 +215,63 @@ def handle_login(event):
         traceback.print_exc()
         return api_response(500, {'error': 'Authentication failed. Please try again.'})
 
+
+def _initiate_first_time_setup(email, password):
+    """Use Cognito InitiateAuth API to handle first-time login challenges."""
+    try:
+        auth_params = {
+            'USERNAME': email,
+            'PASSWORD': password,
+        }
+        secret_hash = compute_secret_hash(email)
+        if secret_hash:
+            auth_params['SECRET_HASH'] = secret_hash
+
+        result = cognito_api('InitiateAuth', {
+            'AuthFlow': 'USER_PASSWORD_AUTH',
+            'ClientId': CLIENT_ID,
+            'AuthParameters': auth_params,
+        })
+
+        challenge = result.get('ChallengeName', '')
+        session = result.get('Session', '')
+
+        if challenge == 'NEW_PASSWORD_REQUIRED':
+            state = json.dumps({
+                'session': session,
+                'email': email,
+                'challenge': 'NEW_PASSWORD_REQUIRED',
+            })
+            return api_response(200, {
+                'status': 'new_password_required',
+                'message': 'Please set a new password to continue.',
+                'session': base64.b64encode(state.encode()).decode(),
+            })
+
+        # If no challenge (unlikely for first-time), return generic message
+        return api_response(200, {
+            'status': 'new_password_required',
+            'message': 'Please complete your initial setup.',
+            'session': base64.b64encode(json.dumps({
+                'session': session,
+                'email': email,
+                'challenge': challenge or 'UNKNOWN',
+            }).encode()).decode(),
+        })
+
+    except Exception as e:
+        error_msg = str(e)
+        print(f'First-time setup initiation error: {error_msg}')
+        if 'NotAuthorizedException' in error_msg:
+            return api_response(401, {'error': 'Invalid email or password'})
+        if 'UserNotFoundException' in error_msg:
+            return api_response(401, {'error': 'Invalid email or password'})
+        return api_response(500, {'error': 'Failed to start setup. Please try again.'})
+
+
+# ==============================================================================
+# MFA VERIFICATION (via Cognito hosted UI scraping for OAuth flow)
+# ==============================================================================
 
 def handle_mfa(event):
     """Handle MFA verification with TOTP code."""
@@ -222,6 +341,322 @@ def handle_mfa(event):
         traceback.print_exc()
         return api_response(500, {'error': 'MFA verification failed. Please try again.'})
 
+
+# ==============================================================================
+# FIRST-TIME PASSWORD CHANGE (Cognito API — no hosted UI)
+# ==============================================================================
+
+def handle_change_password(event):
+    """Handle NEW_PASSWORD_REQUIRED challenge via Cognito API."""
+    try:
+        body = json.loads(event.get('body', '{}'))
+    except (json.JSONDecodeError, TypeError):
+        return api_response(400, {'error': 'Invalid request body'})
+
+    new_password = body.get('new_password', '')
+    encoded_state = body.get('session', '')
+
+    if not new_password or not encoded_state:
+        return api_response(400, {'error': 'New password and session are required'})
+
+    try:
+        state = json.loads(base64.b64decode(encoded_state))
+        session = state['session']
+        email = state['email']
+    except (json.JSONDecodeError, KeyError):
+        return api_response(400, {'error': 'Session expired. Please sign in again.'})
+
+    try:
+        challenge_responses = {
+            'USERNAME': email,
+            'NEW_PASSWORD': new_password,
+        }
+        secret_hash = compute_secret_hash(email)
+        if secret_hash:
+            challenge_responses['SECRET_HASH'] = secret_hash
+
+        result = cognito_api('RespondToAuthChallenge', {
+            'ClientId': CLIENT_ID,
+            'ChallengeName': 'NEW_PASSWORD_REQUIRED',
+            'Session': session,
+            'ChallengeResponses': challenge_responses,
+        })
+
+        # Check if next challenge is MFA_SETUP
+        next_challenge = result.get('ChallengeName', '')
+        new_session = result.get('Session', '')
+
+        if next_challenge == 'MFA_SETUP':
+            # Need to set up TOTP MFA
+            return _initiate_mfa_setup(email, new_session)
+
+        if next_challenge == 'SOFTWARE_TOKEN_MFA':
+            # MFA already set up, need to verify
+            new_state = json.dumps({
+                'session': new_session,
+                'email': email,
+                'challenge': 'SOFTWARE_TOKEN_MFA',
+            })
+            return api_response(200, {
+                'status': 'mfa_required',
+                'message': 'Enter the 6-digit code from your authenticator app',
+                'session': base64.b64encode(new_state.encode()).decode(),
+                'use_api_mfa': True,
+            })
+
+        # No more challenges — auth complete (shouldn't happen with MFA required)
+        if result.get('AuthenticationResult'):
+            return api_response(200, {
+                'status': 'setup_complete',
+                'message': 'Password changed successfully. Please sign in.',
+            })
+
+        print(f'Unexpected challenge after password change: {next_challenge}')
+        return api_response(500, {'error': 'Unexpected response. Please try again.'})
+
+    except Exception as e:
+        error_msg = str(e)
+        print(f'Change password error: {error_msg}')
+        if 'InvalidPasswordException' in error_msg:
+            return api_response(400, {
+                'error': 'Password does not meet requirements. Must be 12+ characters with uppercase, lowercase, numbers, and symbols.'
+            })
+        return api_response(500, {'error': 'Failed to change password. Please try again.'})
+
+
+def _initiate_mfa_setup(email, session):
+    """Associate a TOTP software token for MFA setup."""
+    try:
+        result = cognito_api('AssociateSoftwareToken', {
+            'Session': session,
+        })
+
+        secret_code = result.get('SecretCode', '')
+        new_session = result.get('Session', '')
+
+        if not secret_code:
+            return api_response(500, {'error': 'Failed to generate MFA secret'})
+
+        # Generate otpauth URI for QR code
+        qr_uri = f'otpauth://totp/OllamaWebUI:{email}?secret={secret_code}&issuer=OllamaWebUI'
+
+        state = json.dumps({
+            'session': new_session,
+            'email': email,
+            'challenge': 'MFA_SETUP',
+        })
+
+        return api_response(200, {
+            'status': 'mfa_setup_required',
+            'message': 'Scan the QR code with your authenticator app, then enter the 6-digit code.',
+            'secret': secret_code,
+            'qr_uri': qr_uri,
+            'session': base64.b64encode(state.encode()).decode(),
+        })
+
+    except Exception as e:
+        print(f'MFA setup error: {e}')
+        return api_response(500, {'error': 'Failed to start MFA setup. Please try again.'})
+
+
+# ==============================================================================
+# FIRST-TIME MFA ENROLLMENT (Cognito API — no hosted UI)
+# ==============================================================================
+
+def handle_setup_mfa(event):
+    """Verify TOTP during first-time MFA setup via Cognito API."""
+    try:
+        body = json.loads(event.get('body', '{}'))
+    except (json.JSONDecodeError, TypeError):
+        return api_response(400, {'error': 'Invalid request body'})
+
+    totp_code = body.get('totp_code', '').strip()
+    encoded_state = body.get('session', '')
+
+    if not totp_code or not encoded_state:
+        return api_response(400, {'error': 'TOTP code and session are required'})
+
+    if not re.match(r'^\d{6}$', totp_code):
+        return api_response(400, {'error': 'TOTP code must be 6 digits'})
+
+    try:
+        state = json.loads(base64.b64decode(encoded_state))
+        session = state['session']
+        email = state['email']
+    except (json.JSONDecodeError, KeyError):
+        return api_response(400, {'error': 'Session expired. Please sign in again.'})
+
+    try:
+        # Step 1: Verify the software token
+        result = cognito_api('VerifySoftwareToken', {
+            'Session': session,
+            'UserCode': totp_code,
+        })
+
+        status = result.get('Status', '')
+        new_session = result.get('Session', '')
+
+        if status != 'SUCCESS':
+            return api_response(401, {'error': 'Invalid code. Please check your authenticator app and try again.'})
+
+        # Step 2: Complete MFA_SETUP challenge
+        challenge_responses = {
+            'USERNAME': email,
+        }
+        secret_hash = compute_secret_hash(email)
+        if secret_hash:
+            challenge_responses['SECRET_HASH'] = secret_hash
+
+        result = cognito_api('RespondToAuthChallenge', {
+            'ClientId': CLIENT_ID,
+            'ChallengeName': 'MFA_SETUP',
+            'Session': new_session,
+            'ChallengeResponses': challenge_responses,
+        })
+
+        # Setup complete — user should now sign in normally
+        return api_response(200, {
+            'status': 'setup_complete',
+            'message': 'MFA setup complete! You can now sign in.',
+        })
+
+    except Exception as e:
+        error_msg = str(e)
+        print(f'MFA setup verification error: {error_msg}')
+        if 'EnableSoftwareTokenMFAException' in error_msg or 'CodeMismatchException' in error_msg:
+            return api_response(401, {'error': 'Invalid code. Please check your authenticator app and try again.'})
+        return api_response(500, {'error': 'MFA setup failed. Please try again.'})
+
+
+# ==============================================================================
+# FORGOT PASSWORD (Cognito API — no hosted UI)
+# ==============================================================================
+
+def handle_forgot_password(event):
+    """Initiate forgot password flow via Cognito API."""
+    try:
+        body = json.loads(event.get('body', '{}'))
+    except (json.JSONDecodeError, TypeError):
+        return api_response(400, {'error': 'Invalid request body'})
+
+    email = body.get('email', '').strip()
+
+    if not email:
+        return api_response(400, {'error': 'Email is required'})
+
+    try:
+        params = {
+            'ClientId': CLIENT_ID,
+            'Username': email,
+        }
+        secret_hash = compute_secret_hash(email)
+        if secret_hash:
+            params['SecretHash'] = secret_hash
+
+        cognito_api('ForgotPassword', params)
+
+        return api_response(200, {
+            'status': 'code_sent',
+            'message': 'A verification code has been sent to your email.',
+        })
+
+    except Exception as e:
+        error_msg = str(e)
+        print(f'Forgot password error: {error_msg}')
+        # Don't reveal if user exists — always show success
+        if 'UserNotFoundException' in error_msg:
+            return api_response(200, {
+                'status': 'code_sent',
+                'message': 'If an account exists with this email, a verification code has been sent.',
+            })
+        if 'LimitExceededException' in error_msg:
+            return api_response(429, {'error': 'Too many attempts. Please try again later.'})
+        return api_response(200, {
+            'status': 'code_sent',
+            'message': 'If an account exists with this email, a verification code has been sent.',
+        })
+
+
+def handle_confirm_reset(event):
+    """Confirm forgot password with verification code and new password."""
+    try:
+        body = json.loads(event.get('body', '{}'))
+    except (json.JSONDecodeError, TypeError):
+        return api_response(400, {'error': 'Invalid request body'})
+
+    email = body.get('email', '').strip()
+    code = body.get('code', '').strip()
+    new_password = body.get('new_password', '')
+
+    if not email or not code or not new_password:
+        return api_response(400, {'error': 'Email, verification code, and new password are required'})
+
+    try:
+        params = {
+            'ClientId': CLIENT_ID,
+            'Username': email,
+            'ConfirmationCode': code,
+            'Password': new_password,
+        }
+        secret_hash = compute_secret_hash(email)
+        if secret_hash:
+            params['SecretHash'] = secret_hash
+
+        cognito_api('ConfirmForgotPassword', params)
+
+        return api_response(200, {
+            'status': 'password_reset',
+            'message': 'Password has been reset successfully. You can now sign in.',
+        })
+
+    except Exception as e:
+        error_msg = str(e)
+        print(f'Confirm reset error: {error_msg}')
+        if 'CodeMismatchException' in error_msg:
+            return api_response(401, {'error': 'Invalid verification code. Please check and try again.'})
+        if 'ExpiredCodeException' in error_msg:
+            return api_response(401, {'error': 'Verification code has expired. Please request a new one.'})
+        if 'InvalidPasswordException' in error_msg:
+            return api_response(400, {
+                'error': 'Password does not meet requirements. Must be 12+ characters with uppercase, lowercase, numbers, and symbols.'
+            })
+        return api_response(500, {'error': 'Password reset failed. Please try again.'})
+
+
+# ==============================================================================
+# COGNITO API HELPER
+# ==============================================================================
+
+def cognito_api(action, params):
+    """Call Cognito Identity Provider API."""
+    data = json.dumps(params).encode('utf-8')
+    req = urllib.request.Request(
+        COGNITO_ENDPOINT,
+        data=data,
+        headers={
+            'Content-Type': 'application/x-amz-json-1.1',
+            'X-Amz-Target': f'AWSCognitoIdentityProviderService.{action}',
+        },
+    )
+
+    try:
+        resp = urllib.request.urlopen(req, timeout=25)
+        return json.loads(resp.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode('utf-8', errors='replace')
+        error_data = {}
+        try:
+            error_data = json.loads(error_body)
+        except json.JSONDecodeError:
+            pass
+        error_type = error_data.get('__type', '')
+        error_msg = error_data.get('message', error_data.get('Message', ''))
+        raise Exception(f'{error_type}: {error_msg}')
+
+
+# ==============================================================================
+# OAUTH CALLBACK COMPLETION
+# ==============================================================================
 
 def complete_callback(callback_url, owui_session):
     """Complete OAuth flow by calling Open WebUI's callback. Returns raw Set-Cookie for token."""

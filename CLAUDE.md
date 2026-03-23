@@ -12,17 +12,17 @@ A fully private, air-gapped LLM inference platform on AWS EKS. Ollama serves Qwe
 
 Layer 1 — VPC (10.0.0.0/16) with private/public subnets + NAT Gateway.
 Layer 2 — EKS Control Plane + system node group (t3.medium) + GPU node group (g5.12xlarge, 4x A10G). EBS CSI Driver + AWS LB Controller.
-Layer 3 — ArgoCD with wave orchestration (waves 0-7). Wave 0: Istio (ambient mesh) → Wave 1-2: Namespaces + Storage → Wave 3-4: Ollama + Model Loader → Wave 5-6: Gateway + Routes → Wave 7: Open WebUI. NVIDIA device plugin is managed by EKS Auto Mode (NOT deployed via ArgoCD).
+Layer 3 — ArgoCD with wave orchestration (waves -2 to 7). Wave -2: Gateway API CRDs → Wave -1: Istio Base → Wave 0: Istiod + Istio CNI + ztunnel (ambient mesh) → Wave 1: Namespaces → Wave 2: Storage → Wave 3-4: Ollama + Model Loader → Wave 5-6: Gateway + Routes → Wave 7: Open WebUI. NVIDIA device plugin is managed by EKS Auto Mode (NOT deployed via ArgoCD — the ArgoCD app file `05-nvidia-device-plugin.yaml` is intentionally emptied).
 Layer 4 — CloudFront (+ WAF + Shield Standard) → API Gateway (REST API, native API key auth) → VPC Link → Internal NLB → Istio Gateway (mTLS) → Ollama Pod.
 
 Traffic flow (API): Client → CloudFront (WAF) → API Gateway (x-api-key) → VPC Link → Internal NLB → Istio Gateway → Ollama Pod.
-Traffic flow (Web UIs): Client → CloudFront (WAF) → VPC Origin → Internal NLB → Istio Gateway → Open WebUI / Grafana.
+Traffic flow (Web UI): Client → CloudFront (WAF) → VPC Origin → Internal NLB → Istio Gateway → Open WebUI.
 
 CloudFront connects to the internal NLB via **VPC Origins** (private connectivity). This is the core reason for the Gateway API pattern — one internal NLB serves all traffic with path-based HTTPRoutes, and no load balancer is exposed to the internet. All traffic stays on AWS backbone.
 
 ### Web UI Authentication (Cognito)
 
-Both Open WebUI and Grafana use **separate Cognito User Pools** with:
+Open WebUI uses a **Cognito User Pool** with:
 - TOTP MFA required on first login
 - OAuth/OIDC flow (no local login forms)
 - Admin notification via SNS on new signups
@@ -33,25 +33,32 @@ Both Open WebUI and Grafana use **separate Cognito User Pools** with:
 | App | Cognito Pool | Roles | CloudFront Path |
 |-----|-------------|-------|-----------------|
 | Open WebUI | `ollama-webui` | admin, user | `/` (default) |
-| Grafana | `ollama-grafana` | admin, viewer | `/grafana/` |
+
+Grafana is **AWS Managed Grafana (AMG)** — accessed via IAM Identity Center SSO, not through CloudFront.
 
 #### Admin User Flow (Initial Setup)
 
-1. Terraform creates admin user (`cognito_admin_email`) in both Cognito pools
-2. Admin receives **two separate emails** with temp passwords — one for Open WebUI, one for Grafana
-3. Admin is automatically added to the "admin" group in both pools
-4. Admin logs in → changes password → sets up MFA (TOTP authenticator app)
-5. Admin can now access Open WebUI (as admin) and Grafana (as admin)
+1. Terraform creates admin user (`cognito_admin_email`) in Cognito pool
+2. Admin receives email with temp password for Open WebUI
+3. Admin is automatically added to the "admin" group
+4. Admin visits CloudFront URL → custom login page loads (`/auth/login.html`)
+5. Admin enters email + temp password → portal detects `NEW_PASSWORD_REQUIRED`
+6. Admin sets new password → portal detects `MFA_SETUP` → shows QR code
+7. Admin scans QR code with authenticator app → enters TOTP code to complete setup
+8. Admin can now access Open WebUI (as admin). Grafana access is via AMG SSO (separate URL)
 
 #### New User Flow (Access Request)
 
-1. User visits CloudFront URL → CloudFront Function detects no `token` cookie → auto-redirects to `/oauth/oidc/login` → Cognito hosted UI
-2. User clicks "Sign up" → enters email + password → account auto-confirmed (Pre Sign-up Lambda)
-3. Admin receives SNS email notification with the user's email and instructions
-4. Admin goes to AWS Cognito Console → finds user → adds to group ("user"/"viewer" or "admin")
-5. User receives "Access Granted" email via SES with login URL and role info
-6. User logs in → sets up MFA (TOTP authenticator app) on first login
-7. User can now access the app with role-mapped permissions
+1. User visits CloudFront URL → CloudFront Function detects no `token` cookie → redirects to `/auth/login.html` (custom login page)
+2. User clicks "Request Access" → fills signup form (name, email, password)
+3. Custom portal calls Cognito `SignUp` API directly → account auto-confirmed (Pre Sign-up Lambda)
+4. Admin receives SNS email notification with the user's email and instructions
+5. Admin goes to AWS Cognito Console → finds user → adds to group ("user"/"viewer" or "admin")
+6. User receives "Access Granted" email via SES with login URL and role info
+7. User logs in via custom login page → sets up MFA (TOTP via QR code) on first login
+8. User can now access the app with role-mapped permissions
+
+**NOTE:** Users **never** see the Cognito hosted UI. All auth flows (login, signup, first-time password change, MFA enrollment, forgot password) are handled by the custom login portal (`auth_proxy` Lambda + `login.html` SPA). The Cognito domain is kept only for server-side OAuth authorization code exchange.
 
 #### Access Control Layers
 
@@ -71,24 +78,39 @@ Both Open WebUI and Grafana use **separate Cognito User Pools** with:
 - VPC Origins require `AllViewerExceptHostHeader` origin request policy — `AllViewer` breaks the private NLB connection
 - WAF rate limit set to 2000/5min (web UIs load many assets; 100/5min caused false 403s)
 - SES email identity must be verified for access-granted notifications to work. If SES is in sandbox mode, recipient emails must also be verified
-- Password changes redirect to Cognito hosted UI `/forgotPassword` via banner link (URL injected by Terraform into K8s secret)
-- `WEBUI_BANNERS` env var is stored in the `webui-oauth-cognito` K8s secret (not hardcoded in deployment YAML) so Terraform can inject the Cognito change-password URL dynamically
-- CloudFront Function (`auth_redirect`) runs on `viewer-request` event — checks for `token` cookie, redirects unauthenticated users to `/oauth/oidc/login`. Excludes: `/oauth/*`, `/_app/*`, `/static/*`, `/api/*`, `/v1/*`, `/portal/*`, `/grafana/*`, favicons
+- Password reset is handled entirely by the custom login portal — user clicks "Forgot password?" on the login page, receives a code via email, then enters the code + new password in the portal. No Cognito hosted UI involved
+- `WEBUI_BANNERS` env var is stored in the `webui-oauth-cognito` K8s secret (not hardcoded in deployment YAML) with banner links to `/auth/login.html` for password reset and `/portal/` for API key generation
+- Auth proxy Lambda (`auth_proxy.py`) handles 6 endpoints: login, mfa, change-password, setup-mfa, forgot-password, confirm-reset. Normal login/MFA uses server-side Cognito hosted UI scraping (for OAuth flow); first-time setup and forgot password use Cognito APIs directly (`InitiateAuth`, `RespondToAuthChallenge`, `ForgotPassword`, `ConfirmForgotPassword`, `AssociateSoftwareToken`, `VerifySoftwareToken`)
+- Auth proxy Lambda requires IAM permissions for `cognito-idp:InitiateAuth`, `cognito-idp:RespondToAuthChallenge`, `cognito-idp:ForgotPassword`, `cognito-idp:ConfirmForgotPassword`, `cognito-idp:AssociateSoftwareToken`, `cognito-idp:VerifySoftwareToken`
+- Cognito `webui` app client has `ALLOW_USER_PASSWORD_AUTH` enabled (required for `InitiateAuth` API used by first-time setup flow)
+- CloudFront Function (`auth_redirect`) runs on `viewer-request` event — checks for `token` cookie, redirects unauthenticated users to `/auth/login.html` (custom login page). Excludes: `/oauth/*`, `/_app/*`, `/static/*`, `/api/*`, `/v1/*`, `/portal/*`, `/auth/*`, favicons
 - Static assets (`/_app/*`, `/static/*`) use `CachingOptimized` policy at CloudFront edge — eliminates the full CloudFront → NLB → Istio → Pod round-trip for JS/CSS/images, reducing page load from ~10s to <1s
 
-> **TEMPORARY:** In-cluster Grafana + Cognito auth is a stopgap while AMG (AWS Managed Grafana) SSO access is being resolved (Stax ticket pending). Once AMG is accessible: set `enable_grafana = !var.enable_managed_grafana`, remove `grafana_cognito` module + K8s secret + Grafana HTTPRoute, delete `terraform/modules/grafana-cognito/`.
+## Default Model: Fallback (qwen3.5:27b) — DEV Phase
 
-## Default Model: Flagship (qwen3.5:122b-a10b)
+**Current phase: DEV** — using Tier 1 fallback (`qwen3.5:27b`) on g5.xlarge (1x A10G, $0.35/hr spot) for infrastructure testing and platform validation. NodePool is restricted to g5.xlarge only — no g5.12xlarge can be provisioned.
 
-The default model is the flagship tier — `qwen3.5:122b-a10b` (MoE, 122B total, 10B active params). Runs on g5.12xlarge (4x A10G, 96GB VRAM).
+**PROD upgrade:** When ready for production, switch to Tier 3 flagship. Changes required (search for `# PROD:` comments in each file):
+
+1. `k8s/nodepools/gpu-nodepool.yaml`:
+   - Uncomment `12xlarge` in instance-size values
+   - Update limits: `cpu: "48"`, `memory: 192Gi`, `nvidia.com/gpu: "4"`
+2. `k8s/open-webui/deployment.yaml`:
+   - Change `DEFAULT_MODELS` and `MODEL_FILTER_LIST` to `qwen3.5:122b-a10b`
+
+**Spot instance strategy:** Spot preferred with on-demand fallback (both DEV and PROD). Karpenter tries spot first — if spot is unavailable (quota pending or no capacity), falls back to on-demand automatically.
+- `GPUOnDemandFallback` alert fires (warning) when on-demand is used — so you know you're paying full price.
+- `GPUSpotInterruption` alert fires when AWS reclaims a spot instance (warning, expect ~2-3 min interruption).
+- Once spot quota is approved, Karpenter will prefer spot automatically — no config change needed.
+- **Alert notifications:** Alertmanager → SNS → email. Set `alert_email` variable in observability module. Requires SNS subscription confirmation email.
 
 Three tiers available, all pre-downloaded to EBS via snapshot:
 
 | Tier | Model | GPU | Spot Cost | When to Use |
 |------|-------|-----|-----------|-------------|
-| 1 (Fallback) | `qwen3.5:27b` | g5.xlarge (1x A10G) | $0.35/hr | Fast iteration, debugging, simple edits |
+| **1 (Current)** | **`qwen3.5:27b`** | **g5.xlarge (1x A10G)** | **$0.35/hr** | **DEV — platform testing, monitoring setup** |
 | 2 (Code) | `qwen3-coder:30b-a3b` | g5.xlarge (1x A10G) | $0.35/hr | Pure coding tasks, very fast MoE inference |
-| 3 (Default) | `qwen3.5:122b-a10b` | g5.12xlarge (4x A10G) | $1.90/hr | All tasks — maximum quality, beats GPT-5 mini on tool use (+30%) |
+| 3 (Flagship) | `qwen3.5:122b-a10b` | g5.12xlarge (4x A10G) | $1.90/hr | PROD — maximum quality |
 
 Switch with: `./switch-model.sh use 3` (flagship) or `./switch-model.sh use 1` (fallback).
 
@@ -99,11 +121,11 @@ Switch with: `./switch-model.sh use 3` (flagship) or `./switch-model.sh use 1` (
 - 30-min idle window (`consolidateAfter: 30m`) — nodes stay warm through coffee breaks and short meetings, terminate after 30 min idle
 - EBS snapshots for model weights — pre-loaded models on disk, no internet needed for model loading (air-gap compliant), cold start ~3 min instead of 15-25 min
 - High-throughput gp3 — 400 MB/s + 6000 IOPS for fast model loading from snapshot
-- Self-managed observability — Prometheus + Grafana + DCGM Exporter, all air-gapped (no AMP/AMG)
+- Observability — Prometheus + DCGM Exporter in-cluster, remote-write to AMP; AWS Managed Grafana (AMG) via IAM Identity Center SSO for all dashboards including FinOps
 - Spot with on-demand fallback — Karpenter tries spot first, auto-falls back to on-demand
 - Dual-mode pipeline — two separate stacks (deploy one or the other), both maintaining data sovereignty (see below)
-- Gateway API pattern with CloudFront VPC Origins — the Istio Gateway creates an internal NLB, and CloudFront connects privately via VPC Origins. This is the core reason for the Gateway API pattern: one internal NLB serves all traffic (Ollama API, Open WebUI, Grafana) with path-based HTTPRoutes, and CloudFront accesses it without exposing any load balancer to the internet
-- Cognito authentication for web UIs — Open WebUI and Grafana each have a separate Cognito User Pool with TOTP MFA, OAuth/OIDC, and admin-approved signups. All user management via Cognito Console
+- Gateway API pattern with CloudFront VPC Origins — the Istio Gateway creates an internal NLB, and CloudFront connects privately via VPC Origins. This is the core reason for the Gateway API pattern: one internal NLB serves all traffic (Ollama API, Open WebUI) with path-based HTTPRoutes, and CloudFront accesses it without exposing any load balancer to the internet
+- Cognito authentication for Open WebUI — Cognito User Pool with TOTP MFA, OAuth/OIDC, and admin-approved signups. All user management via Cognito Console. Grafana auth is via AMG SSO (IAM Identity Center)
 
 ## Dual-Mode Pipeline — Two Separate Stacks
 
@@ -129,15 +151,15 @@ The orchestrator is a separate product built on top of the Ollama-on-EKS infrast
 
 ## Repo Structure
 
-Terraform modules: `terraform/modules/` — vpc, iam, eks, argocd, lb-controller, observability (IMPLEMENTED), api-gateway (IMPLEMENTED, with origin lockdown), cdn-waf (IMPLEMENTED, with origin lockdown), cert-manager (IMPLEMENTED), bedrock-integration (IMPLEMENTED, Stack B only), managed-grafana (IMPLEMENTED, optional — replaces in-cluster Grafana). Each module follows the pattern: `main.tf`, `variables.tf`, `outputs.tf`, `versions.tf`.
+Terraform modules: `terraform/modules/` — vpc, iam, eks, argocd, lb-controller, observability (IMPLEMENTED), api-gateway (IMPLEMENTED, with origin lockdown), cdn-waf (IMPLEMENTED, with origin lockdown), cert-manager (IMPLEMENTED), bedrock-integration (IMPLEMENTED, Stack B only), managed-grafana (IMPLEMENTED — AMG + AMP, SSO via IAM Identity Center), cognito (IMPLEMENTED — Open WebUI Cognito User Pool + OAuth/OIDC), api-key-portal (IMPLEMENTED — self-service API key management with Cognito auth). Each module follows the pattern: `main.tf`, `variables.tf`, `outputs.tf`, `versions.tf`.
 
-K8s manifests: `k8s/ollama/` — deployment.yaml (pinned to v0.6.2), service.yaml (ClusterIP :11434), networkpolicy.yaml (air-gap enforced). Plus: `k8s/model-loader/`, `k8s/gateway.yaml`, `k8s/httproutes.yaml`, `k8s/monitoring-networkpolicy.yaml` (IMPLEMENTED), `k8s/nodepools/` (IMPLEMENTED — GPU NodePool `karpenter.sh/v1` + NodeClass `eks.amazonaws.com/v1` for EKS Auto Mode), `k8s/open-webui/` (IMPLEMENTED — Cognito auth, model locked to admins).
+K8s manifests: `k8s/ollama/` — deployment.yaml (pinned to v0.18.2), service.yaml (ClusterIP :11434), networkpolicy.yaml (air-gap enforced). Plus: `k8s/model-loader/`, `k8s/gateway.yaml`, `k8s/httproutes.yaml`, `k8s/monitoring-networkpolicy.yaml` (IMPLEMENTED), `k8s/nodepools/` (IMPLEMENTED — GPU NodePool `karpenter.sh/v1` + NodeClass `eks.amazonaws.com/v1` for EKS Auto Mode), `k8s/open-webui/` (IMPLEMENTED — Cognito auth, model locked to admins), `k8s/cert-manager/`, `k8s/namespaces.yaml`.
 
-ArgoCD: `argocd/apps/` — wave-based Application manifests (waves 00-12, including Open WebUI at wave 7).
+ArgoCD: `argocd/apps/` — wave-based Application manifests (files 00-12, waves -2 to 7). Wave -2: Gateway API CRDs, Wave -1: Istio Base, Wave 0: Istiod + CNI + ztunnel, Wave 1: Namespaces, Wave 2: Storage, Wave 3: Ollama, Wave 4: Model Loader, Wave 5: Gateway, Wave 6: HTTPRoutes, Wave 7: Open WebUI. File `05-nvidia-device-plugin.yaml` is intentionally emptied (comments only) — EKS Auto Mode manages NVIDIA plugin.
 
-Scripts: `scripts/01-setup.sh` through `scripts/06-setup-github-sync.sh`. `scripts/03-setup-cloud-gateway.sh` (DEPRECATED — Kong removed). `scripts/05-generate-certs.sh` (DEPRECATED — replaced by cert-manager). `scripts/create-model-snapshot.sh` (IMPLEMENTED). `scripts/generate-readme-html.py` (IMPLEMENTED).
+Scripts: `scripts/01-setup.sh`, `scripts/04-post-setup.sh`, `scripts/06-setup-github-sync.sh`, `scripts/create-model-snapshot.sh` (IMPLEMENTED), `scripts/generate-readme-html.py` (IMPLEMENTED), `scripts/deploy-stack-a.sh` (Stack A deployment), `scripts/scale-up.sh` / `scripts/scale-down.sh` (manual GPU node scaling), `scripts/test-ollama-stack.sh` (end-to-end stack test), `scripts/verify-airgap.sh` (air-gap compliance check). Removed: `03-setup-cloud-gateway.sh` (Kong), `05-generate-certs.sh` (replaced by cert-manager).
 
-Workflows: `.github/workflows/kong-sync.yml` (DEPRECATED — Kong removed). `terraform-plan.yml` and `terraform-apply.yml` (IMPLEMENTED).
+Workflows: `.github/workflows/terraform-plan.yml` and `terraform-apply.yml` (IMPLEMENTED). Kong workflow removed.
 
 ## Implementation Details by Sprint
 
@@ -175,7 +197,7 @@ Workflows: `.github/workflows/kong-sync.yml` (DEPRECATED — Kong removed). `ter
 
 WAF rules: (1) Rate Limiting — RateBasedRule, 100 requests per 5-minute window per IP. (2) IP Allowlist — IPSetRule, only corporate CIDR ranges. (3) Geo-Blocking — GeoMatchRule, allow AU + US only (configurable). (4) Bot Control — ManagedRuleGroup, AWS Bot Control (optional, ~$10/mo). (5) SQL/XSS — AWSManagedRulesCommonRuleSet.
 
-After implementation, remove: `scripts/03-setup-cloud-gateway.sh`, `.github/workflows/kong-sync.yml`, `deck/` directory, Transit Gateway attachment in `terraform/main.tf`, Kong-related ArgoCD wave applications.
+Kong cleanup completed: removed `scripts/03-setup-cloud-gateway.sh`, `.github/workflows/kong-sync.yml`, `deck/` directory, Transit Gateway attachment, Kong-related ArgoCD wave applications.
 
 **Gap 6: cert-manager.** Create `terraform/modules/cert-manager/` with Helm release for cert-manager v1.17.1 from `https://charts.jetstack.io`, namespace `cert-manager`, installCRDs enabled. Create `k8s/cert-manager/cluster-issuer.yaml` with self-signed ClusterIssuer and Certificate for `*.ollama.internal` in istio-system namespace (secretName: `istio-gateway-tls`, duration: 90d, renewBefore: 30d). Replaces manual openssl certs.
 
@@ -193,22 +215,26 @@ After implementation, remove: `scripts/03-setup-cloud-gateway.sh`, `.github/work
 
 **Origin Lockdown** — CloudFront → API Gateway lockdown via shared secret. CloudFront sends a `Referer` header with a 64-char auto-generated secret; API Gateway resource policy denies requests without a matching `aws:Referer`. Zero additional cost. Toggle: `enable_origin_lockdown` (default: true). Verify: `curl -s https://<api-gw-endpoint>/prod/api/tags` returns 403; requests via CloudFront succeed.
 
-**AWS Managed Grafana (AMG)** — `terraform/modules/managed-grafana/` replaces in-cluster Grafana. Toggle: `enable_managed_grafana` (default: true). Prerequisites: IAM Identity Center enabled. Cost: ~$9-14/mo.
+**AWS Managed Grafana (AMG)** — `terraform/modules/managed-grafana/` provides all dashboard access via IAM Identity Center SSO. No in-cluster Grafana. Prerequisites: IAM Identity Center enabled. Cost: ~$9-14/mo.
 
-Metrics flow with AMG enabled:
+Metrics flow:
 - In-cluster Prometheus scrapes all targets (Ollama, DCGM, kube-state-metrics, node-exporter)
 - Prometheus remote-writes to AMP via SigV4 (IRSA role: `ollama-prometheus-amp-write`)
 - AMG reads from AMP (IAM role: `ollama-amg-workspace` with `aps:QueryMetrics`)
-- AMG reads CloudWatch natively via its IAM role — no pod egress needed, no IRSA for Grafana
-- FinOps dashboard uses CloudWatch datasource in AMG (direct IAM access, not via pod)
-- NetworkPolicy: Prometheus gets HTTPS egress (port 443) for AMP + STS; no Grafana CloudWatch exception needed
+- AMG reads CloudWatch natively via its IAM role — FinOps dashboard uses CloudWatch datasource
+- No pod egress needed for Grafana, no IRSA for Grafana, no Grafana-specific NetworkPolicy exception
 - Dashboard JSON files in `terraform/modules/observability/dashboards/` — import into AMG workspace manually or via API
 
-When `enable_managed_grafana=true`:
-- In-cluster Grafana pod disabled (`grafana.enabled: false` in Helm values)
-- Grafana IRSA role (CloudWatch) not created — AMG has its own IAM role
-- Dashboard ConfigMaps not created — AMG uses its own dashboard storage
-- Monitoring NetworkPolicy simplified — single policy, no Grafana-specific exception
+## AWS Account Prerequisites
+
+Before deploying GPU workloads, ensure these Service Quotas are increased (default is 0 for GPU instances in most accounts):
+
+| Quota | Code | Minimum Required | Recommended |
+|-------|------|-----------------|-------------|
+| All G and VT Spot Instance Requests | `L-3819A6DF` | 48 vCPUs | 64 vCPUs |
+| Running On-Demand G and VT instances | `L-DB2E81BA` | 48 vCPUs | 64 vCPUs |
+
+A g5.12xlarge (flagship tier) requires 48 vCPUs. Without these quotas, Karpenter will silently fail to provision GPU nodes. Request increases via AWS CLI or Service Quotas console — approval takes 1-3 business days for ap-southeast-2.
 
 ## Response Time Expectations
 
@@ -223,6 +249,21 @@ Token generation: flagship produces 30-50 tok/s. A 500-token response takes ~10-
 
 ## Cost Summary
 
+### DEV Phase (current — Tier 1 fallback, g5.xlarge spot)
+
+| Component | Monthly Cost |
+|-----------|-------------|
+| GPU compute (fallback, 8hrs/day weekdays, spot) | ~$56 |
+| 30-min idle window overhead | ~$3 |
+| EBS snapshot storage (200GB) | ~$10 |
+| gp3 throughput upgrade (400 MB/s) | ~$4 |
+| EKS control plane | $73 |
+| CloudFront + WAF + API Gateway | ~$6 |
+| AWS Managed Grafana + AMP | ~$9-14 |
+| **Total (DEV)** | **~$166/mo** |
+
+### PROD Phase (Tier 3 flagship, g5.12xlarge spot)
+
 | Component | Monthly Cost |
 |-----------|-------------|
 | GPU compute (flagship, 8hrs/day weekdays, spot) | ~$304 |
@@ -231,10 +272,10 @@ Token generation: flagship produces 30-50 tok/s. A 500-token response takes ~10-
 | gp3 throughput upgrade (400 MB/s) | ~$4 |
 | EKS control plane | $73 |
 | CloudFront + WAF + API Gateway | ~$6 |
-| AWS Managed Grafana + AMP (optional) | ~$9-14 |
-| **Total** | **~$413/mo** (or ~$427/mo with AMG) |
+| AWS Managed Grafana + AMP | ~$9-14 |
+| **Total (PROD)** | **~$427/mo** |
 
-Down from $4,155/mo (24/7 on-demand + Kong) — 90% reduction.
+Down from $4,155/mo (24/7 on-demand + Kong) — 90% reduction. DEV phase runs at ~$166/mo.
 
 ## Working Conventions
 
@@ -256,7 +297,7 @@ Changes must respect the layered dependency chain. Never deploy an upper layer b
 2. **EKS Cluster** — Control plane, system node group, GPU node pool (Terraform)
 3. **Platform Services** — ArgoCD, LB Controller, cert-manager, observability (Terraform)
 4. **Edge Security** — API Gateway, CDN-WAF (Terraform — depends on EKS for NLB)
-5. **K8s Infrastructure** — CRDs, Istio, NVIDIA plugin (ArgoCD waves -2 to 0)
+5. **K8s Infrastructure** — Gateway API CRDs, Istio (base, istiod, CNI, ztunnel) (ArgoCD waves -2 to 0). NVIDIA device plugin is NOT deployed here — managed by EKS Auto Mode
 6. **K8s Platform** — Namespaces, StorageClasses, PVCs (ArgoCD waves 1-2)
 7. **Application Workload** — Ollama, Model Loader (ArgoCD waves 3-4)
 8. **Networking/Ingress** — Istio Gateway, HTTPRoutes (ArgoCD waves 5-6)
@@ -279,7 +320,7 @@ This is not optional. Documentation drift causes confusion in consulting engagem
 ### Model Access Control
 
 - Open WebUI model selector is locked for regular users (`MODEL_FILTER_ENABLED: true`)
-- Only the default model (`qwen3.5:122b-a10b`) is visible to non-admin users
+- Only the default model is visible to non-admin users (DEV: `qwen3.5:27b`, PROD: `qwen3.5:122b-a10b`)
 - Admins (first user + promoted users) can see and switch all tiers
 - Cluster-wide model switching is done via `./switch-model.sh use <tier>` by users with kubectl access
 - When changing the default model, update BOTH `DEFAULT_MODELS` and `MODEL_FILTER_LIST` in `k8s/open-webui/deployment.yaml`

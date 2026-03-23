@@ -457,28 +457,24 @@ module "cert_manager" {
 }
 
 # ==============================================================================
-# OBSERVABILITY (Prometheus + Grafana + DCGM Exporter)
+# OBSERVABILITY (Prometheus + DCGM Exporter → AMP → AWS Managed Grafana)
 # ==============================================================================
-# Self-managed, air-gapped — no AWS managed services (AMP/AMG).
-# GPU metrics stay in-cluster alongside the workloads they monitor.
+# Prometheus + DCGM Exporter run in-cluster, remote-write to AMP.
+# AWS Managed Grafana (AMG) reads from AMP + CloudWatch natively.
+# No in-cluster Grafana — all dashboards in AMG via IAM Identity Center SSO.
 
 module "observability" {
   source = "./modules/observability"
 
   eks_cluster_name         = module.eks.cluster_name
-  grafana_admin_password   = var.grafana_admin_password
   prometheus_retention_days = var.prometheus_retention_days
   prometheus_storage_size   = var.prometheus_storage_size
-  grafana_storage_size      = var.grafana_storage_size
   eks_oidc_provider_arn    = module.eks.oidc_provider_arn
   eks_oidc_issuer_url      = module.eks.oidc_issuer_url
-  enable_grafana            = true  # Temporarily enabled alongside AMG until SSO access is resolved
-  grafana_oauth_secret_name = "grafana-oauth-cognito"  # Cognito OAuth via GF_ env vars
-  grafana_root_url          = "https://${var.cloudfront_domain}/grafana/"
 
-  # AMP integration: when managed Grafana is enabled, Prometheus remote-writes to AMP
-  amp_remote_write_endpoint = var.enable_managed_grafana ? module.managed_grafana[0].amp_remote_write_endpoint : ""
-  amp_remote_write_role_arn = var.enable_managed_grafana ? module.managed_grafana[0].prometheus_remote_write_role_arn : ""
+  # AMP integration: Prometheus remote-writes all metrics to AMP for AMG to read
+  amp_remote_write_endpoint = module.managed_grafana.amp_remote_write_endpoint
+  amp_remote_write_role_arn = module.managed_grafana.prometheus_remote_write_role_arn
 
   tags = var.tags
 
@@ -490,14 +486,13 @@ module "observability" {
 }
 
 # ==============================================================================
-# MANAGED GRAFANA (Optional — replaces in-cluster Grafana with AWS AMG + AMP)
+# AWS MANAGED GRAFANA (AMG + AMP — SSO via IAM Identity Center)
 # ==============================================================================
-# Enable with: terraform apply -var="enable_managed_grafana=true"
 # Prerequisites: IAM Identity Center (AWS SSO) must be enabled in the account.
-# When enabled, in-cluster Grafana should be disabled in kube-prometheus-stack values.
+# AMG reads from AMP (Prometheus metrics) + CloudWatch (FinOps, API Gateway).
+# Dashboard JSON files in terraform/modules/observability/dashboards/ — import into AMG.
 
 module "managed_grafana" {
-  count  = var.enable_managed_grafana ? 1 : 0
   source = "./modules/managed-grafana"
 
   project_name          = var.project_name
@@ -538,7 +533,6 @@ resource "kubernetes_secret" "webui_oauth" {
     OAUTH_CLIENT_ID       = module.cognito.client_id
     OAUTH_CLIENT_SECRET   = module.cognito.client_secret
     OPENID_PROVIDER_URL   = module.cognito.openid_config_url
-    CHANGE_PASSWORD_URL   = module.cognito.change_password_url
     OAUTH_LOGOUT_URL      = module.cognito.logout_url
     # Banner timestamp must be Unix epoch (number), not a date string
     # HTML content with styled button links for better visibility
@@ -553,9 +547,9 @@ resource "kubernetes_secret" "webui_oauth" {
       },
       {
         id          = "change-password"
-        type        = "warning"
+        type        = "info"
         title       = ""
-        content     = "<div style='display:flex;align-items:center;gap:12px;padding:4px 0'><span style='font-size:14px'>Password changes are managed via Cognito.</span><a href='${module.cognito.change_password_url}' target='_blank' style='display:inline-block;background:#fff;color:#92400e;font-weight:600;padding:6px 16px;border-radius:6px;text-decoration:none;font-size:13px;box-shadow:0 1px 3px rgba(0,0,0,0.2);transition:all 0.2s'>Reset Password</a></div>"
+        content     = "<div style='display:flex;align-items:center;gap:12px;padding:4px 0'><span style='font-size:14px'>Need to reset your password?</span><a href='/auth/login.html' style='display:inline-block;background:#fff;color:#1e40af;font-weight:600;padding:6px 16px;border-radius:6px;text-decoration:none;font-size:13px;box-shadow:0 1px 3px rgba(0,0,0,0.2);transition:all 0.2s'>Reset Password</a></div>"
         dismissible = true
         timestamp   = 1774051200
       }
@@ -563,51 +557,6 @@ resource "kubernetes_secret" "webui_oauth" {
   }
 
   depends_on = [module.cognito]
-}
-
-# ==============================================================================
-# COGNITO AUTHENTICATION (Grafana — MFA + OAuth)
-# ==============================================================================
-# TEMPORARY: Separate Cognito User Pool for in-cluster Grafana.
-# Once AMG (AWS Managed Grafana) SSO access is resolved, disable in-cluster
-# Grafana and remove this module + secret.
-
-module "grafana_cognito" {
-  source = "./modules/grafana-cognito"
-
-  project_name       = var.project_name
-  cloudfront_domain  = var.cloudfront_domain
-  admin_email        = var.cognito_admin_email
-  notification_email = var.cognito_notification_email
-  tags               = var.tags
-}
-
-# Kubernetes Secret for Grafana OAuth — uses GF_ env var convention
-# Grafana auto-applies env vars matching the GF_<SECTION>_<KEY> pattern
-resource "kubernetes_secret" "grafana_oauth" {
-  metadata {
-    name      = "grafana-oauth-cognito"
-    namespace = "monitoring"
-  }
-
-  data = {
-    GF_SERVER_ROOT_URL                           = "https://${var.cloudfront_domain}/grafana/"
-    GF_SERVER_SERVE_FROM_SUB_PATH                = "true"
-    GF_AUTH_DISABLE_LOGIN_FORM                   = "true"
-    GF_AUTH_GENERIC_OAUTH_ENABLED                = "true"
-    GF_AUTH_GENERIC_OAUTH_NAME                   = "Sign in to Grafana"
-    GF_AUTH_GENERIC_OAUTH_ALLOW_SIGN_UP          = "true"
-    GF_AUTH_GENERIC_OAUTH_AUTO_LOGIN             = "true"
-    GF_AUTH_GENERIC_OAUTH_CLIENT_ID              = module.grafana_cognito.client_id
-    GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET          = module.grafana_cognito.client_secret
-    GF_AUTH_GENERIC_OAUTH_SCOPES                 = "openid email profile"
-    GF_AUTH_GENERIC_OAUTH_AUTH_URL               = module.grafana_cognito.auth_url
-    GF_AUTH_GENERIC_OAUTH_TOKEN_URL              = module.grafana_cognito.token_url
-    GF_AUTH_GENERIC_OAUTH_API_URL                = module.grafana_cognito.userinfo_url
-    GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH    = "contains(\"cognito:groups\" || `[]`, 'admin') && 'Admin' || 'Viewer'"
-  }
-
-  depends_on = [module.grafana_cognito]
 }
 
 # ==============================================================================
@@ -625,7 +574,8 @@ module "api_key_portal" {
   cognito_domain            = module.cognito.cognito_domain
   cloudfront_domain         = var.cloudfront_domain
   signup_client_id          = module.cognito.signup_client_id
-  change_password_url       = module.cognito.change_password_url
+  cognito_client_id         = module.cognito.client_id
+  cognito_client_secret     = module.cognito.client_secret
   rest_api_id               = module.api_gateway.api_id
   rest_api_root_resource_id = module.api_gateway.root_resource_id
   rest_api_execution_arn    = module.api_gateway.api_execution_arn

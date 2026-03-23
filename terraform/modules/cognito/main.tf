@@ -5,24 +5,31 @@
 #   - Cognito User Pool with required TOTP MFA
 #   - Groups: admin, user (mapped to Open WebUI roles)
 #   - OAuth 2.0 / OIDC app client for Open WebUI
-#   - Cognito hosted UI domain
+#   - Cognito domain (for OAuth authorization code exchange only)
 #   - Pre Sign-up Lambda for admin notification via SNS
 #   - Access-granted Lambda for user notification via SES (EventBridge)
 #   - Initial admin user (receives temp password via email)
 #
+# NOTE: Users NEVER see the Cognito hosted UI. All login, signup, password
+# change, MFA enrollment, and forgot password flows are handled by the custom
+# login portal (auth_proxy Lambda + login.html SPA). The Cognito domain is
+# kept only for the server-side OAuth/OIDC authorization code exchange.
+#
 # Admin flow:
 #   1. Terraform creates admin user → receives temp password via email
-#   2. Admin logs in → changes password → sets up MFA (TOTP)
-#   3. Admin can now access Open WebUI as admin
+#   2. Admin visits custom login page → enters temp password
+#   3. Portal detects NEW_PASSWORD_REQUIRED → shows password change form
+#   4. Portal detects MFA_SETUP → shows QR code for TOTP enrollment
+#   5. Admin can now access Open WebUI as admin
 #
 # New user flow:
-#   1. User opens CloudFront URL → clicks "Request Access"
-#   2. Redirected to Cognito hosted UI → clicks "Sign up"
-#   3. User enters email + password → account auto-confirmed
+#   1. User opens CloudFront URL → custom login page loads
+#   2. User clicks "Request Access" → fills signup form
+#   3. Custom portal calls Cognito SignUp API → account auto-confirmed
 #   4. Admin receives SNS notification of new signup
 #   5. Admin adds user to group in Cognito Console
 #   6. User receives "Access Granted" email via SES
-#   7. User logs in → sets up MFA (TOTP) on first login
+#   7. User logs in → sets up MFA (TOTP) on first login via custom portal
 #   8. User can now access Open WebUI (role mapped from Cognito group)
 
 # ==============================================================================
@@ -113,8 +120,10 @@ resource "aws_cognito_user_pool" "ollama" {
 }
 
 # ==============================================================================
-# COGNITO DOMAIN (Hosted UI)
+# COGNITO DOMAIN (required for OAuth authorization code exchange)
 # ==============================================================================
+# The domain is kept for the server-side OAuth/OIDC flow (auth_proxy Lambda
+# uses it to exchange authorization codes). Users never see the hosted UI.
 
 resource "random_string" "cognito_domain_suffix" {
   length  = 6
@@ -173,10 +182,11 @@ resource "aws_cognito_user_pool_client" "webui" {
     refresh_token = "days"
   }
 
-  # Include groups in ID token
+  # Auth flows — USER_PASSWORD_AUTH needed for custom login portal (InitiateAuth API)
   explicit_auth_flows = [
     "ALLOW_REFRESH_TOKEN_AUTH",
     "ALLOW_USER_SRP_AUTH",
+    "ALLOW_USER_PASSWORD_AUTH",
   ]
 }
 
@@ -532,20 +542,7 @@ PYTHON
   }
 }
 
-# ==============================================================================
-# COGNITO HOSTED UI CUSTOMIZATION
-# ==============================================================================
-
-resource "aws_cognito_user_pool_ui_customization" "ollama" {
-  user_pool_id = aws_cognito_user_pool.ollama.id
-  client_id    = aws_cognito_user_pool_client.webui.id
-
-  css = <<-CSS
-    .banner-customizable { background-color: #0f3460; }
-    .submitButton-customizable { background-color: #0f3460; }
-    .submitButton-customizable:hover { background-color: #16213e; }
-    .label-customizable { font-weight: bold; }
-  CSS
-
-  depends_on = [aws_cognito_user_pool_domain.ollama]
-}
+# NOTE: Cognito hosted UI customization removed — all login/signup/password flows
+# are handled by the custom login portal (auth_proxy Lambda + login.html SPA).
+# The Cognito domain is kept for the OAuth/OIDC flow (authorization code exchange)
+# but users never see the Cognito hosted UI directly.

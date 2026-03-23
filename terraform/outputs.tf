@@ -143,22 +143,17 @@ output "bedrock_irsa_role_arn" {
 }
 
 # ==============================================================================
-# OBSERVABILITY
+# OBSERVABILITY (AWS Managed Grafana + AMP)
 # ==============================================================================
 
-output "grafana_port_forward_command" {
-  description = "Command to access Grafana dashboards (in-cluster, when managed Grafana is disabled)"
-  value       = "kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80"
-}
-
 output "managed_grafana_url" {
-  description = "AWS Managed Grafana URL (SSO login, when enabled)"
-  value       = var.enable_managed_grafana ? module.managed_grafana[0].grafana_endpoint : null
+  description = "AWS Managed Grafana URL (SSO login via IAM Identity Center)"
+  value       = module.managed_grafana.grafana_endpoint
 }
 
 output "amp_remote_write_endpoint" {
-  description = "AMP remote write endpoint (when managed Grafana is enabled)"
-  value       = var.enable_managed_grafana ? module.managed_grafana[0].amp_remote_write_endpoint : null
+  description = "AMP remote write endpoint (Prometheus → AMP → AMG)"
+  value       = module.managed_grafana.amp_remote_write_endpoint
 }
 
 # ==============================================================================

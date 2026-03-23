@@ -64,10 +64,15 @@ variable "signup_client_id" {
   default     = ""
 }
 
-variable "change_password_url" {
-  description = "Cognito hosted UI URL for password reset (self-service)"
+variable "cognito_client_id" {
+  description = "Cognito OAuth app client ID (webui client — for auth proxy InitiateAuth)"
   type        = string
-  default     = ""
+}
+
+variable "cognito_client_secret" {
+  description = "Cognito OAuth app client secret (webui client — for SECRET_HASH computation)"
+  type        = string
+  sensitive   = true
 }
 
 variable "tags" {
