@@ -35,7 +35,7 @@ export AWS_PROFILE="${AWS_PROFILE:-stax-stax-au1-versent-innovation}"
 REGION=$(terraform -chdir="$ROOT_DIR/terraform" output -raw region 2>/dev/null || echo "ap-southeast-2")
 
 # Get workspace IDs from Terraform
-AMG_ID=$(terraform -chdir="$ROOT_DIR/terraform" output -raw managed_grafana_url 2>/dev/null | grep -oP 'g-[a-z0-9]+' || true)
+AMG_ID=$(terraform -chdir="$ROOT_DIR/terraform" output -raw managed_grafana_url 2>/dev/null | grep -o 'g-[a-z0-9]*' || true)
 if [[ -z "$AMG_ID" ]]; then
   AMG_ID=$(aws grafana list-workspaces --region "$REGION" \
     --query 'workspaces[?name==`ollama-grafana`].id' --output text)
@@ -114,7 +114,7 @@ DS_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$AMG_ENDPOINT/api/datasources
   }")
 
 DS_STATUS=$(echo "$DS_RESPONSE" | tail -1)
-DS_BODY=$(echo "$DS_RESPONSE" | head -n -1)
+DS_BODY=$(echo "$DS_RESPONSE" | sed '$d')
 
 if [[ "$DS_STATUS" == "200" || "$DS_STATUS" == "409" ]]; then
   echo -e "  ${GREEN}✓${NC} AMP data source configured"
@@ -182,7 +182,7 @@ print(json.dumps(payload))
   if [[ "$IMPORT_STATUS" == "200" ]]; then
     echo -e " ${GREEN}✓${NC}"
   else
-    IMPORT_BODY=$(echo "$IMPORT_RESPONSE" | head -n -1)
+    IMPORT_BODY=$(echo "$IMPORT_RESPONSE" | sed '$d')
     echo -e " ${YELLOW}⚠ ($IMPORT_STATUS)${NC}"
     echo "    $IMPORT_BODY" | head -1
   fi
