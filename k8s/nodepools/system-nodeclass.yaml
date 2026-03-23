@@ -7,7 +7,7 @@
 apiVersion: eks.amazonaws.com/v1
 kind: NodeClass
 metadata:
-  name: system
+  name: system-x86
 spec:
   # IAM role for system nodes (same role as GPU nodes, managed by EKS Auto Mode)
   role: role-eks-node-ollama-dev
