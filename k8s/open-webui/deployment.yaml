@@ -68,15 +68,18 @@ spec:
               value: "true"
             - name: DO_NOT_TRACK
               value: "true"
-            # Default model — locked for regular users (set per env via Kustomize)
+            # Default model — set by switch-model.sh based on active tier
             - name: DEFAULT_MODELS
               value: "qwen3.5:27b"
-            # Model filtering — only show the default model to users
-            # Admins (first user + promoted users) can see all models
+            # Model filtering — shows only models the hardware can run
+            # switch-model.sh syncs this list on every tier switch:
+            #   Tier 1/2 (1 GPU): qwen3.5:27b;qwen3-coder:30b-a3b
+            #   Tier 3 (4 GPUs): qwen3.5:27b;qwen3-coder:30b-a3b;qwen3.5:122b-a10b
+            # Admins (first user + promoted users) can see all models regardless
             - name: MODEL_FILTER_ENABLED
               value: "true"
             - name: MODEL_FILTER_LIST
-              value: "qwen3.5:27b"
+              value: "qwen3.5:27b;qwen3-coder:30b-a3b"
             # Banners (API key portal + password reset) — from K8s Secret
             # Terraform injects banner links to custom login portal
             - name: WEBUI_BANNERS

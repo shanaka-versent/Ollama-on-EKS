@@ -213,6 +213,49 @@ patch_deployment() {
   echo -e "  ${GREEN}✓${NC} Deployment patched"
 }
 
+sync_webui_models() {
+  local gpu_count="$1"
+  local active_model="$2"
+  local webui_ns="open-webui"
+  local webui_deploy="open-webui"
+
+  # Build model list based on what hardware can support
+  local filter_list=""
+  if [[ "$gpu_count" -ge 4 ]]; then
+    # Flagship hardware — all models can run
+    filter_list="qwen3.5:27b;qwen3-coder:30b-a3b;qwen3.5:122b-a10b"
+  else
+    # Standard hardware — only Tier 1 + Tier 2
+    filter_list="qwen3.5:27b;qwen3-coder:30b-a3b"
+  fi
+
+  echo -e "  ${YELLOW}⟳${NC}  Syncing WebUI model list: ${CYAN}${filter_list}${NC}"
+  echo -e "  ${YELLOW}⟳${NC}  Default model: ${CYAN}${active_model}${NC}"
+
+  # Find the env var indices in the container spec
+  local patch
+  patch=$(kubectl get deployment "$webui_deploy" -n "$webui_ns" -o json 2>/dev/null | python3 -c "
+import sys, json
+deploy = json.load(sys.stdin)
+envs = deploy['spec']['template']['spec']['containers'][0]['env']
+ops = []
+for i, e in enumerate(envs):
+    if e['name'] == 'MODEL_FILTER_LIST':
+        ops.append({'op': 'replace', 'path': f'/spec/template/spec/containers/0/env/{i}/value', 'value': '${filter_list}'})
+    elif e['name'] == 'DEFAULT_MODELS':
+        ops.append({'op': 'replace', 'path': f'/spec/template/spec/containers/0/env/{i}/value', 'value': '${active_model}'})
+print(json.dumps(ops))
+" 2>/dev/null)
+
+  if [[ -z "$patch" || "$patch" == "[]" ]]; then
+    echo -e "  ${YELLOW}⚠${NC}  WebUI deployment not found or missing env vars — skipping"
+    return 0
+  fi
+
+  kubectl patch deployment "$webui_deploy" -n "$webui_ns" --type='json' -p="$patch" 2>&1
+  echo -e "  ${GREEN}✓${NC} WebUI model list updated"
+}
+
 wait_for_rollout() {
   echo -e "  ${YELLOW}⏳${NC} Waiting for rollout (Karpenter provisioning node ~2-3 min)..."
   if kubectl rollout status deployment/ollama -n "$NAMESPACE" --timeout=600s 2>&1; then
@@ -422,7 +465,7 @@ cmd_use() {
   print_header
 
   # ── Step 1: Validate NodePool ──
-  echo -e "${BOLD}[1/6] Validating NodePool${NC}"
+  echo -e "${BOLD}[1/7] Validating NodePool${NC}"
   if ! check_nodepool "$min_gpus" "$required_instance"; then
     exit 1
   fi
@@ -430,7 +473,7 @@ cmd_use() {
   echo ""
 
   # ── Step 2: Check if resources already match ──
-  echo -e "${BOLD}[2/6] Checking current resources${NC}"
+  echo -e "${BOLD}[2/7] Checking current resources${NC}"
   local current_res
   current_res=$(get_current_resources)
   local cur_gpu
@@ -446,18 +489,18 @@ cmd_use() {
   echo ""
 
   # ── Step 3: Pause KEDA ──
-  echo -e "${BOLD}[3/6] Pausing KEDA${NC}"
+  echo -e "${BOLD}[3/7] Pausing KEDA${NC}"
   pause_keda
   echo ""
 
   # ── Step 4: Patch deployment (if needed) ──
   if [[ "$needs_patch" == "true" ]]; then
-    echo -e "${BOLD}[4/6] Patching deployment${NC}"
+    echo -e "${BOLD}[4/7] Patching deployment${NC}"
     patch_deployment "$gpu_limit" "$mem_limit" "$mem_req" "$cpu_limit" "$cpu_req"
     echo ""
 
     # ── Step 5: Wait for rollout ──
-    echo -e "${BOLD}[5/6] Waiting for rollout${NC}"
+    echo -e "${BOLD}[5/7] Waiting for rollout${NC}"
     wait_for_rollout
 
     # Update pod reference after rollout
@@ -468,13 +511,13 @@ cmd_use() {
     pkill -f "kubectl port-forward.*ollama.*11434" 2>/dev/null || true
     sleep 2
   else
-    echo -e "${BOLD}[4/6] Patch — skipped${NC}"
-    echo -e "${BOLD}[5/6] Rollout — skipped${NC}"
+    echo -e "${BOLD}[4/7] Patch — skipped${NC}"
+    echo -e "${BOLD}[5/7] Rollout — skipped${NC}"
   fi
   echo ""
 
   # ── Step 6: Load model ──
-  echo -e "${BOLD}[6/6] Loading model${NC}"
+  echo -e "${BOLD}[6/7] Loading model${NC}"
   check_port_forward
 
   # Check if model is downloaded
@@ -510,6 +553,11 @@ cmd_use() {
   echo -e "  ${YELLOW}⟳${NC}  Loading $model_tag into GPU memory..."
   curl -s "$OLLAMA_URL/api/generate" -d "{\"model\": \"$model_tag\", \"prompt\": \"hi\", \"options\": {\"num_predict\": 1}}" >/dev/null 2>&1
   echo -e "  ${GREEN}✓${NC} Model loaded and ready"
+  echo ""
+
+  # ── Step 7: Sync WebUI model list ──
+  echo -e "${BOLD}[7/7] Syncing WebUI model list${NC}"
+  sync_webui_models "$gpu_limit" "$model_tag"
   echo ""
 
   # ── Resume KEDA ──
