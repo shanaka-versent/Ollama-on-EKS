@@ -63,9 +63,11 @@ module "vpc" {
 module "iam" {
   source = "./modules/iam"
 
-  name_prefix      = local.name_prefix
-  enable_auto_mode = true
-  tags             = var.tags
+  name_prefix        = local.name_prefix
+  enable_auto_mode   = true
+  enable_github_oidc = true
+  github_repo        = "shanaka-versent/Ollama-on-EKS"
+  tags               = var.tags
 }
 
 # EKS Module - Kubernetes cluster with System + GPU node groups

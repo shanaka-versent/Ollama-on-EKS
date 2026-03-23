@@ -130,3 +130,141 @@ resource "aws_iam_role_policy_attachment" "ebs_csi" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
   role       = aws_iam_role.ebs_csi[0].name
 }
+
+# ==============================================================================
+# GitHub Actions OIDC Federation (CI/CD for Terraform)
+# ==============================================================================
+# Allows GitHub Actions workflows to assume an IAM role without long-lived
+# credentials. The OIDC provider trusts GitHub's token endpoint; the role
+# trust policy is scoped to a specific repository.
+
+data "tls_certificate" "github" {
+  count = var.enable_github_oidc ? 1 : 0
+  url   = "https://token.actions.githubusercontent.com"
+}
+
+resource "aws_iam_openid_connect_provider" "github" {
+  count = var.enable_github_oidc ? 1 : 0
+
+  url             = "https://token.actions.githubusercontent.com"
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = [data.tls_certificate.github[0].certificates[0].sha1_fingerprint]
+
+  tags = var.tags
+}
+
+resource "aws_iam_role" "github_actions_terraform" {
+  count = var.enable_github_oidc ? 1 : 0
+  name  = "github-actions-terraform"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = aws_iam_openid_connect_provider.github[0].arn
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+          }
+          StringLike = {
+            "token.actions.githubusercontent.com:sub" = "repo:${var.github_repo}:*"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = var.tags
+}
+
+# PowerUserAccess covers all services Terraform manages (VPC, EKS, API GW,
+# CloudFront, WAF, Cognito, Lambda, S3, DynamoDB, Prometheus, Grafana, etc.)
+# but blocks IAM-admin-level actions (creating/deleting IAM users/policies).
+resource "aws_iam_role_policy_attachment" "github_actions_power_user" {
+  count      = var.enable_github_oidc ? 1 : 0
+  policy_arn = "arn:aws:iam::aws:policy/PowerUserAccess"
+  role       = aws_iam_role.github_actions_terraform[0].name
+}
+
+# Terraform needs IAM permissions for creating roles, policies, and OIDC
+# providers (PowerUserAccess blocks these). Scoped to ollama-* resources only.
+resource "aws_iam_role_policy" "github_actions_iam" {
+  count = var.enable_github_oidc ? 1 : 0
+  name  = "terraform-iam-management"
+  role  = aws_iam_role.github_actions_terraform[0].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "IAMRoleManagement"
+        Effect = "Allow"
+        Action = [
+          "iam:CreateRole",
+          "iam:DeleteRole",
+          "iam:GetRole",
+          "iam:UpdateRole",
+          "iam:TagRole",
+          "iam:UntagRole",
+          "iam:ListRoleTags",
+          "iam:UpdateAssumeRolePolicy",
+          "iam:GetRolePolicy",
+          "iam:PutRolePolicy",
+          "iam:DeleteRolePolicy",
+          "iam:ListRolePolicies",
+          "iam:AttachRolePolicy",
+          "iam:DetachRolePolicy",
+          "iam:ListAttachedRolePolicies",
+          "iam:PassRole",
+          "iam:ListInstanceProfilesForRole",
+        ]
+        Resource = [
+          "arn:aws:iam::*:role/role-*",
+          "arn:aws:iam::*:role/ollama-*",
+          "arn:aws:iam::*:role/github-actions-terraform",
+        ]
+      },
+      {
+        Sid    = "IAMPolicyManagement"
+        Effect = "Allow"
+        Action = [
+          "iam:CreatePolicy",
+          "iam:DeletePolicy",
+          "iam:GetPolicy",
+          "iam:GetPolicyVersion",
+          "iam:ListPolicyVersions",
+          "iam:CreatePolicyVersion",
+          "iam:DeletePolicyVersion",
+          "iam:TagPolicy",
+        ]
+        Resource = "arn:aws:iam::*:policy/ollama-*"
+      },
+      {
+        Sid    = "IAMOIDCProvider"
+        Effect = "Allow"
+        Action = [
+          "iam:CreateOpenIDConnectProvider",
+          "iam:DeleteOpenIDConnectProvider",
+          "iam:GetOpenIDConnectProvider",
+          "iam:TagOpenIDConnectProvider",
+          "iam:UpdateOpenIDConnectProviderThumbprint",
+          "iam:ListOpenIDConnectProviders",
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "IAMServiceLinkedRoles"
+        Effect = "Allow"
+        Action = [
+          "iam:CreateServiceLinkedRole",
+          "iam:GetServiceLinkedRoleDeletionStatus",
+        ]
+        Resource = "*"
+      },
+    ]
+  })
+}
