@@ -8,41 +8,41 @@
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
-      background: #0f0f11; color: #e4e4e7; min-height: 100vh;
+      background: #f4f4f5; color: #27272a; min-height: 100vh;
       display: flex; align-items: center; justify-content: center;
     }
     .container { width: 100%; max-width: 420px; padding: 24px; }
     .logo { text-align: center; margin-bottom: 28px; }
     .logo svg { width: 44px; height: 44px; margin-bottom: 10px; }
-    .logo h1 { font-size: 22px; font-weight: 700; color: #fafafa; }
+    .logo h1 { font-size: 22px; font-weight: 700; color: #18181b; }
     .logo p { font-size: 13px; color: #71717a; margin-top: 4px; }
     .card {
-      background: #18181b; border-radius: 14px; padding: 28px;
-      border: 1px solid #27272a;
+      background: #ffffff; border-radius: 14px; padding: 28px;
+      border: 1px solid #e4e4e7; box-shadow: 0 1px 3px rgba(0,0,0,0.06);
     }
     .tabs {
-      display: flex; gap: 0; margin-bottom: 24px; border-bottom: 1px solid #27272a;
+      display: flex; gap: 0; margin-bottom: 24px; border-bottom: 1px solid #e4e4e7;
     }
     .tab {
       flex: 1; padding: 10px 0; text-align: center; cursor: pointer;
-      font-size: 14px; font-weight: 500; color: #71717a;
+      font-size: 14px; font-weight: 500; color: #a1a1aa;
       border: none; background: none; border-bottom: 2px solid transparent;
       transition: all 0.2s; margin-bottom: -1px;
     }
     .tab.active { color: #3b82f6; border-bottom-color: #3b82f6; }
-    .tab:hover:not(.active) { color: #a1a1aa; }
+    .tab:hover:not(.active) { color: #52525b; }
     .form-group { margin-bottom: 16px; }
     .form-group label {
-      display: block; font-size: 13px; font-weight: 500; color: #a1a1aa;
+      display: block; font-size: 13px; font-weight: 500; color: #52525b;
       margin-bottom: 6px;
     }
     .form-group input {
-      width: 100%; padding: 10px 12px; background: #09090b;
-      border: 1px solid #3f3f46; border-radius: 8px; color: #fafafa;
+      width: 100%; padding: 10px 12px; background: #fafafa;
+      border: 1px solid #d4d4d8; border-radius: 8px; color: #18181b;
       font-size: 14px; outline: none; transition: border-color 0.2s;
     }
-    .form-group input:focus { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.15); }
-    .form-group input::placeholder { color: #52525b; }
+    .form-group input:focus { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.12); }
+    .form-group input::placeholder { color: #a1a1aa; }
     .btn {
       width: 100%; padding: 10px; border: none; border-radius: 8px;
       font-size: 14px; font-weight: 600; cursor: pointer;
@@ -50,36 +50,36 @@
     }
     .btn-primary { background: #3b82f6; color: #fff; }
     .btn-primary:hover { background: #2563eb; }
-    .btn-primary:disabled { background: #1e3a5f; color: #64748b; cursor: not-allowed; }
+    .btn-primary:disabled { background: #bfdbfe; color: #93c5fd; cursor: not-allowed; }
     .btn-outline {
-      background: transparent; color: #a1a1aa; border: 1px solid #3f3f46;
+      background: transparent; color: #71717a; border: 1px solid #d4d4d8;
     }
-    .btn-outline:hover { background: #27272a; color: #e4e4e7; }
+    .btn-outline:hover { background: #f4f4f5; color: #27272a; }
     .divider {
       display: flex; align-items: center; gap: 12px; margin: 18px 0;
-      color: #52525b; font-size: 13px;
+      color: #a1a1aa; font-size: 13px;
     }
     .divider::before, .divider::after {
-      content: ''; flex: 1; height: 1px; background: #27272a;
+      content: ''; flex: 1; height: 1px; background: #e4e4e7;
     }
     .message {
       padding: 10px 12px; border-radius: 8px; font-size: 13px;
       margin-bottom: 14px; display: none; line-height: 1.5;
     }
-    .message.error { background: #1c0a0a; color: #f87171; border: 1px solid #7f1d1d; display: block; }
-    .message.success { background: #052e16; color: #4ade80; border: 1px solid #14532d; display: block; }
-    .message.info { background: #0c1929; color: #60a5fa; border: 1px solid #1e3a5f; display: block; }
+    .message.error { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; display: block; }
+    .message.success { background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; display: block; }
+    .message.info { background: #eff6ff; color: #2563eb; border: 1px solid #bfdbfe; display: block; }
     .password-requirements {
-      font-size: 12px; color: #52525b; margin-top: 6px; line-height: 1.6;
+      font-size: 12px; color: #a1a1aa; margin-top: 6px; line-height: 1.6;
     }
     .password-requirements span { display: inline-block; margin-right: 8px; }
-    .password-requirements span.met { color: #4ade80; }
-    .footer { text-align: center; margin-top: 20px; font-size: 12px; color: #52525b; }
+    .password-requirements span.met { color: #16a34a; }
+    .footer { text-align: center; margin-top: 20px; font-size: 12px; color: #a1a1aa; }
     .footer a { color: #71717a; text-decoration: none; }
-    .footer a:hover { color: #a1a1aa; text-decoration: underline; }
+    .footer a:hover { color: #52525b; text-decoration: underline; }
     .spinner {
       display: inline-block; width: 16px; height: 16px;
-      border: 2px solid #1e3a5f; border-top-color: #3b82f6;
+      border: 2px solid #bfdbfe; border-top-color: #3b82f6;
       border-radius: 50%; animation: spin 0.6s linear infinite;
       vertical-align: middle; margin-right: 6px;
     }
@@ -95,18 +95,19 @@
       color: #71717a; font-size: 13px; text-decoration: none; margin-bottom: 16px;
       cursor: pointer;
     }
-    .back-link:hover { color: #a1a1aa; }
+    .back-link:hover { color: #52525b; }
     .panel { display: none; }
     .panel.active { display: block; }
     .qr-container {
       text-align: center; margin: 16px 0; padding: 16px;
       background: #fff; border-radius: 8px; display: inline-block;
+      border: 1px solid #e4e4e7;
     }
     .secret-code {
       font-family: 'SF Mono', 'Fira Code', monospace; font-size: 14px;
-      background: #09090b; border: 1px solid #3f3f46; border-radius: 6px;
+      background: #f4f4f5; border: 1px solid #d4d4d8; border-radius: 6px;
       padding: 8px 12px; word-break: break-all; text-align: center;
-      margin: 8px 0; color: #fafafa; letter-spacing: 2px;
+      margin: 8px 0; color: #18181b; letter-spacing: 2px;
     }
     .step-indicator {
       display: flex; align-items: center; justify-content: center; gap: 8px;
@@ -117,10 +118,10 @@
     }
     .step.active { background: #3b82f6; color: #fff; }
     .step.done { background: #059669; color: #fff; }
-    .step.pending { background: #27272a; color: #52525b; }
+    .step.pending { background: #e4e4e7; color: #a1a1aa; }
     .step-line { width: 32px; height: 2px; }
     .step-line.done { background: #059669; }
-    .step-line.pending { background: #27272a; }
+    .step-line.pending { background: #e4e4e7; }
   </style>
 </head>
 <body>
@@ -169,7 +170,7 @@
           <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <rect x="5" y="11" width="14" height="10" rx="2"/><path d="M12 16v2"/><circle cx="12" cy="7" r="3"/>
           </svg>
-          <p style="font-size:15px;font-weight:600;color:#fafafa;margin-top:8px">Two-Factor Authentication</p>
+          <p style="font-size:15px;font-weight:600;color:#18181b;margin-top:8px">Two-Factor Authentication</p>
           <p style="font-size:13px;color:#71717a;margin-top:4px">Enter the 6-digit code from your authenticator app</p>
         </div>
         <div id="mfa-message" class="message"></div>
@@ -191,7 +192,7 @@
           <div class="step pending">2</div>
         </div>
         <div style="text-align:center;margin-bottom:20px">
-          <p style="font-size:15px;font-weight:600;color:#fafafa">Set Your Password</p>
+          <p style="font-size:15px;font-weight:600;color:#18181b">Set Your Password</p>
           <p style="font-size:13px;color:#71717a;margin-top:4px">Choose a new password to replace your temporary one</p>
         </div>
         <div id="newpassword-message" class="message"></div>
@@ -223,7 +224,7 @@
           <div class="step active">2</div>
         </div>
         <div style="text-align:center;margin-bottom:16px">
-          <p style="font-size:15px;font-weight:600;color:#fafafa">Set Up Authenticator</p>
+          <p style="font-size:15px;font-weight:600;color:#18181b">Set Up Authenticator</p>
           <p style="font-size:13px;color:#71717a;margin-top:4px">Scan the QR code with your authenticator app (Google Authenticator, Authy, etc.)</p>
         </div>
         <div id="mfasetup-message" class="message"></div>
@@ -250,7 +251,7 @@
           Back to Sign In
         </a>
         <div style="text-align:center;margin-bottom:20px">
-          <p style="font-size:15px;font-weight:600;color:#fafafa">Reset Password</p>
+          <p style="font-size:15px;font-weight:600;color:#18181b">Reset Password</p>
           <p style="font-size:13px;color:#71717a;margin-top:4px">Enter your email to receive a verification code</p>
         </div>
         <div id="forgot-message" class="message"></div>
@@ -270,7 +271,7 @@
           Back
         </a>
         <div style="text-align:center;margin-bottom:20px">
-          <p style="font-size:15px;font-weight:600;color:#fafafa">Enter Verification Code</p>
+          <p style="font-size:15px;font-weight:600;color:#18181b">Enter Verification Code</p>
           <p style="font-size:13px;color:#71717a;margin-top:4px">Check your email for the code</p>
         </div>
         <div id="reset-message" class="message"></div>

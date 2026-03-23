@@ -103,43 +103,44 @@ CloudFront connects to the internal NLB via **VPC Origins** — private connecti
 
 **Current phase: DEV** — using Tier 1 fallback (`qwen3.5:27b`) on g5.xlarge (1x A10G, $0.35/hr spot) for infrastructure testing and platform validation.
 
-**PROD upgrade:** When ready for production, switch to Tier 3 flagship. Two changes:
+### Flex Mode — Switch Tiers Without Reprovisioning
 
-1. **Terraform:** `terraform apply -var-file=environments/prod.tfvars`
-2. **ArgoCD:** Change `path` in 4 app files from `k8s/overlays/dev/...` to `k8s/overlays/prod/...` (nodepools, ollama, model-loader, open-webui)
+The DEV NodePool ceiling allows **both** g5.xlarge and g5.12xlarge. Karpenter provisions the instance type based on what the Ollama pod **requests** — not the ceiling. `switch-model.sh` patches the deployment resources and Karpenter auto-swaps nodes:
 
-Three tiers available, all pre-downloaded to EBS via snapshot:
-
-| Tier | Model | GPU | Spot Cost | When to Use |
-|------|-------|-----|-----------|-------------|
-| **1 (Current)** | **`qwen3.5:27b`** | **g5.xlarge (1x A10G)** | **$0.35/hr** | **DEV — platform testing, monitoring setup** |
-| 2 (Code) | `qwen3-coder:30b-a3b` | g5.xlarge (1x A10G) | $0.35/hr | Pure coding tasks, very fast MoE inference |
-| 3 (Flagship) | `qwen3.5:122b-a10b` | g5.12xlarge (4x A10G) | $1.90/hr | PROD — maximum quality |
-
-Switch tiers using the `/model` command in Claude Code, or directly via:
+| Tier | Model | Instance | Spot Cost | Resources |
+|------|-------|----------|-----------|-----------|
+| **1 (Default)** | **`qwen3.5:27b`** | **g5.xlarge (1x A10G)** | **$0.35/hr** | **1 GPU, 14Gi, 3 CPU** |
+| 2 (Code) | `qwen3-coder:30b-a3b` | g5.xlarge (1x A10G) | $0.35/hr | 1 GPU, 14Gi, 3 CPU |
+| 3 (Flagship) | `qwen3.5:122b-a10b` | g5.12xlarge (4x A10G) | $1.90/hr | 4 GPU, 96Gi, 16 CPU |
+| Idle (KEDA) | — | No GPU node | $0/hr | — |
 
 ```bash
-./switch-model.sh use 3   # flagship (default)
-./switch-model.sh use 1   # fallback
-./switch-model.sh use 2   # code-optimised
+./switch-model.sh use 1       # fallback  → g5.xlarge  (~3 min)
+./switch-model.sh use 2       # coder     → g5.xlarge  (~3 min)
+./switch-model.sh use 3       # flagship  → g5.12xlarge (~5 min)
+./switch-model.sh status      # show current tier, hardware, models
 ```
 
-### Environment Configuration
+> **How it works:** The script pauses KEDA → patches Ollama deployment GPU/memory/CPU → Karpenter provisions the right node → loads the model → resumes KEDA. Cost stays DEV-level by default; flagship costs more only while actively in use. After 15 min idle, KEDA + Karpenter tear everything down to $0/hr regardless of tier.
 
-Environment-specific values (GPU instance sizes, model names, resource limits) are managed via:
+> **Prereq:** AWS GPU quota (`L-3819A6DF`) must be ≥ 48 vCPUs for Tier 3. Request via Service Quotas console (1-3 day approval).
 
-- **Terraform:** `terraform apply -var-file=environments/dev.tfvars` (or `prod.tfvars`)
-- **K8s manifests:** Kustomize overlays in `k8s/overlays/dev/` and `k8s/overlays/prod/`
-- **ArgoCD:** Application files point to `k8s/overlays/{env}/` paths
+### Single-Stack Architecture
 
-To switch from DEV to PROD: update the 4 ArgoCD app paths and run Terraform with the prod tfvars. No file editing or uncommenting required.
+One stack handles all tiers — no separate DEV/PROD overlays needed:
+
+- **K8s manifests:** ArgoCD apps point directly to base manifests (`k8s/ollama/`, `k8s/nodepools/`, etc.)
+- **Tier switching:** `./switch-model.sh use <tier>` patches deployment resources at runtime
+- **Terraform:** `terraform apply -var-file=environments/dev.tfvars` for cloud-level config
+
+**Availability zones:** Defaults to single AZ (`ap-southeast-2a`) — keeps costs down and EBS PVCs co-located. For multi-AZ HA, uncomment `ap-southeast-2b` in `k8s/nodepools/gpu-nodepool.yaml`. Karpenter will provision GPU nodes across both AZs automatically.
 
 ### Key Design Decisions
 
 | Decision | Rationale |
 |----------|-----------|
 | CloudFront + WAF + API Gateway (not Kong) | 99% cost reduction ($756/mo → $6/mo), adds DDoS protection, eliminates Transit Gateway dependency |
-| EKS Auto Mode + Custom NodePools | Built-in pools disabled (`node_pools = []`). Two custom Karpenter NodePools: system (t3.xlarge on-demand, `WhenEmptyOrUnderutilized` 5m) and GPU (g5 spot, `WhenEmpty` 30m). System on-demand because CoreDNS/Istio/Prometheus cannot tolerate spot interruptions. AWS manages NVIDIA device plugin and drivers |
+| EKS Auto Mode + Custom NodePools | Built-in pools disabled (`node_pools = []`). Two custom Karpenter NodePools: system (t3.xlarge on-demand, single AZ `ap-southeast-2a`, `WhenEmptyOrUnderutilized` 5m) and GPU (g5 spot, same AZ, `WhenEmpty` 30m). DEV uses single AZ to keep EBS PVCs co-located and consolidate to 1 system node. System on-demand because CoreDNS/Istio/Prometheus cannot tolerate spot interruptions. AWS manages NVIDIA device plugin and drivers |
 | KEDA auto-scale-to-zero | KEDA **only targets the Ollama deployment** (GPU workload). After 15 min idle, scales Ollama to 0. Karpenter terminates empty GPU node after 10 min. Total idle-to-zero: ~25 min. Open WebUI stays at 1 replica on system nodes (never scaled to zero). Manual scale-up via `scripts/scale-up.sh` |
 | EBS snapshots for model weights | Pre-loaded models on disk, no internet needed for model loading (air-gap compliant), cold start ~3 min instead of 15-25 min |
 | High-throughput gp3 (400 MB/s + 6000 IOPS) | Fast model loading from snapshot — critical for reasonable cold start times |
@@ -149,7 +150,8 @@ To switch from DEV to PROD: update the 4 ArgoCD app paths and run Terraform with
 | Ollama image pinned to v0.18.2 | Reproducible builds, no surprise breaking changes from `:latest` |
 | Custom login portal + Cognito | All auth flows (login, signup, MFA, password reset) handled by custom portal — users never see Cognito hosted UI. Cognito provides OAuth/OIDC backend with TOTP MFA and group-based roles |
 | cert-manager (not manual openssl) | Automated TLS lifecycle — 90d duration, 30d auto-renewal, no manual cert rotation |
-| Environment-based configuration (Terraform tfvars + Kustomize overlays) | DEV and PROD configs (instance types, models, resources) defined separately. No manual file editing or comment-toggling. Switch via `terraform apply -var-file=environments/prod.tfvars` + ArgoCD path update |
+| Flex mode (single-stack architecture) | One stack, all tiers. NodePool ceiling allows both g5.xlarge and g5.12xlarge. `switch-model.sh` patches deployment resources, Karpenter auto-provisions the right instance. Cost = Tier 1 by default; flagship costs only while active. No reprovisioning needed |
+| Single AZ default, multi-AZ configurable | Defaults to `ap-southeast-2a`. Multi-AZ HA enabled by uncommenting one line in `k8s/nodepools/gpu-nodepool.yaml` — no other changes needed |
 
 ### Dual-Mode Pipeline — Two Separate Stacks
 
@@ -434,19 +436,25 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 
 ## Day-to-Day Usage
 
-### Model Tier Switching
+### Model Tier Switching (Flex Mode)
 
-Use the `/model` command in Claude Code for an interactive picker, or specify directly:
+All three tiers are available on the same stack. The script patches deployment resources and Karpenter auto-provisions the right instance:
 
 ```bash
+# Via Claude Code interactive picker:
 /model              # interactive — shows tiers and asks which one
 /model 3            # switch to flagship immediately
 /model fallback     # switch to Tier 1
-/model coder        # switch to Tier 2
 
-# Or via shell script directly:
-./switch-model.sh use 3
+# Or via shell script (handles everything: KEDA pause, resource patch, node swap, model load):
+./switch-model.sh use 1       # fallback  → g5.xlarge  (~3 min)
+./switch-model.sh use 2       # coder     → g5.xlarge  (~3 min)
+./switch-model.sh use 3       # flagship  → g5.12xlarge (~5 min, needs GPU quota)
+./switch-model.sh status      # current tier, hardware, available models
+./switch-model.sh list        # all tiers with resource requirements
 ```
+
+The switch process: pause KEDA → patch GPU/memory/CPU → wait for Karpenter node → load model → resume KEDA. After 15 min idle, KEDA + Karpenter tear down the GPU node regardless of tier.
 
 ### Open WebUI (Browser-Based Chat Interface)
 
@@ -501,7 +509,7 @@ Model switching is **restricted to admins only** — regular users see only the 
 | Self-service password reset | User clicks "Reset Password" banner in Open WebUI → custom login portal (`/auth/login.html`) → "Forgot password?" → email code → new password |
 | Disable user | Cognito Console → Users → select user → Disable |
 
-To change the locked model for regular users, update `MODEL_FILTER_LIST` in `k8s/open-webui/deployment.yaml` and redeploy. Admins can also switch the cluster-wide default via `./switch-model.sh use <tier>`.
+To change the locked model for regular users, update `MODEL_FILTER_LIST` in `k8s/open-webui/deployment.yaml` and redeploy. Admins can switch between compatible tiers via `./switch-model.sh use <tier>` (the script validates GPU hardware and blocks incompatible models).
 
 ### Observability (Prometheus → AMP → AWS Managed Grafana)
 
@@ -868,20 +876,6 @@ k8s/
   gateway.yaml                     # Istio Gateway
   httproutes.yaml                  # HTTPRoutes to Ollama + Open WebUI
   monitoring-networkpolicy.yaml    # Monitoring namespace air-gap
-  overlays/
-    dev/                           # DEV environment (Tier 1, g5.xlarge, qwen3.5:27b)
-      kustomization.yaml           # Base + patches for DEV
-      nodepools.yaml               # DEV: xlarge only
-      ollama.yaml                  # DEV: Tier 1 model
-      model-loader.yaml            # DEV: pull qwen3.5:27b
-      open-webui.yaml              # DEV: filter to qwen3.5:27b
-    prod/                          # PROD environment (Tier 3, g5.12xlarge, qwen3.5:122b-a10b)
-      kustomization.yaml           # Base + patches for PROD
-      nodepools.yaml               # PROD: xlarge/2xlarge/12xlarge
-      ollama.yaml                  # PROD: Tier 3 model
-      model-loader.yaml            # PROD: pull qwen3.5:122b-a10b
-      open-webui.yaml              # PROD: filter to qwen3.5:122b-a10b
-
 argocd/apps/                       # Wave-based Application manifests (00-12, incl. 01b-system-nodepool.yaml)
 
 scripts/
@@ -899,7 +893,7 @@ scripts/
   terraform-plan.yml               # PR → plan → comment
   terraform-apply.yml              # Merge → apply → verify air-gap
 
-switch-model.sh                    # Model tier switching (repo root)
+switch-model.sh                    # Model tier switching with GPU hardware validation (repo root)
 
 .claude/skills/
   readme-sync/SKILL.md             # Skill: keep README + HTML + architecture diagrams in sync
@@ -975,7 +969,7 @@ terraform destroy
 - **Ollama-EKS-Report.html** — Full visual report with architecture diagrams, cost tables, and implementation details
 - **RECOMMENDATIONS-Ollama-EKS-Improvements.md** — Detailed recommendations for each improvement area
 - **CLAUDE.md** — Project context file for Claude Code implementation
-- **switch-model.sh** — Model tier switching script
+- **switch-model.sh** — Model tier switching script with GPU hardware validation (blocks Tier 3 on DEV, shows PROD switch instructions)
 
 ---
 

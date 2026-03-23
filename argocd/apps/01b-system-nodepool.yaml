@@ -1,9 +1,7 @@
 # Wave 1: System + GPU NodePools
-# Deploys custom Karpenter NodePools and NodeClasses for system (t3.large on-demand)
-# and GPU (g5 spot) workloads. Replaces built-in "general-purpose" and "system" pools.
+# Deploys custom Karpenter NodePools and NodeClasses for system (t3.xlarge on-demand)
+# and GPU (g5 spot, flex ceiling allows xlarge + 12xlarge) workloads.
 # Must run early (wave 1) so nodes are available before workloads in wave 2+.
-#
-# Environment switch: change path to k8s/overlays/prod/nodepools for PROD
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -16,7 +14,7 @@ spec:
   source:
     repoURL: https://github.com/shanaka-versent/Ollama-on-EKS
     targetRevision: HEAD
-    path: k8s/overlays/dev/nodepools
+    path: k8s/nodepools
   destination:
     server: https://kubernetes.default.svc
     namespace: default

@@ -54,12 +54,11 @@ spec:
           operator: In
           values:
             - on-demand
-        # Sydney region AZs
+        # Single AZ for DEV — all PVCs bind to the same zone, 1 node sufficient
         - key: topology.kubernetes.io/zone
           operator: In
           values:
             - ap-southeast-2a
-            - ap-southeast-2b
       # No taints — system pool is open to all non-GPU workloads
       expireAfter: 336h
   # Resource limits — enough for up to 4x t3.large nodes

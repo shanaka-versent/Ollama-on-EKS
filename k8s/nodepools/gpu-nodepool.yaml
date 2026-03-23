@@ -1,18 +1,20 @@
 # GPU NodePool for Ollama LLM Inference (EKS Auto Mode)
 # @author Shanaka Jayasundera - shanakaj@gmail.com
 #
-# EKS Auto Mode NodePool for GPU workloads. Provisions g5 instances with spot
-# preference and on-demand fallback. Karpenter always tries spot first (cheaper).
-# If spot unavailable, falls back to on-demand. GPUOnDemandFallback alert fires
-# via Prometheus → SNS → email so you know you're paying full price.
-# Nodes terminate 10 minutes after becoming empty to save costs.
-# KEDA scales Ollama to 0 after 15 min idle; Karpenter terminates the node 10 min later.
+# Flex Mode — NodePool ceiling allows both g5.xlarge (Tier 1/2) and
+# g5.12xlarge (Tier 3 flagship). Karpenter provisions based on what
+# the Ollama pod REQUESTS — not the ceiling. The ceiling is just a
+# permission, not a provisioning order.
+#
+#   Pod requests 1 GPU  → g5.xlarge   ($0.35/hr spot)
+#   Pod requests 4 GPUs → g5.12xlarge ($1.90/hr spot)
+#   Pod scaled to 0     → no GPU node ($0/hr)
+#
+# switch-model.sh patches the deployment resources to switch tiers.
+# Karpenter auto-provisions the right instance type.
 #
 # IMPORTANT: EKS Auto Mode uses karpenter.sh/v1 API (NOT v1beta1) and
 # eks.amazonaws.com NodeClass (NOT karpenter.k8s.aws EC2NodeClass).
-#
-# Environment-specific values (instance sizes, resource limits) are set via
-# Kustomize overlays in k8s/overlays/dev/ and k8s/overlays/prod/.
 #
 # Instance types:
 #   g5.xlarge   — 1x A10G (24GB) — Tier 1 (27b) / Tier 2 (coder:30b)
@@ -41,12 +43,14 @@ spec:
         - key: eks.amazonaws.com/instance-family
           operator: In
           values: ["g5"]
-        # Instance sizes — set per environment via Kustomize overlay
+        # Flex: allow xlarge (Tier 1/2) and 12xlarge (Tier 3 flagship)
+        # Karpenter picks the smallest instance that fits the pod's requests
         - key: eks.amazonaws.com/instance-size
           operator: In
           values:
             - xlarge
             - 2xlarge
+            - 12xlarge
         # NVIDIA GPUs only
         - key: eks.amazonaws.com/instance-gpu-manufacturer
           operator: In
@@ -60,12 +64,13 @@ spec:
           values:
             - spot
             - on-demand
-        # Sydney region AZs
+        # Single AZ — keeps all EBS PVCs co-located
+        # For multi-AZ HA: uncomment ap-southeast-2b
         - key: topology.kubernetes.io/zone
           operator: In
           values:
             - ap-southeast-2a
-            - ap-southeast-2b
+            # - ap-southeast-2b    # Uncomment for multi-AZ HA
         - key: kubernetes.io/arch
           operator: In
           values: ["amd64"]
@@ -75,11 +80,12 @@ spec:
           effect: NoSchedule
       # Auto-expire nodes after 14 days (forces refresh, picks up new AMIs)
       expireAfter: 336h
-  # Resource limits — set per environment via Kustomize overlay
+  # Ceiling: must accommodate g5.12xlarge (48 vCPU, 192Gi, 4 GPU)
+  # This is the MAXIMUM Karpenter can provision — not what's always running
   limits:
-    cpu: "8"
-    memory: 32Gi
-    nvidia.com/gpu: "1"
+    cpu: "48"
+    memory: 192Gi
+    nvidia.com/gpu: "4"
   # Disruption — terminate GPU node 10 min after Ollama pod is removed
   # KEDA handles the 15-min idle detection; Karpenter handles the node lifecycle
   disruption:

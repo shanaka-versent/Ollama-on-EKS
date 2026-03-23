@@ -1,8 +1,0 @@
-# PROD overlay for Open WebUI
-# Patches deployment: DEFAULT_MODELS and MODEL_FILTER_LIST to flagship
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-resources:
-  - ../../../open-webui
-patches:
-  - path: deployment-patch.yaml

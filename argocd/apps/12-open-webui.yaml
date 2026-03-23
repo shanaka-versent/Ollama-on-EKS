@@ -1,10 +1,7 @@
 # Wave 7: Open WebUI — Browser-Based Chat Interface
 # Deploys Open WebUI with Cognito auth, model locked for regular users.
-# DEV: qwen3.5:27b — PROD: qwen3.5:122b-a10b
-# Model set via Kustomize overlays.
+# Default model: qwen3.5:27b (Tier 1). Admins can switch via UI or CLI.
 # Requires: namespaces, Ollama (wave 3), Gateway (wave 5)
-#
-# Environment switch: change path to k8s/overlays/prod/open-webui for PROD
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -17,7 +14,7 @@ spec:
   source:
     repoURL: https://github.com/shanaka-versent/Ollama-on-EKS
     targetRevision: HEAD
-    path: k8s/overlays/dev/open-webui
+    path: k8s/open-webui
   destination:
     server: https://kubernetes.default.svc
     namespace: open-webui

@@ -159,17 +159,8 @@ def handle_login(event):
             })
 
         if challenge == 'MFA_SETUP':
-            # User changed password but hasn't enrolled MFA yet
-            state = json.dumps({
-                'session': api_result.get('Session', ''),
-                'email': email,
-                'challenge': 'MFA_SETUP',
-            })
-            return api_response(200, {
-                'status': 'mfa_setup_required',
-                'message': 'Please set up your authenticator app.',
-                'session': base64.b64encode(state.encode()).decode(),
-            })
+            # User changed password previously but hasn't enrolled MFA yet
+            return _initiate_mfa_setup(email, api_result.get('Session', ''))
 
         # If SOFTWARE_TOKEN_MFA challenge or auth succeeded, continue to
         # hosted UI scraping for the full OAuth flow (Phase 2 below)
@@ -452,10 +443,7 @@ def handle_mfa(event):
 def handle_change_password(event):
     """Handle NEW_PASSWORD_REQUIRED challenge via Cognito API."""
     try:
-        raw_body = event.get('body', '{}')
-        if event.get('isBase64Encoded') and raw_body:
-            raw_body = base64.b64decode(raw_body).decode('utf-8')
-        body = json.loads(raw_body or '{}')
+        body = parse_body(event)
     except (json.JSONDecodeError, TypeError):
         return api_response(400, {'error': 'Invalid request body'})
 
@@ -601,28 +589,39 @@ def handle_setup_mfa(event):
         result = cognito_api('VerifySoftwareToken', {
             'Session': session,
             'UserCode': totp_code,
+            'FriendlyDeviceName': 'Authenticator',
         })
 
         status = result.get('Status', '')
         new_session = result.get('Session', '')
 
+        print(f'VerifySoftwareToken result: status={status}, has_session={bool(new_session)}')
+
         if status != 'SUCCESS':
             return api_response(401, {'error': 'Invalid code. Please check your authenticator app and try again.'})
 
-        # Step 2: Complete MFA_SETUP challenge
-        challenge_responses = {
-            'USERNAME': email,
-        }
-        secret_hash = compute_secret_hash(email)
-        if secret_hash:
-            challenge_responses['SECRET_HASH'] = secret_hash
+        # Step 2: Complete MFA_SETUP challenge (best-effort)
+        # VerifySoftwareToken SUCCESS means the TOTP device is registered.
+        # RespondToAuthChallenge completes the auth flow for tokens, but since
+        # we redirect the user to sign in again, failure here is non-fatal.
+        if new_session:
+            try:
+                challenge_responses = {
+                    'USERNAME': email,
+                }
+                secret_hash = compute_secret_hash(email)
+                if secret_hash:
+                    challenge_responses['SECRET_HASH'] = secret_hash
 
-        result = cognito_api('RespondToAuthChallenge', {
-            'ClientId': CLIENT_ID,
-            'ChallengeName': 'MFA_SETUP',
-            'Session': new_session,
-            'ChallengeResponses': challenge_responses,
-        })
+                cognito_api('RespondToAuthChallenge', {
+                    'ClientId': CLIENT_ID,
+                    'ChallengeName': 'MFA_SETUP',
+                    'Session': new_session,
+                    'ChallengeResponses': challenge_responses,
+                })
+            except Exception as challenge_err:
+                # Non-fatal — MFA device is already registered via VerifySoftwareToken
+                print(f'RespondToAuthChallenge(MFA_SETUP) failed (non-fatal): {challenge_err}')
 
         # Setup complete — user should now sign in normally
         return api_response(200, {
@@ -635,6 +634,8 @@ def handle_setup_mfa(event):
         print(f'MFA setup verification error: {error_msg}')
         if 'EnableSoftwareTokenMFAException' in error_msg or 'CodeMismatchException' in error_msg:
             return api_response(401, {'error': 'Invalid code. Please check your authenticator app and try again.'})
+        if 'NotAuthorizedException' in error_msg:
+            return api_response(401, {'error': 'Session expired. Please sign in again to restart MFA setup.'})
         return api_response(500, {'error': 'MFA setup failed. Please try again.'})
 
 
