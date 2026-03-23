@@ -516,18 +516,39 @@ Prometheus and DCGM Exporter run in-cluster, remote-writing all metrics to AWS M
 | AMP (AWS Managed Prometheus) | Managed metrics store — receives remote-write from in-cluster Prometheus |
 | AMG (AWS Managed Grafana) | 4 dashboards: GPU metrics, Ollama API, Karpenter lifecycle, FinOps showback. SSO login |
 
-**Alert Rules (6 configured):**
+**Alert Rules (8 configured):**
 
-| Alert | Threshold |
-|-------|-----------|
-| GPU temperature | > 85°C |
-| GPU memory usage | > 90% |
-| Ollama pod restarts | Any restart |
-| Node not ready | Node leaves Ready state |
-| High API error rate | Elevated 5xx responses |
-| PV usage | > 80% capacity |
+| Alert | Threshold | Notification |
+|-------|-----------|-------------|
+| GPU temperature high | > 85°C for 5 min | SNS warning |
+| GPU memory critical | > 95% for 2 min | SNS critical |
+| GPU memory high | > 85% for 5 min | SNS warning |
+| Ollama pod restarts | > 2 restarts/hr | SNS warning |
+| GPU pod stuck pending | Pending > 5 min (spot unavailable) | SNS critical |
+| GPU on-demand fallback | GPU node using on-demand pricing | SNS warning |
+| GPU spot interruption | Spot instance reclaimed by AWS | SNS warning |
+| Karpenter provisioning failed | Failed to provision GPU node | SNS critical |
+
+**Alert Notifications (Alertmanager → SNS → Email):**
+
+Set the `alert_email` Terraform variable to enable alert delivery. Alertmanager routes critical alerts (spot unavailable, provisioning failures) with 10s group delay and 30-60 min repeat, and warning alerts (on-demand fallback, spot interruption) with 1-min group delay and 2-hr repeat.
+
+```bash
+# In terraform.tfvars:
+alert_email = "your-email@example.com"
+
+# After terraform apply, confirm the SNS subscription email from AWS
+```
 
 The monitoring namespace has its own air-gapped NetworkPolicy (`k8s/monitoring-networkpolicy.yaml`). Prometheus has HTTPS egress for AMP remote write and STS token exchange.
+
+**AMG Data Source + Dashboard Setup:**
+
+After the first `terraform apply`, run the AMG setup script to configure data sources (AMP + CloudWatch) and import all 4 dashboards:
+
+```bash
+./scripts/setup-amg.sh
+```
 
 ### FinOps Showback Dashboard
 
@@ -621,6 +642,8 @@ Token generation: flagship produces 30-50 tok/s. A 500-token response takes ~10-
 ### Auto-Scale-to-Zero (KEDA)
 
 KEDA monitors container CPU usage via Prometheus. When no inference activity is detected for 15 minutes, KEDA scales the Ollama deployment to 0 replicas. Karpenter then detects the empty GPU node and terminates it after 10 minutes. Total time from last request to GPU billing stop: ~25 minutes.
+
+> **ArgoCD compatibility:** The Ollama ArgoCD app uses `ignoreDifferences` on `/spec/replicas` so ArgoCD's `selfHeal` doesn't fight KEDA's scaling. Without this, ArgoCD would constantly reset replicas to 1.
 
 | Stage | Trigger | Delay |
 |-------|---------|-------|
@@ -867,6 +890,7 @@ scripts/
   01-setup.sh                      # Post-terraform cluster setup
   04-post-setup.sh                 # NLB discovery + endpoint verification
   scale-up.sh / scale-down.sh      # GPU node scaling helpers
+  setup-amg.sh                     # AMG data source + dashboard setup (run once after first deploy)
   test-ollama-stack.sh             # Integration tests
 
 .github/workflows/

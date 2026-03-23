@@ -470,6 +470,9 @@ module "observability" {
   amp_remote_write_endpoint = module.managed_grafana.amp_remote_write_endpoint
   amp_remote_write_role_arn = module.managed_grafana.prometheus_remote_write_role_arn
 
+  # Alert notifications: Alertmanager → SNS → email
+  alert_email = var.alert_email
+
   tags = var.tags
 
   depends_on = [

@@ -73,6 +73,10 @@ cloudfront_domain = "dt9vb3dm9lagy.cloudfront.net"
 cognito_admin_email        = "shanaka.jayasundera@versent.com.au"
 cognito_notification_email = "shanaka.jayasundera@versent.com.au"
 
+# Alert Notifications (Alertmanager → SNS → email)
+# Spot interruption, on-demand fallback, GPU termination alerts
+alert_email = "shanaka.jayasundera@versent.com.au"
+
 # ArgoCD GitOps
 # ArgoCD watches argocd/apps/ in the Git repo and deploys everything automatically.
 git_repo_url         = "https://github.com/shanaka-versent/Ollama-on-EKS"

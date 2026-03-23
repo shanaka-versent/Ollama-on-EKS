@@ -121,7 +121,6 @@ alertmanager:
       - name: "sns-critical"
         sns_configs:
           - topic_arn: "${sns_alert_topic_arn}"
-            region: "ap-southeast-2"
             subject: "[CRITICAL] Ollama EKS Alert"
             sigv4:
               region: "ap-southeast-2"
@@ -130,7 +129,6 @@ alertmanager:
       - name: "sns-warning"
         sns_configs:
           - topic_arn: "${sns_alert_topic_arn}"
-            region: "ap-southeast-2"
             subject: "[WARNING] Ollama EKS Alert"
             sigv4:
               region: "ap-southeast-2"
