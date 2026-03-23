@@ -1,18 +1,21 @@
 #!/bin/bash
-# Scale up GPU node group and start Ollama
+# Scale up Ollama — Karpenter auto-provisions GPU node
 # @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# With EKS Auto Mode + Karpenter: just scale the deployment to 1.
+# Karpenter provisions a g5 GPU node automatically (~2-3 min).
+# KEDA auto-scaling is paused during startup, then unpaused so
+# the 15-min idle timer starts from when the model finishes loading.
 #
 # Usage:
 #   ./scripts/scale-up.sh
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(dirname "$SCRIPT_DIR")"
-
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
+RED='\033[0;31m'
 BOLD='\033[1m'
 NC='\033[0m'
 
@@ -24,32 +27,21 @@ echo ""
 
 export AWS_PROFILE="${AWS_PROFILE:-stax-stax-au1-versent-innovation}"
 
-CLUSTER=$(terraform -chdir="$ROOT_DIR/terraform" output -raw eks_cluster_name)
-NODE_GROUP=$(terraform -chdir="$ROOT_DIR/terraform" output -raw gpu_node_group_name)
-REGION=$(terraform -chdir="$ROOT_DIR/terraform" output -raw region)
-
-CURRENT_DESIRED=$(aws eks describe-nodegroup \
-  --cluster-name "$CLUSTER" \
-  --nodegroup-name "$NODE_GROUP" \
-  --region "$REGION" \
-  --query 'nodegroup.scalingConfig.desiredSize' \
-  --output text 2>/dev/null)
-
-echo -e "  Cluster    : ${CYAN}$CLUSTER${NC}"
-echo -e "  Node group : ${CYAN}$NODE_GROUP${NC}  (desired: ${YELLOW}$CURRENT_DESIRED${NC})"
-echo ""
-
-if [[ "$CURRENT_DESIRED" == "1" ]]; then
-  POD_STATUS=$(kubectl get pods -n ollama -l app=ollama \
-    --no-headers 2>/dev/null | awk '{print $3}' | head -1)
-  if [[ "$POD_STATUS" == "Running" ]]; then
-    echo -e "  ${YELLOW}Already running — Ollama pod is $POD_STATUS.${NC}"
-    echo ""
-    exit 0
-  fi
+# Check if already running
+POD_STATUS=$(kubectl get pods -n ollama -l app=ollama \
+  --no-headers 2>/dev/null | awk '{print $3}' | head -1)
+if [[ "$POD_STATUS" == "Running" ]]; then
+  echo -e "  ${YELLOW}Already running — Ollama pod is $POD_STATUS.${NC}"
+  echo ""
+  exit 0
 fi
 
-read -r -p "  Scale up now? This will start a GPU node (~\$5.67/hr). [y/N] " confirm
+REPLICAS=$(kubectl get deployment ollama -n ollama -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "0")
+echo -e "  Current replicas : ${YELLOW}$REPLICAS${NC}"
+echo -e "  Karpenter will provision a GPU node automatically (~2-3 min)"
+echo ""
+
+read -r -p "  Scale up now? [y/N] " confirm
 if [[ "$(echo "$confirm" | tr '[:upper:]' '[:lower:]')" != "y" ]]; then
   echo ""
   echo "  Aborted."
@@ -57,80 +49,66 @@ if [[ "$(echo "$confirm" | tr '[:upper:]' '[:lower:]')" != "y" ]]; then
   exit 0
 fi
 
+# Pause KEDA auto-scaling to prevent it from scaling back to 0 during startup
 echo ""
-echo -e "${CYAN}${BOLD}==> Scaling up GPU node group...${NC}"
-aws eks update-nodegroup-config \
-  --cluster-name "$CLUSTER" \
-  --nodegroup-name "$NODE_GROUP" \
-  --scaling-config minSize=0,maxSize=2,desiredSize=1 \
-  --region "$REGION" > /dev/null
-
-echo -n "  Waiting for node group ACTIVE"
-while true; do
-  STATUS=$(aws eks describe-nodegroup \
-    --cluster-name "$CLUSTER" \
-    --nodegroup-name "$NODE_GROUP" \
-    --region "$REGION" \
-    --query 'nodegroup.status' --output text 2>/dev/null)
-  if [[ "$STATUS" == "ACTIVE" ]]; then echo " — done"; break; fi
-  echo -n "."
-  sleep 15
-done
+echo -e "${CYAN}${BOLD}==> Pausing KEDA auto-scaling...${NC}"
+if kubectl annotate scaledobject ollama-autoscaler -n ollama \
+  autoscaling.keda.sh/paused="true" --overwrite 2>/dev/null; then
+  echo -e "  ${GREEN}✓${NC} KEDA paused"
+else
+  echo -e "  ${YELLOW}⚠${NC} KEDA ScaledObject not found (KEDA may not be deployed yet)"
+fi
 
 echo ""
-echo -e "${CYAN}${BOLD}==> Waiting for GPU node to join cluster...${NC}"
-echo -n "  Waiting for node Ready"
-while true; do
-  READY_COUNT=$(kubectl get nodes -l "eks.amazonaws.com/nodegroup=$NODE_GROUP" \
-    --no-headers 2>/dev/null | grep -v "NotReady\|SchedulingDisabled" | wc -l | tr -d ' ')
-  if [[ "$READY_COUNT" -ge 1 ]]; then echo " — done"; break; fi
-  echo -n "."
-  sleep 15
-done
-
-NODE_NAME=$(kubectl get nodes -l "eks.amazonaws.com/nodegroup=$NODE_GROUP" \
-  --no-headers 2>/dev/null | grep -v "NotReady\|SchedulingDisabled" | awk '{print $1, $5}')
-echo -e "  ${GREEN}✓${NC} Node ready: $NODE_NAME"
-
-echo ""
-echo -e "${CYAN}${BOLD}==> Starting Ollama pod...${NC}"
+echo -e "${CYAN}${BOLD}==> Scaling Ollama to 1 replica...${NC}"
 kubectl scale deployment ollama -n ollama --replicas=1
+echo -e "  ${GREEN}✓${NC} Deployment scaled to 1"
 
+echo ""
+echo -e "${CYAN}${BOLD}==> Waiting for GPU node + pod (this takes ~2-3 min)...${NC}"
 echo -n "  Waiting for pod Running"
+SECONDS=0
 while true; do
   POD_STATUS=$(kubectl get pods -n ollama -l app=ollama \
     --no-headers 2>/dev/null | awk '{print $3}' | head -1)
-  if [[ "$POD_STATUS" == "Running" ]]; then echo " — done"; break; fi
+  if [[ "$POD_STATUS" == "Running" ]]; then
+    echo " — done (${SECONDS}s)"
+    break
+  fi
+  if [[ $SECONDS -gt 600 ]]; then
+    echo ""
+    echo -e "  ${RED}✗ Timeout after 10 min. Check: kubectl get pods -n ollama${NC}"
+    exit 1
+  fi
   echo -n "."
   sleep 10
 done
 
-echo ""
-echo -e "${CYAN}${BOLD}==> Verifying...${NC}"
-FINAL_DESIRED=$(aws eks describe-nodegroup \
-  --cluster-name "$CLUSTER" \
-  --nodegroup-name "$NODE_GROUP" \
-  --region "$REGION" \
-  --query 'nodegroup.scalingConfig.desiredSize' \
-  --output text)
-POD_LINE=$(kubectl get pods -n ollama -l app=ollama \
-  --no-headers 2>/dev/null | awk '{print $1, $3}')
+# Show GPU node info
+GPU_NODE=$(kubectl get pods -n ollama -l app=ollama -o jsonpath='{.items[0].spec.nodeName}' 2>/dev/null)
+INSTANCE_TYPE=$(kubectl get node "$GPU_NODE" -o jsonpath='{.metadata.labels.node\.kubernetes\.io/instance-type}' 2>/dev/null || echo "unknown")
+CAPACITY_TYPE=$(kubectl get node "$GPU_NODE" -o jsonpath='{.metadata.labels.karpenter\.sh/capacity-type}' 2>/dev/null || echo "unknown")
+echo -e "  ${GREEN}✓${NC} GPU node: $GPU_NODE ($INSTANCE_TYPE, $CAPACITY_TYPE)"
 
-echo -e "  Node group desired : ${GREEN}$FINAL_DESIRED${NC}"
-echo -e "  Ollama pod         : ${GREEN}$POD_LINE${NC}"
+# Unpause KEDA — model loading created CPU activity, so KEDA has an "active"
+# reference point. The 15-min idle timer starts from this point.
+echo ""
+echo -e "${CYAN}${BOLD}==> Unpausing KEDA auto-scaling...${NC}"
+if kubectl annotate scaledobject ollama-autoscaler -n ollama \
+  autoscaling.keda.sh/paused- --overwrite 2>/dev/null; then
+  echo -e "  ${GREEN}✓${NC} KEDA unpaused — will auto-scale to 0 after 15 min idle"
+else
+  echo -e "  ${YELLOW}⚠${NC} KEDA ScaledObject not found"
+fi
 
 echo ""
 echo "========================================"
 echo -e "  ${GREEN}${BOLD}Ollama is up and ready.${NC}"
 echo "========================================"
 echo ""
-echo "  Via CloudFront:"
-echo "    API_KEY=\$(aws apigateway get-api-key --api-key \$(terraform -chdir=terraform output -raw api_key_id) --include-value --query value --output text)"
-echo "    curl https://\$(terraform -chdir=terraform output -raw cloudfront_domain)/v1/chat/completions \\"
-echo "      -H 'Content-Type: application/json' -H \"x-api-key: \$API_KEY\" \\"
-echo "      -d '{\"model\": \"qwen3.5:122b-a10b\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}]}'"
+echo "  Test:"
+echo "    kubectl exec -n ollama deploy/ollama -- ollama list"
 echo ""
-echo "  Open WebUI:  kubectl port-forward -n open-webui svc/open-webui 8080:8080"
-echo ""
-echo "  Stop:     ./scripts/scale-down.sh"
+echo "  Stop (manual):  ./scripts/scale-down.sh"
+echo "  Auto-stop:      KEDA scales to 0 after 15 min of no requests"
 echo ""

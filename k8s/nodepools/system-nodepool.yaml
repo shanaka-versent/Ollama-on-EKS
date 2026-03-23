@@ -1,0 +1,77 @@
+# System NodePool for Non-GPU Workloads (EKS Auto Mode)
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# Custom NodePool constrained to t3 x86 instances. The built-in "system" pool
+# is kept (required by Auto Mode) but this pool handles actual workload scheduling.
+# Guarantees all system workloads (ArgoCD, Prometheus, Istio, Open WebUI,
+# cert-manager, CoreDNS) run on x86. Built-in "general-purpose" pool removed.
+#
+# On-demand ONLY — system components cannot tolerate spot interruptions.
+# A spot reclaim would kill CoreDNS, Istio gateway, Prometheus, and ArgoCD
+# simultaneously, causing a full cluster outage for 2-3 minutes.
+#
+# Cost: ~$60/mo (1x t3.large on-demand, always-on)
+#
+# Instance sizing:
+#   t3.medium — 2 vCPU / 4 GiB — secondary (Karpenter uses for overflow)
+#   t3.large  — 2 vCPU / 8 GiB — primary (fits all system pods at idle)
+#
+# Karpenter consolidation: WhenUnderutilized with 5-min delay.
+# At idle, all system pods fit on 1x t3.large (~2.25 vCPU requested, ~3.8 GiB).
+# Under load, Karpenter scales to 2+ nodes and consolidates back down.
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: system-x86
+spec:
+  # Higher weight = preferred over built-in "system" pool (default weight 0)
+  # Karpenter picks system-x86 first for all non-GPU scheduling
+  weight: 100
+  template:
+    metadata:
+      labels:
+        workload-type: system
+    spec:
+      nodeClassRef:
+        group: eks.amazonaws.com
+        kind: NodeClass
+        name: system-x86
+      requirements:
+        # t3 family — burstable, cost-effective for system workloads
+        - key: eks.amazonaws.com/instance-family
+          operator: In
+          values: ["t3"]
+        # medium (overflow) + large (primary)
+        - key: eks.amazonaws.com/instance-size
+          operator: In
+          values:
+            - medium
+            - large
+        # x86 ONLY — Open WebUI doesn't reliably support ARM64 (Graviton)
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        # On-demand ONLY — system components cannot tolerate spot interruptions
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values:
+            - on-demand
+        # Sydney region AZs
+        - key: topology.kubernetes.io/zone
+          operator: In
+          values:
+            - ap-southeast-2a
+            - ap-southeast-2b
+      # No taints — system pool is open to all non-GPU workloads
+      expireAfter: 336h
+  # Resource limits — enough for up to 4x t3.large nodes
+  limits:
+    cpu: "16"
+    memory: 64Gi
+  # Disruption — consolidate underutilized nodes after 5 min
+  # WhenUnderutilized (not WhenEmpty) because system pods always run
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 5m
+    budgets:
+      - nodes: "100%"

@@ -1,23 +1,20 @@
-# Wave 3: Ollama Deployment
-# Deploys the Ollama LLM server with GPU resources.
-# DEV: 1x A10G (g5.xlarge) — PROD: 4x A10G (g5.12xlarge)
-# Resources set via Kustomize overlays.
-# Requires: namespaces (wave 1), storage (wave 2), NVIDIA plugin (wave 0)
-#
-# Environment switch: change path to k8s/overlays/prod/ollama for PROD
+# Wave 4: Ollama Autoscaler (KEDA ScaledObject)
+# Auto-scales Ollama to 0 replicas after 15 min of no inference requests.
+# Karpenter then terminates the empty GPU node after 10 min.
+# Requires: KEDA (wave 2), Ollama deployment (wave 3), Prometheus (Terraform).
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: ollama
+  name: ollama-autoscaler
   namespace: argocd
   annotations:
-    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-wave: "4"
 spec:
   project: default
   source:
     repoURL: https://github.com/shanaka-versent/Ollama-on-EKS
     targetRevision: HEAD
-    path: k8s/overlays/dev/ollama
+    path: k8s/keda
   destination:
     server: https://kubernetes.default.svc
     namespace: ollama

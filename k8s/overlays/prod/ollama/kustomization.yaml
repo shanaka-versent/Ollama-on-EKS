@@ -1,0 +1,8 @@
+# PROD overlay for Ollama
+# Patches deployment: 4 GPUs, 96Gi/64Gi memory, 16/8 CPU (g5.12xlarge)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../ollama
+patches:
+  - path: deployment-patch.yaml

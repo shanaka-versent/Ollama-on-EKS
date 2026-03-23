@@ -1,0 +1,6 @@
+# DEV overlay for Open WebUI
+# Uses base values: DEFAULT_MODELS=qwen3.5:27b
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../open-webui

@@ -1,0 +1,6 @@
+# DEV overlay for Ollama
+# Uses base values: 1 GPU, 14Gi/12Gi memory, 3/2 CPU (g5.xlarge)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../ollama

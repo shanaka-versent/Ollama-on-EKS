@@ -282,14 +282,14 @@
             VPCL["VPC Link"]
             NLB["Internal NLB"]
 
-            subgraph L2["Layer 2 — EKS Cluster (ollama-eks)"]
+            subgraph L2["Layer 2 — EKS Cluster (eks-ollama-dev)"]
                 direction TB
-                subgraph L3["Layer 3 — ArgoCD GitOps (Waves 0-7)"]
+                subgraph L3["Layer 3 — ArgoCD GitOps (Waves -2 to 7)"]
                     direction LR
                     ISTIO["Istio Gateway\nAmbient mTLS"]
-                    OLLAMA["Ollama Pod\nv0.18.2 · 4x A10G"]
+                    OLLAMA["Ollama Pod\nv0.18.2 · NVIDIA A10G"]
                     EBS["EBS gp3 200GB\n6000 IOPS · 400 MB/s\nSnapshot Pre-loaded"]
-                    WEBUI["Open WebUI v0.8.10\nCognito Auth (MFA)"]
+                    WEBUI["Open WebUI v0.8.10\nCustom Login Portal"]
                     COG["Cognito User Pool\nOAuth/OIDC + TOTP MFA"]
                     MON["Prometheus + DCGM\n→ AMP → AMG (SSO)"]
                 end
@@ -300,6 +300,7 @@
     Client -->|HTTPS| CF
     CF --> WAF
     WAF --> CF
+    CF -->|VPC Origin| NLB
     CF -->|AWS Backbone| APIGW
     APIGW --> VPCL
     VPCL --> NLB
@@ -307,6 +308,7 @@
     ISTIO -->|mTLS| OLLAMA
     OLLAMA --> EBS
     WEBUI -->|port 11434| OLLAMA
+    COG -.->|OAuth/OIDC| WEBUI
 
     style L4 fill:#fff3e0,stroke:#ff9800,stroke-width:2px
     style L1 fill:#e8f5e9,stroke:#4caf50,stroke-width:2px
@@ -324,6 +326,7 @@
 <p><strong>Traffic flows:</strong></p>
 <pre class="highlight"><code>API:     Client → CloudFront (WAF) → API Gateway (x-api-key) → VPC Link → Internal NLB → Istio → Ollama
 Web UI:  Client → CloudFront (WAF) → VPC Origin (private) → Internal NLB → Istio → Open WebUI
+Login:   Client → CloudFront → /auth/login.html (S3) → Custom Portal → Cognito API → OAuth → Open WebUI
 Grafana: Admin → AWS Managed Grafana (AMG) URL → IAM Identity Center SSO
 </code></pre>
 
@@ -346,12 +349,12 @@ Grafana: Admin → AWS Managed Grafana (AMG) URL → IAM Identity Center SSO
 <tr>
 <td>2 — EKS Cluster</td>
 <td>Kubernetes + GPU</td>
-<td>EKS Control Plane, system nodes (t3.medium), GPU nodes (g5.12xlarge, 4x A10G), EBS CSI Driver, LB Controller</td>
+<td>EKS Control Plane (Auto Mode), custom Karpenter NodePools: system (t3.large on-demand) + GPU (g5.xlarge DEV / g5.12xlarge PROD spot), EBS CSI Driver, LB Controller</td>
 </tr>
 <tr>
 <td>3 — GitOps</td>
-<td>ArgoCD waves 0-6</td>
-<td>Wave 0: Istio + NVIDIA → Waves 1-2: Namespaces + Storage → Waves 3-4: Ollama + Model Loader → Waves 5-6: Gateway + Routes</td>
+<td>ArgoCD waves -2 to 7</td>
+<td>Wave -2: Gateway API CRDs → Wave -1: Istio Base → Wave 0: Istiod + CNI + ztunnel → Wave 1: Namespaces + NodePools → Wave 2: Storage + KEDA → Waves 3-4: Ollama + Model Loader + KEDA ScaledObject → Waves 5-6: Gateway + Routes → Wave 7: Open WebUI</td>
 </tr>
 <tr>
 <td>4 — Edge + Security</td>
@@ -382,7 +385,7 @@ Grafana: Admin → AWS Managed Grafana (AMG) URL → IAM Identity Center SSO
 <tr>
 <td>Internal NLB</td>
 <td>Your EKS VPC</td>
-<td>Only reachable via VPC Link — not internet-facing</td>
+<td>Only reachable via VPC Link and VPC Origin — not internet-facing</td>
 </tr>
 <tr>
 <td>Istio Ambient Mesh</td>
@@ -400,13 +403,24 @@ Grafana: Admin → AWS Managed Grafana (AMG) URL → IAM Identity Center SSO
 <td>Pre-loaded models via EBS snapshot, 6000 IOPS, 400 MB/s</td>
 </tr>
 <tr>
-<td>qwen3.5:122b-a10b</td>
-<td>Your EKS GPU node</td>
-<td>Default model — MoE 122B total, 10B active params</td>
+<td>Custom Login Portal</td>
+<td>S3 + Lambda + API GW</td>
+<td>Handles all auth flows (login, signup, MFA, password reset) — no Cognito hosted UI</td>
+</tr>
+<tr>
+<td>Cognito User Pool</td>
+<td>Your AWS account</td>
+<td>OAuth/OIDC provider with TOTP MFA, group-based roles, admin-approved signups</td>
 </tr>
 </tbody>
 </table>
-<h3 id="default-model-flagship-qwen35122b-a10b">Default Model: Flagship (qwen3.5:122b-a10b)</h3>
+<h3 id="default-model-fallback-qwen3527b-dev-phase">Default Model: Fallback (qwen3.5:27b) — DEV Phase</h3>
+<p><strong>Current phase: DEV</strong> — using Tier 1 fallback (<code>qwen3.5:27b</code>) on g5.xlarge (1x A10G, $0.35/hr spot) for infrastructure testing and platform validation.</p>
+<p><strong>PROD upgrade:</strong> When ready for production, switch to Tier 3 flagship. Two changes:</p>
+<ol>
+<li><strong>Terraform:</strong> <code>terraform apply -var-file=environments/prod.tfvars</code></li>
+<li><strong>ArgoCD:</strong> Change <code>path</code> in 4 app files from <code>k8s/overlays/dev/...</code> to <code>k8s/overlays/prod/...</code> (nodepools, ollama, model-loader, open-webui)</li>
+</ol>
 <p>Three tiers available, all pre-downloaded to EBS via snapshot:</p>
 <table>
 <thead>
@@ -420,11 +434,11 @@ Grafana: Admin → AWS Managed Grafana (AMG) URL → IAM Identity Center SSO
 </thead>
 <tbody>
 <tr>
-<td>1 (Fallback)</td>
-<td><code>qwen3.5:27b</code></td>
-<td>g5.xlarge (1x A10G)</td>
-<td>$0.35/hr</td>
-<td>Fast iteration, debugging, simple edits</td>
+<td><strong>1 (Current)</strong></td>
+<td><strong><code>qwen3.5:27b</code></strong></td>
+<td><strong>g5.xlarge (1x A10G)</strong></td>
+<td><strong>$0.35/hr</strong></td>
+<td><strong>DEV — platform testing, monitoring setup</strong></td>
 </tr>
 <tr>
 <td>2 (Code)</td>
@@ -434,11 +448,11 @@ Grafana: Admin → AWS Managed Grafana (AMG) URL → IAM Identity Center SSO
 <td>Pure coding tasks, very fast MoE inference</td>
 </tr>
 <tr>
-<td>3 (Default)</td>
+<td>3 (Flagship)</td>
 <td><code>qwen3.5:122b-a10b</code></td>
 <td>g5.12xlarge (4x A10G)</td>
 <td>$1.90/hr</td>
-<td>All tasks — maximum quality</td>
+<td>PROD — maximum quality</td>
 </tr>
 </tbody>
 </table>
@@ -448,6 +462,14 @@ Grafana: Admin → AWS Managed Grafana (AMG) URL → IAM Identity Center SSO
 ./switch-model.sh use 2   # code-optimised
 </code></pre>
 
+<h3 id="environment-configuration">Environment Configuration</h3>
+<p>Environment-specific values (GPU instance sizes, model names, resource limits) are managed via:</p>
+<ul>
+<li><strong>Terraform:</strong> <code>terraform apply -var-file=environments/dev.tfvars</code> (or <code>prod.tfvars</code>)</li>
+<li><strong>K8s manifests:</strong> Kustomize overlays in <code>k8s/overlays/dev/</code> and <code>k8s/overlays/prod/</code></li>
+<li><strong>ArgoCD:</strong> Application files point to <code>k8s/overlays/{env}/</code> paths</li>
+</ul>
+<p>To switch from DEV to PROD: update the 4 ArgoCD app paths and run Terraform with the prod tfvars. No file editing or uncommenting required.</p>
 <h3 id="key-design-decisions">Key Design Decisions</h3>
 <table>
 <thead>
@@ -462,12 +484,12 @@ Grafana: Admin → AWS Managed Grafana (AMG) URL → IAM Identity Center SSO
 <td>99% cost reduction ($756/mo → $6/mo), adds DDoS protection, eliminates Transit Gateway dependency</td>
 </tr>
 <tr>
-<td>EKS Auto Mode</td>
-<td>Replaces manual Karpenter + NVIDIA device plugin — fewer moving parts, AWS manages GPU node lifecycle and drivers</td>
+<td>EKS Auto Mode + Custom NodePools</td>
+<td>Built-in pools disabled (<code>node_pools = []</code>). Two custom Karpenter NodePools: system (t3.large on-demand, <code>WhenEmptyOrUnderutilized</code> 5m) and GPU (g5 spot, <code>WhenEmpty</code> 30m). System on-demand because CoreDNS/Istio/Prometheus cannot tolerate spot interruptions. AWS manages NVIDIA device plugin and drivers</td>
 </tr>
 <tr>
-<td>30-min idle window (<code>consolidateAfter: 30m</code>)</td>
-<td>Nodes stay warm through coffee breaks and short meetings, terminate after 30 min idle to save costs</td>
+<td>KEDA auto-scale-to-zero</td>
+<td>KEDA monitors CPU via Prometheus. After 15 min idle, scales Ollama to 0. Karpenter terminates empty GPU node after 10 min. Total idle-to-zero: ~25 min. Manual scale-up via <code>scripts/scale-up.sh</code></td>
 </tr>
 <tr>
 <td>EBS snapshots for model weights</td>
@@ -494,12 +516,16 @@ Grafana: Admin → AWS Managed Grafana (AMG) URL → IAM Identity Center SSO
 <td>Reproducible builds, no surprise breaking changes from <code>:latest</code></td>
 </tr>
 <tr>
-<td>Cognito authentication for Open WebUI</td>
-<td>Centralized auth with MFA — Cognito handles signup, login, TOTP, and role mapping. No local passwords stored in Open WebUI</td>
+<td>Custom login portal + Cognito</td>
+<td>All auth flows (login, signup, MFA, password reset) handled by custom portal — users never see Cognito hosted UI. Cognito provides OAuth/OIDC backend with TOTP MFA and group-based roles</td>
 </tr>
 <tr>
 <td>cert-manager (not manual openssl)</td>
 <td>Automated TLS lifecycle — 90d duration, 30d auto-renewal, no manual cert rotation</td>
+</tr>
+<tr>
+<td>Environment-based configuration (Terraform tfvars + Kustomize overlays)</td>
+<td>DEV and PROD configs (instance types, models, resources) defined separately. No manual file editing or comment-toggling. Switch via <code>terraform apply -var-file=environments/prod.tfvars</code> + ArgoCD path update</td>
 </tr>
 </tbody>
 </table>
@@ -628,14 +654,14 @@ Grafana: Admin → AWS Managed Grafana (AMG) URL → IAM Identity Center SSO
     participant NLB as Internal NLB
     participant IGW as Istio Gateway
     participant ZT as ztunnel (Ambient mTLS)
-    participant OLM as Ollama Pod (4x NVIDIA A10G)
+    participant OLM as Ollama Pod (NVIDIA A10G)
     participant EBS as EBS Volume (200GB gp3)
 
     Dev->>CF: POST /v1/chat/completions (HTTPS)
 
     rect rgb(255, 248, 240)
         Note over CF: CloudFront Function (viewer-request)
-        CF->>CF: No token cookie? → 302 to /oauth/oidc/login
+        CF->>CF: No token cookie? → 302 to /auth/login.html
         Note over CF: WAF rule chain
         CF->>CF: Rate limit — 2000 req/5min per IP
         CF->>CF: IP allowlist — corporate CIDRs only
@@ -661,9 +687,9 @@ Grafana: Admin → AWS Managed Grafana (AMG) URL → IAM Identity Center SSO
     end
 
     OLM->>+EBS: Load model weights (if not already in GPU VRAM)
-    EBS-->>-OLM: qwen3.5:122b-a10b from EBS snapshot
+    EBS-->>-OLM: Model from EBS snapshot (pre-loaded)
 
-    Note over OLM: GPU inference — 4x NVIDIA A10G (96GB VRAM)
+    Note over OLM: GPU inference — NVIDIA A10G (DEV: 1x 24GB / PROD: 4x 96GB)
     Note over OLM: Context window: 32K tokens, 4 parallel requests
 
     OLM-->>-ZT: Streaming response tokens
@@ -688,8 +714,35 @@ aws sts get-caller-identity   # verify
 </code></pre>
 
 <h3 id="3-gpu-instance-quota">3. GPU Instance Quota</h3>
-<p>Check <strong>AWS Console → Service Quotas → EC2 → Running On-Demand G and VT instances</strong>.
-For <code>g5.12xlarge</code> you need at least 48 vCPUs. Request a quota increase if needed.</p>
+<p>Default GPU quotas are <strong>0 vCPUs</strong> in most accounts. You must request an increase before deploying:</p>
+<table>
+<thead>
+<tr>
+<th>Quota</th>
+<th>Code</th>
+<th>DEV (g5.xlarge)</th>
+<th>PROD (g5.12xlarge)</th>
+<th>Recommended</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>All G and VT Spot Instance Requests</td>
+<td><code>L-3819A6DF</code></td>
+<td>4 vCPUs</td>
+<td>48 vCPUs</td>
+<td>64 vCPUs</td>
+</tr>
+<tr>
+<td>Running On-Demand G and VT instances</td>
+<td><code>L-DB2E81BA</code></td>
+<td>4 vCPUs</td>
+<td>48 vCPUs</td>
+<td>64 vCPUs</td>
+</tr>
+</tbody>
+</table>
+<p>Request via CLI: <code>aws service-quotas request-service-quota-increase --service-code ec2 --quota-code L-3819A6DF --desired-value 64 --region ap-southeast-2</code>. Approval typically takes 1-3 business days.</p>
 <h3 id="4-s3-backend-bootstrap">4. S3 Backend Bootstrap</h3>
 <p>Before running Terraform, create the state backend:</p>
 <pre class="highlight"><code class="language-bash"># Create S3 bucket (replace &lt;ACCOUNT_ID&gt; with your AWS account ID)
@@ -770,7 +823,7 @@ curl -s &quot;https://${CLOUDFRONT_DOMAIN}/api/tags&quot; \
 curl -s &quot;https://${CLOUDFRONT_DOMAIN}/v1/chat/completions&quot; \
   -H &quot;Content-Type: application/json&quot; \
   -H &quot;x-api-key: ${API_KEY}&quot; \
-  -d '{&quot;model&quot;:&quot;qwen3.5:122b-a10b&quot;,&quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;Hello&quot;}]}'
+  -d '{&quot;model&quot;:&quot;qwen3.5:27b&quot;,&quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;Hello&quot;}]}'
 </code></pre>
 
 <p><strong>Step 5: Connect clients</strong></p>
@@ -797,24 +850,30 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 
 <h3 id="open-webui-browser-based-chat-interface">Open WebUI (Browser-Based Chat Interface)</h3>
 <p>Open WebUI (v0.8.10) provides a ChatGPT-like interface for Ollama. Deployed on EKS system nodes (no GPU needed), air-gapped via NetworkPolicy. Accessible via CloudFront — no port-forwarding needed.</p>
-<p><strong>Authentication:</strong> All login is handled by <strong>AWS Cognito</strong> (OAuth/OIDC). Local login and password management are completely disabled (<code>ENABLE_PASSWORD_AUTH=false</code>). Users authenticate via Cognito with <strong>mandatory TOTP MFA</strong> (authenticator app). Roles are synced from Cognito groups on every login (<code>ENABLE_OAUTH_ROLE_MANAGEMENT=true</code>) — Cognito is the source of truth, any local role changes are overwritten on next login.</p>
-<p><strong>Password changes:</strong> A banner in Open WebUI links to the Cognito hosted UI <code>/forgotPassword</code> page. Users enter their email, receive a verification code, and set a new password. The URL is injected by Terraform into a K8s secret.</p>
+<p><strong>Authentication:</strong> All login is handled by a <strong>custom login portal</strong> (auth_proxy Lambda + login.html SPA) backed by <strong>AWS Cognito</strong> (OAuth/OIDC). Users <strong>never</strong> see the Cognito hosted UI. Local login and password management are completely disabled (<code>ENABLE_PASSWORD_AUTH=false</code>). Users authenticate via the custom portal with <strong>mandatory TOTP MFA</strong> (authenticator app). Roles are synced from Cognito groups on every login (<code>ENABLE_OAUTH_ROLE_MANAGEMENT=true</code>) — Cognito is the source of truth, any local role changes are overwritten on next login.</p>
+<p><strong>Password changes:</strong> A banner in Open WebUI links to the custom login portal at <code>/auth/login.html</code>. Users click "Forgot password?", receive a verification code via email, and set a new password — all within the custom portal (no Cognito hosted UI).</p>
 <p><strong>Access URL:</strong> <code>https://&lt;CLOUDFRONT_DOMAIN&gt;</code> (e.g., <code>https://d3f4nz5crzf5t8.cloudfront.net</code>)</p>
-<p><strong>Auto-redirect:</strong> A CloudFront Function intercepts all viewer requests at the edge. Unauthenticated users (no <code>token</code> cookie) are automatically redirected to the Cognito login page via <code>/oauth/oidc/login</code> — they never see a landing page. Authenticated users pass through to the Open WebUI dashboard. OAuth callback, static asset, API, and portal paths are excluded from the redirect.</p>
+<p><strong>Auto-redirect:</strong> A CloudFront Function intercepts all viewer requests at the edge. Unauthenticated users (no <code>token</code> cookie) are automatically redirected to the custom login page at <code>/auth/login.html</code> — they never see a landing page or the Cognito hosted UI. Authenticated users pass through to the Open WebUI dashboard. OAuth callback, static asset, API, auth, and portal paths are excluded from the redirect.</p>
 <p><strong>Static asset caching:</strong> SvelteKit bundles (<code>/_app/*</code>) and static files (<code>/static/*</code>) are cached at CloudFront edge locations using the <code>CachingOptimized</code> policy, eliminating the CloudFront → NLB → Istio → Pod round-trip for every JS/CSS/image file. This reduces page load time from ~10s to &lt;1s after the first request.</p>
+<h4 id="admin-setup-flow-first-time-login">Admin Setup Flow (First-Time Login)</h4>
+<ol>
+<li>Terraform creates admin user → receives temporary password by email</li>
+<li>Admin visits CloudFront URL → redirected to custom login page (<code>/auth/login.html</code>)</li>
+<li>Enters email + temp password → portal detects <code>NEW_PASSWORD_REQUIRED</code> → shows password change form</li>
+<li>Sets new password → portal detects <code>MFA_SETUP</code> → shows QR code for authenticator app</li>
+<li>Scans QR code → enters TOTP code → setup complete</li>
+<li>Signs in with new password + TOTP → logged into Open WebUI as admin</li>
+</ol>
 <h4 id="user-signup-flow">User Signup Flow</h4>
 <ol>
-<li>User visits CloudFront URL → auto-redirected to Cognito login (CloudFront Function)</li>
-<li>Clicks <strong>"Sign up"</strong> on the Cognito hosted UI → creates account with email + password</li>
-<li>Sets up TOTP MFA (authenticator app) on first login</li>
+<li>User visits CloudFront URL → redirected to custom login page (CloudFront Function)</li>
+<li>Clicks <strong>"Request Access"</strong> → fills signup form (name, email, password)</li>
+<li>Custom portal calls Cognito <code>SignUp</code> API → account auto-confirmed (Pre Sign-up Lambda)</li>
 <li>Admin receives email notification via SNS</li>
 <li>Admin adds user to <code>user</code> or <code>admin</code> group in <strong>Cognito Console</strong></li>
 <li>User receives "Access Granted" email via SES</li>
-<li>User logs in again → role mapped from Cognito group → access granted</li>
+<li>User logs in via custom portal → sets up TOTP MFA on first login → access granted</li>
 </ol>
-<blockquote>
-<p><strong>Initial admin:</strong> Bootstrapped via Terraform. Receives temporary password by email. Already in <code>admin</code> group.</p>
-</blockquote>
 <h4 id="roles-and-model-access">Roles and Model Access</h4>
 <table>
 <thead>
@@ -832,12 +891,12 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 </tr>
 <tr>
 <td><strong>User</strong></td>
-<td>Flagship only (<code>qwen3.5:122b-a10b</code>)</td>
+<td>Default model only (DEV: <code>qwen3.5:27b</code>, PROD: <code>qwen3.5:122b-a10b</code>)</td>
 <td>Add to <code>user</code> group in Cognito Console</td>
 </tr>
 </tbody>
 </table>
-<p>Model switching is <strong>restricted to admins only</strong> — regular users see only the default flagship model, preventing accidental model swaps that would spin up additional GPU nodes.</p>
+<p>Model switching is <strong>restricted to admins only</strong> — regular users see only the default model, preventing accidental model swaps that would spin up additional GPU nodes.</p>
 <h4 id="managing-users-cognito-console">Managing Users (Cognito Console)</h4>
 <table>
 <thead>
@@ -864,8 +923,8 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 <td>Cognito Console → Users → select user → Actions</td>
 </tr>
 <tr>
-<td>Self-service password change</td>
-<td>User clicks "Reset Password" banner in Open WebUI → Cognito hosted UI</td>
+<td>Self-service password reset</td>
+<td>User clicks "Reset Password" banner in Open WebUI → custom login portal (<code>/auth/login.html</code>) → "Forgot password?" → email code → new password</td>
 </tr>
 <tr>
 <td>Disable user</td>
@@ -960,7 +1019,7 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 </tr>
 <tr>
 <td><strong>Shared Infra Cost</strong> (collapsed — click to expand)</td>
-<td>Component breakdown table (EKS $73, Idle $16, EBS $10, CF/WAF $6, gp3 $4 = $109), cost attribution formula</td>
+<td>Component breakdown table (EKS $73, System node $60, EBS $14, CF/WAF $6 = $153), cost attribution formula</td>
 </tr>
 <tr>
 <td><strong>Per-API-Key Showback</strong> (always visible)</td>
@@ -975,10 +1034,10 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 <p><strong>Cost attribution formula</strong> (shown on the dashboard):</p>
 <ul>
 <li><strong>Per-key GPU cost</strong> = (key's IntegrationLatency / total IntegrationLatency) × GPU spend</li>
-<li><strong>Per-key shared infra</strong> = (key's request count / total requests) × $109/mo fixed</li>
+<li><strong>Per-key shared infra</strong> = (key's request count / total requests) × $153/mo fixed</li>
 <li><strong>Per-key total</strong> = GPU cost + shared infra</li>
 </ul>
-<p>Dashboard variables let you adjust the GPU spot rate ($0.35/hr for g5.xlarge, $1.90/hr for g5.12xlarge) and shared infra monthly cost ($109 default).</p>
+<p>Dashboard variables let you adjust the GPU spot rate (DEV: $0.35/hr for g5.xlarge, PROD: $1.90/hr for g5.12xlarge) and shared infra monthly cost ($153 default).</p>
 <blockquote>
 <p><strong>Note:</strong> AMG reads CloudWatch natively via its IAM role — no in-cluster IRSA needed. Dashboard JSON files are in <code>terraform/modules/observability/dashboards/</code> — import into AMG workspace via the UI or API.</p>
 </blockquote>
@@ -1024,6 +1083,7 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 </tbody>
 </table>
 <h3 id="monthly-cost-summary">Monthly Cost Summary</h3>
+<p><strong>Idle Cluster (no GPU workload):</strong></p>
 <table>
 <thead>
 <tr>
@@ -1033,24 +1093,50 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 </thead>
 <tbody>
 <tr>
-<td>GPU compute (flagship, 8hrs/day weekdays, spot)</td>
-<td>~$304</td>
-</tr>
-<tr>
-<td>30-min idle window overhead</td>
-<td>~$16</td>
-</tr>
-<tr>
-<td>EBS snapshot storage (200GB)</td>
-<td>~$10</td>
-</tr>
-<tr>
-<td>gp3 throughput upgrade (400 MB/s)</td>
-<td>~$4</td>
+<td>System node (1x t3.large on-demand, always-on)</td>
+<td>~$60</td>
 </tr>
 <tr>
 <td>EKS control plane</td>
 <td>$73</td>
+</tr>
+<tr>
+<td><strong>Total (Idle)</strong></td>
+<td><strong>~$133/mo</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>System nodes run on-demand because CoreDNS, Istio, Prometheus, and ArgoCD cannot tolerate spot interruptions — a spot reclaim would cause full cluster outage for 2-3 min. GPU spot is fine because inference can tolerate brief interruptions.</p>
+</blockquote>
+<p><strong>DEV Phase (current — Tier 1 fallback, g5.xlarge spot):</strong></p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Monthly Cost</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>System node (1x t3.large on-demand)</td>
+<td>~$60</td>
+</tr>
+<tr>
+<td>GPU compute (fallback, 8hrs/day weekdays, spot)</td>
+<td>~$56</td>
+</tr>
+<tr>
+<td>KEDA idle overhead (~25 min to full shutdown)</td>
+<td>~$2</td>
+</tr>
+<tr>
+<td>EKS control plane</td>
+<td>$73</td>
+</tr>
+<tr>
+<td>EBS snapshot storage + gp3 throughput</td>
+<td>~$14</td>
 </tr>
 <tr>
 <td>CloudFront + WAF + API Gateway</td>
@@ -1058,15 +1144,59 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 </tr>
 <tr>
 <td>AWS Managed Grafana + AMP</td>
-<td>~$9-14</td>
+<td>~$14</td>
 </tr>
 <tr>
-<td><strong>Total</strong></td>
-<td><strong>~$427/mo</strong></td>
+<td><strong>Total (DEV)</strong></td>
+<td><strong>~$225/mo</strong></td>
 </tr>
 </tbody>
 </table>
-<p>Down from $4,155/mo (24/7 on-demand + Kong) — 90% reduction.</p>
+<p><strong>PROD Phase (Tier 3 flagship, g5.12xlarge spot):</strong></p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Monthly Cost</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>System nodes (1-2x t3.large on-demand)</td>
+<td>~$60-120</td>
+</tr>
+<tr>
+<td>GPU compute (flagship, 8hrs/day weekdays, spot)</td>
+<td>~$304</td>
+</tr>
+<tr>
+<td>KEDA idle overhead (~25 min to full shutdown)</td>
+<td>~$11</td>
+</tr>
+<tr>
+<td>EKS control plane</td>
+<td>$73</td>
+</tr>
+<tr>
+<td>EBS snapshot storage + gp3 throughput</td>
+<td>~$14</td>
+</tr>
+<tr>
+<td>CloudFront + WAF + API Gateway</td>
+<td>~$6</td>
+</tr>
+<tr>
+<td>AWS Managed Grafana + AMP</td>
+<td>~$14</td>
+</tr>
+<tr>
+<td><strong>Total (PROD)</strong></td>
+<td><strong>~$482/mo</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Down from $4,155/mo (24/7 on-demand + Kong) — 88% reduction. DEV phase runs at ~$225/mo.</p>
+<p><strong>Spot instance strategy:</strong> GPU NodePool uses spot preferred with automatic on-demand fallback (both DEV and PROD). Karpenter tries spot first — if unavailable, falls back to on-demand automatically. <code>GPUOnDemandFallback</code> alert fires (warning) when on-demand is used. System NodePool is always on-demand — system components (CoreDNS, Istio, Prometheus, ArgoCD) cannot tolerate spot interruptions. Alerts route via Alertmanager → SNS → email. KEDA handles idle detection and scales Ollama to 0 replicas after 15 min of no activity, then Karpenter terminates the empty GPU node after 10 min.</p>
 <h3 id="response-time-expectations">Response Time Expectations</h3>
 <table>
 <thead>
@@ -1077,15 +1207,15 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 </thead>
 <tbody>
 <tr>
-<td>Warm node (within 30-min idle window)</td>
+<td>Warm node (within 15-min KEDA idle window)</td>
 <td>4-6s to first token (flagship)</td>
 </tr>
 <tr>
-<td>Back from &lt;30 min break</td>
+<td>Back from &lt;15 min break</td>
 <td>0s (node still warm)</td>
 </tr>
 <tr>
-<td>First request of the day / after 30+ min idle</td>
+<td>First request of the day / after 25+ min idle</td>
 <td>~3 min cold start, then 4-6s</td>
 </tr>
 <tr>
@@ -1095,16 +1225,44 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 </tbody>
 </table>
 <p>Token generation: flagship produces 30-50 tok/s. A 500-token response takes ~10-17s.</p>
-<h3 id="scale-to-zero-stop-gpu-billing">Scale to Zero (Stop GPU Billing)</h3>
-<pre class="highlight"><code class="language-bash">kubectl scale deployment ollama -n ollama --replicas=0
-</code></pre>
-
+<h3 id="auto-scale-to-zero-keda">Auto-Scale-to-Zero (KEDA)</h3>
+<p>KEDA monitors container CPU usage via Prometheus. When no inference activity is detected for 15 minutes, KEDA scales the Ollama deployment to 0 replicas. Karpenter then detects the empty GPU node and terminates it after 10 minutes. Total time from last request to GPU billing stop: ~25 minutes.</p>
+<table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>Trigger</th>
+<th>Delay</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>KEDA scales Ollama to 0</td>
+<td>CPU below threshold for 15 min</td>
+<td>15 min after last request</td>
+</tr>
+<tr>
+<td>Karpenter terminates GPU node</td>
+<td>Node empty (<code>WhenEmpty</code>)</td>
+<td>10 min after pod removed</td>
+</tr>
+<tr>
+<td><strong>GPU billing stops</strong></td>
+<td>Node terminated</td>
+<td><strong>~25 min total</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Manual scale-down (immediate):</strong> <code>./scripts/scale-down.sh</code> scales to 0 immediately without waiting for the 15-min idle window.</p>
 <h3 id="resume-next-session">Resume Next Session</h3>
-<p>The EBS snapshot has your models pre-loaded — no re-download needed. Karpenter auto-provisions a new GPU node when the pod is scaled back up:</p>
-<pre class="highlight"><code class="language-bash">kubectl scale deployment ollama -n ollama --replicas=1
-# Wait ~3 min for node provision + model load from snapshot
+<p>The EBS snapshot has your models pre-loaded — no re-download needed. Scale up manually and Karpenter auto-provisions a new GPU node:</p>
+<pre class="highlight"><code class="language-bash">./scripts/scale-up.sh
+# Pauses KEDA during startup, waits for node provision + model load (~3 min), then unpauses KEDA
 </code></pre>
 
+<blockquote>
+<p><code>scale-up.sh</code> pauses the KEDA ScaledObject during startup to prevent KEDA from scaling down the pod before the model finishes loading, then unpauses after the model is ready.</p>
+</blockquote>
 <hr />
 <h2 id="argocd-gitops-pipeline">ArgoCD GitOps Pipeline</h2>
 <p>Terraform provisions ArgoCD during <code>terraform apply</code>. ArgoCD then auto-syncs all Kubernetes workloads from Git using sync waves — no manual <code>kubectl apply</code> needed. Drift is continuously reconciled.</p>
@@ -1139,19 +1297,34 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 <td><code>ollama</code>, <code>istio-system</code> namespaces with ambient mesh label</td>
 </tr>
 <tr>
+<td>1</td>
+<td><code>system-nodepool</code></td>
+<td>System NodePool (t3.large on-demand) + GPU NodePool (g5 spot) + NodeClasses — GitOps-managed node lifecycle</td>
+</tr>
+<tr>
 <td>2</td>
 <td><code>ollama-storage</code></td>
 <td>StorageClass <code>gp3</code> (Retain, WaitForFirstConsumer) + PVC 200Gi</td>
 </tr>
 <tr>
+<td>2</td>
+<td><code>keda</code></td>
+<td>KEDA operator (Helm chart, auto-scale-to-zero support)</td>
+</tr>
+<tr>
 <td>3</td>
 <td><code>ollama</code></td>
-<td>Deployment (4 GPUs, <code>strategy: Recreate</code>), Service, NetworkPolicy</td>
+<td>Deployment (DEV: 1 GPU / PROD: 4 GPUs, <code>strategy: Recreate</code>), Service, NetworkPolicy</td>
 </tr>
 <tr>
 <td>4</td>
 <td><code>model-loader</code></td>
 <td>Job: pulls models to EBS PVC</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>ollama-autoscaler</code></td>
+<td>KEDA ScaledObject (15-min idle → scale to 0)</td>
 </tr>
 <tr>
 <td>5</td>
@@ -1178,12 +1351,15 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 
     subgraph W1["Waves 1-2"]
         NS["Namespaces\n+ Ambient Labels"]
+        NP["System + GPU NodePools\n+ NodeClasses"]
         ST["StorageClass gp3\n+ PVC 200Gi"]
+        KEDA["KEDA Operator"]
     end
 
     subgraph W2["Waves 3-4"]
         OLM["Ollama Deployment\nService + NetworkPolicy"]
         ML["Model Loader Job"]
+        KSO["KEDA ScaledObject\n15-min idle → scale to 0"]
     end
 
     subgraph W3["Waves 5-7"]
@@ -1192,7 +1368,7 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
         WUI["Open WebUI"]
     end
 
-    CRD --> ISTIO --> NS --> ST --> OLM --> ML --> GW --> HR --> WUI
+    CRD --> ISTIO --> NS --> NP --> ST --> KEDA --> OLM --> ML --> KSO --> GW --> HR --> WUI
 
     style W0 fill:#e8eaf6,stroke:#3f51b5,stroke-width:2px
     style W1 fill:#e0f7fa,stroke:#00bcd4,stroke-width:2px
@@ -1216,7 +1392,7 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 </tr>
 <tr>
 <td><strong>CloudFront Function</strong></td>
-<td>Edge-level auth redirect — unauthenticated requests (no <code>token</code> cookie) are 302'd to Cognito login; excludes OAuth, API, static asset, and portal paths</td>
+<td>Edge-level auth redirect — unauthenticated requests (no <code>token</code> cookie) are 302'd to <code>/auth/login.html</code> (custom portal); excludes OAuth, API, static asset, auth, and portal paths</td>
 </tr>
 <tr>
 <td><strong>Origin Lockdown</strong></td>
@@ -1256,15 +1432,15 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 </tr>
 <tr>
 <td><strong>Node Isolation</strong></td>
-<td>System nodes tainted <code>CriticalAddonsOnly</code>, GPU nodes tainted <code>nvidia.com/gpu</code></td>
+<td>System NodePool (t3.large on-demand, all non-GPU workloads), GPU NodePool (g5 spot, <code>workload-type: gpu-inference</code> nodeSelector + <code>nvidia.com/gpu</code> taint)</td>
 </tr>
 <tr>
 <td><strong>EBS Snapshot</strong></td>
 <td>Pre-loaded models — no internet needed for model loading</td>
 </tr>
 <tr>
-<td><strong>Cognito (Open WebUI)</strong></td>
-<td>OAuth/OIDC with mandatory TOTP MFA, roles synced from Cognito groups on every login, admin approval for new signups, password changes via Cognito hosted UI, no local passwords, admin chat access and DB export disabled</td>
+<td><strong>Cognito + Custom Portal</strong></td>
+<td>Custom login portal (auth_proxy Lambda + login.html SPA) handles all auth flows — users never see Cognito hosted UI. OAuth/OIDC with mandatory TOTP MFA, roles synced from Cognito groups, admin-approved signups, in-app password reset, no local passwords, admin chat access and DB export disabled</td>
 </tr>
 <tr>
 <td><strong>IRSA</strong></td>
@@ -1360,7 +1536,7 @@ export OPENAI_API_KEY=$API_KEY
 curl https://&lt;CLOUDFRONT_DOMAIN&gt;/v1/chat/completions \
   -H &quot;Content-Type: application/json&quot; \
   -H &quot;x-api-key: $API_KEY&quot; \
-  -d '{&quot;model&quot;:&quot;qwen3.5:122b-a10b&quot;,&quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;Hello&quot;}]}'
+  -d '{&quot;model&quot;:&quot;qwen3.5:27b&quot;,&quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;Hello&quot;}]}'
 </code></pre>
 
 <blockquote>
@@ -1421,10 +1597,13 @@ aws apigateway update-api-key --api-key $OLD_KEY_ID --patch-operations op=replac
   variables.tf                     # All variables with defaults
   outputs.tf                       # Cluster info, CloudFront domain, commands
   backend.tf                       # S3 + DynamoDB state locking
+  environments/
+    dev.tfvars                     # DEV environment variables (Tier 1, g5.xlarge)
+    prod.tfvars                    # PROD environment variables (Tier 3, g5.12xlarge)
   modules/
     vpc/                           # VPC, subnets, NAT, IGW
     iam/                           # Cluster + node IAM roles, IRSA
-    eks/                           # EKS cluster, node groups, addons
+    eks/                           # EKS cluster (Auto Mode), custom Karpenter NodePools, addons
     argocd/                        # ArgoCD Helm + root Application
     lb-controller/                 # AWS Load Balancer Controller
     observability/                 # Prometheus + DCGM Exporter (remote-write to AMP)
@@ -1432,20 +1611,36 @@ aws apigateway update-api-key --api-key $OLD_KEY_ID --patch-operations op=replac
     cdn-waf/                       # CloudFront + WAFv2 (5 rules) + origin lockdown header
     cert-manager/                  # cert-manager Helm release
     cognito/                       # Cognito User Pool for Open WebUI (OAuth, MFA, groups)
+    api-key-portal/                # Self-service API key management + custom login portal (auth_proxy Lambda)
     managed-grafana/               # AMG + AMP (all dashboards via IAM Identity Center SSO)
     bedrock-integration/           # Stack B: VPC endpoint + IRSA for Bedrock
 
 k8s/
   ollama/                          # Deployment, Service, NetworkPolicy (air-gapped)
   model-loader/                    # Job to pull models
-  nodepools/                       # EKS Auto Mode NodePool (karpenter.sh/v1) + NodeClass (eks.amazonaws.com/v1)
+  nodepools/                       # Custom Karpenter NodePools: system (t3.large on-demand) + GPU (g5 spot), NodeClasses (eks.amazonaws.com/v1)
   cert-manager/                    # ClusterIssuer + Certificate
   open-webui/                      # Open WebUI — Cognito auth, model locked to admins
+  keda/                            # KEDA ScaledObject for auto-scale-to-zero (15-min idle → scale Ollama to 0)
+  namespaces.yaml                  # Namespace manifests with ambient mesh labels
   gateway.yaml                     # Istio Gateway
-  httproutes.yaml                  # HTTPRoutes to Ollama
+  httproutes.yaml                  # HTTPRoutes to Ollama + Open WebUI
   monitoring-networkpolicy.yaml    # Monitoring namespace air-gap
+  overlays/
+    dev/                           # DEV environment (Tier 1, g5.xlarge, qwen3.5:27b)
+      kustomization.yaml           # Base + patches for DEV
+      nodepools.yaml               # DEV: xlarge only
+      ollama.yaml                  # DEV: Tier 1 model
+      model-loader.yaml            # DEV: pull qwen3.5:27b
+      open-webui.yaml              # DEV: filter to qwen3.5:27b
+    prod/                          # PROD environment (Tier 3, g5.12xlarge, qwen3.5:122b-a10b)
+      kustomization.yaml           # Base + patches for PROD
+      nodepools.yaml               # PROD: xlarge/2xlarge/12xlarge
+      ollama.yaml                  # PROD: Tier 3 model
+      model-loader.yaml            # PROD: pull qwen3.5:122b-a10b
+      open-webui.yaml              # PROD: filter to qwen3.5:122b-a10b
 
-argocd/apps/                       # Wave-based Application manifests
+argocd/apps/                       # Wave-based Application manifests (00-12, incl. 01b-system-nodepool.yaml)
 
 scripts/
   deploy-stack-a.sh                # End-to-end Stack A deployment automation
@@ -1589,11 +1784,11 @@ terraform destroy
 </tr>
 <tr>
 <td>Cluster name</td>
-<td><code>ollama-eks</code></td>
+<td><code>eks-ollama-dev</code></td>
 </tr>
 <tr>
 <td>Naming convention</td>
-<td>Resources prefixed with <code>ollama-eks-</code> or <code>ollama-</code> for easy identification</td>
+<td>Resources prefixed with <code>eks-ollama-</code> or <code>ollama-</code> for easy identification</td>
 </tr>
 </tbody>
 </table>

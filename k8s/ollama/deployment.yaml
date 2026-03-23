@@ -1,12 +1,10 @@
 # Ollama Deployment
-# Runs the Ollama LLM server on a g5.12xlarge GPU node (4x NVIDIA A10G, 96GB VRAM).
+# Runs the Ollama LLM server on GPU nodes (NVIDIA A10G).
 # The pod is scheduled exclusively on GPU nodes via nodeSelector + toleration.
 # Model data is stored on a 200Gi EBS gp3 PVC that persists across restarts.
 #
-# To change the instance type or GPU count:
-#   1. Update resources.limits/requests below
-#   2. Update the OLLAMA_* env vars if needed
-#   3. Commit and push — ArgoCD self-heals automatically
+# Resource limits (GPU count, memory, CPU) are set per environment via
+# Kustomize overlays in k8s/overlays/dev/ and k8s/overlays/prod/.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -59,8 +57,7 @@ spec:
             - name: OLLAMA_CONTEXT_LENGTH
               value: "32768"
           resources:
-            # DEV: g5.xlarge (1x A10G, 4 vCPU, ~15Gi allocatable)
-            # PROD: nvidia.com/gpu: "4", memory: "96Gi"/"64Gi", cpu: "16"/"8"
+            # Set per environment via Kustomize overlay
             limits:
               nvidia.com/gpu: "1"
               memory: "14Gi"

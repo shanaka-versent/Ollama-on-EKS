@@ -1,8 +1,10 @@
 # Wave 4: Model Loader Job
-# Runs a one-time Job that waits for Ollama to be ready, then pulls qwen3.5:122b.
-# The model is stored on the 200Gi EBS gp3 PVC and persists across pod restarts.
-# Model pull takes ~30-60 min depending on network speed (122B MoE model = ~81GB).
+# Runs a one-time Job that pulls the configured model into EBS storage.
+# DEV: qwen3.5:27b (~18GB) — PROD: qwen3.5:122b-a10b (~81GB)
+# Model set via Kustomize overlays.
 # Requires: Ollama deployment running (wave 3)
+#
+# Environment switch: change path to k8s/overlays/prod/model-loader for PROD
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -15,7 +17,7 @@ spec:
   source:
     repoURL: https://github.com/shanaka-versent/Ollama-on-EKS
     targetRevision: HEAD
-    path: k8s/model-loader
+    path: k8s/overlays/dev/model-loader
   destination:
     server: https://kubernetes.default.svc
     namespace: ollama

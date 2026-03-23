@@ -1,8 +1,7 @@
 # Model Loader Job — pulls the configured model into persistent EBS storage
 # Runs once after Ollama is ready (Wave 4, after Wave 3 Ollama deployment).
 # The model is stored on the 200Gi EBS PVC and survives pod restarts.
-# DEV: qwen3.5:27b (~18GB, fits on g5.xlarge 1x A10G 24GB VRAM)
-# PROD: qwen3.5:122b-a10b (~81GB, needs g5.12xlarge 4x A10G 96GB VRAM)
+# Model name is set per environment via Kustomize overlays in k8s/overlays/.
 #
 # To change the model:
 #   1. Update OLLAMA_MODEL below
@@ -35,7 +34,7 @@ spec:
           image: curlimages/curl:latest
           env:
             - name: OLLAMA_MODEL
-              # DEV: qwen3.5:27b  |  PROD: qwen3.5:122b-a10b
+              # Set per environment via Kustomize overlay
               value: "qwen3.5:27b"
             - name: OLLAMA_URL
               value: "http://ollama.ollama.svc.cluster.local:11434"
