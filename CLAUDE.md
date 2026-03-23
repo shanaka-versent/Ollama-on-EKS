@@ -12,7 +12,7 @@ A fully private, air-gapped LLM inference platform on AWS EKS. Ollama serves Qwe
 
 Layer 1 — VPC (10.0.0.0/16) with private/public subnets + NAT Gateway.
 Layer 2 — EKS Control Plane with Auto Mode enabled. Custom Karpenter NodePools: system pool (t3.large on-demand, x86 only) + GPU pool (g5 spot, on-demand fallback). Built-in pools disabled (`node_pools = []`). EBS CSI Driver + AWS LB Controller managed by Auto Mode.
-Layer 3 — ArgoCD with wave orchestration (waves -2 to 7). Wave -2: Gateway API CRDs → Wave -1: Istio Base → Wave 0: Istiod + Istio CNI + ztunnel (ambient mesh) → Wave 1: Namespaces → Wave 2: Storage → Wave 3-4: Ollama + Model Loader → Wave 5-6: Gateway + Routes → Wave 7: Open WebUI. NVIDIA device plugin is managed by EKS Auto Mode (NOT deployed via ArgoCD — the ArgoCD app file `05-nvidia-device-plugin.yaml` is intentionally emptied).
+Layer 3 — ArgoCD with wave orchestration (waves -2 to 7). Wave -2: Gateway API CRDs → Wave -1: Istio Base → Wave 0: Istiod + Istio CNI + ztunnel (ambient mesh) → Wave 1: Namespaces + NodePools → Wave 2: Storage + KEDA → Wave 3-4: Ollama + Model Loader + KEDA ScaledObject → Wave 5-6: Gateway + Routes → Wave 7: Open WebUI. NVIDIA device plugin is managed by EKS Auto Mode (NOT deployed via ArgoCD — the ArgoCD app file `05-nvidia-device-plugin.yaml` is intentionally emptied).
 Layer 4 — CloudFront (+ WAF + Shield Standard) → API Gateway (REST API, native API key auth) → VPC Link → Internal NLB → Istio Gateway (mTLS) → Ollama Pod.
 
 Traffic flow (API): Client → CloudFront (WAF) → API Gateway (x-api-key) → VPC Link → Internal NLB → Istio Gateway → Ollama Pod.
@@ -90,13 +90,14 @@ Grafana is **AWS Managed Grafana (AMG)** — accessed via IAM Identity Center SS
 
 **Current phase: DEV** — using Tier 1 fallback (`qwen3.5:27b`) on g5.xlarge (1x A10G, $0.35/hr spot) for infrastructure testing and platform validation. NodePool is restricted to g5.xlarge only — no g5.12xlarge can be provisioned.
 
-**PROD upgrade:** When ready for production, switch to Tier 3 flagship. Changes required (search for `# PROD:` comments in each file):
+**PROD upgrade:** When ready for production, switch to Tier 3 flagship. Two changes:
 
-1. `k8s/nodepools/gpu-nodepool.yaml`:
-   - Uncomment `12xlarge` in instance-size values
-   - Update limits: `cpu: "48"`, `memory: 192Gi`, `nvidia.com/gpu: "4"`
-2. `k8s/open-webui/deployment.yaml`:
-   - Change `DEFAULT_MODELS` and `MODEL_FILTER_LIST` to `qwen3.5:122b-a10b`
+1. **Terraform:** Deploy with `terraform apply -var-file=environments/prod.tfvars` (instead of `environments/dev.tfvars`)
+2. **ArgoCD apps:** Change `path` in 4 ArgoCD Application files from `k8s/overlays/dev/...` to `k8s/overlays/prod/...`:
+   - `argocd/apps/01b-system-nodepool.yaml` (NodePools)
+   - `argocd/apps/08-ollama.yaml` (Ollama deployment)
+   - `argocd/apps/09-model-loader.yaml` (Model loader)
+   - `argocd/apps/12-open-webui.yaml` (Open WebUI)
 
 **Spot instance strategy:** Spot preferred with on-demand fallback (both DEV and PROD). Karpenter tries spot first — if spot is unavailable (quota pending or no capacity), falls back to on-demand automatically.
 - `GPUOnDemandFallback` alert fires (warning) when on-demand is used — so you know you're paying full price.
@@ -119,7 +120,7 @@ Switch with: `./switch-model.sh use 3` (flagship) or `./switch-model.sh use 1` (
 - CloudFront + WAF + API Gateway replaces Kong Cloud Gateway — 99% cost reduction ($756/mo → $6/mo), adds DDoS protection, eliminates Transit Gateway dependency
 - EKS Auto Mode with custom NodePools — Auto Mode manages Karpenter, NVIDIA plugin, EBS CSI, LB controller. Built-in pools disabled (`node_pools = []`). Custom system pool (t3.large on-demand, x86 only) and GPU pool (g5 spot with on-demand fallback) give full control over instance types and cost
 - System nodes on-demand only — CoreDNS, Istio, Prometheus, ArgoCD cannot tolerate spot interruptions (full cluster outage). GPU nodes use spot (inference tolerates 2-3 min interruptions). `GPUOnDemandFallback` alert fires if GPU falls back to on-demand
-- 30-min idle window (`consolidateAfter: 30m`) for GPU — nodes stay warm through coffee breaks, terminate after 30 min idle. System nodes use 5-min consolidation (`WhenEmptyOrUnderutilized`)
+- KEDA auto-scale-to-zero — KEDA monitors Ollama CPU usage via Prometheus. After 15 min of no inference requests, KEDA scales the Ollama deployment to 0 replicas. Karpenter then terminates the empty GPU node after 10 min (`consolidateAfter: 10m`). Total idle-to-zero: ~25 min. Scale-from-zero is manual via `scripts/scale-up.sh`. System nodes use 5-min consolidation (`WhenEmptyOrUnderutilized`)
 - EKS Auto Mode NodeClass requires explicit `role` field and subnet/SG IDs (tag-based discovery not supported)
 - EBS snapshots for model weights — pre-loaded models on disk, no internet needed for model loading (air-gap compliant), cold start ~3 min instead of 15-25 min
 - High-throughput gp3 — 400 MB/s + 6000 IOPS for fast model loading from snapshot
@@ -128,6 +129,7 @@ Switch with: `./switch-model.sh use 3` (flagship) or `./switch-model.sh use 1` (
 - Dual-mode pipeline — two separate stacks (deploy one or the other), both maintaining data sovereignty (see below)
 - Gateway API pattern with CloudFront VPC Origins — the Istio Gateway creates an internal NLB, and CloudFront connects privately via VPC Origins. This is the core reason for the Gateway API pattern: one internal NLB serves all traffic (Ollama API, Open WebUI) with path-based HTTPRoutes, and CloudFront accesses it without exposing any load balancer to the internet
 - Cognito authentication for Open WebUI — Cognito User Pool with TOTP MFA, OAuth/OIDC, and admin-approved signups. All user management via Cognito Console. Grafana auth is via AMG SSO (IAM Identity Center)
+- Environment-based configuration — Terraform uses per-environment tfvars (`terraform/environments/dev.tfvars`, `prod.tfvars`). K8s manifests use Kustomize overlays (`k8s/overlays/dev/`, `prod/`). ArgoCD apps point to the active overlay. Zero `# PROD: uncomment` comments — switch environments by changing the overlay path, not editing files.
 
 ## Dual-Mode Pipeline — Two Separate Stacks
 
@@ -155,11 +157,15 @@ The orchestrator is a separate product built on top of the Ollama-on-EKS infrast
 
 Terraform modules: `terraform/modules/` — vpc, iam, eks, argocd, lb-controller, observability (IMPLEMENTED), api-gateway (IMPLEMENTED, with origin lockdown), cdn-waf (IMPLEMENTED, with origin lockdown), cert-manager (IMPLEMENTED), bedrock-integration (IMPLEMENTED, Stack B only), managed-grafana (IMPLEMENTED — AMG + AMP, SSO via IAM Identity Center), cognito (IMPLEMENTED — Open WebUI Cognito User Pool + OAuth/OIDC), api-key-portal (IMPLEMENTED — self-service API key management with Cognito auth). Each module follows the pattern: `main.tf`, `variables.tf`, `outputs.tf`, `versions.tf`.
 
-K8s manifests: `k8s/ollama/` — deployment.yaml (pinned to v0.18.2), service.yaml (ClusterIP :11434), networkpolicy.yaml (air-gap enforced). Plus: `k8s/model-loader/`, `k8s/gateway.yaml`, `k8s/httproutes.yaml`, `k8s/monitoring-networkpolicy.yaml` (IMPLEMENTED), `k8s/nodepools/` (IMPLEMENTED — system NodePool `t3.large on-demand` + GPU NodePool `g5 spot` + NodeClasses for both, all `karpenter.sh/v1` + `eks.amazonaws.com/v1` APIs), `k8s/open-webui/` (IMPLEMENTED — Cognito auth, model locked to admins), `k8s/cert-manager/`, `k8s/namespaces.yaml`.
+Terraform environments: `terraform/environments/` — per-environment tfvars (dev.tfvars, prod.tfvars).
 
-ArgoCD: `argocd/apps/` — wave-based Application manifests (files 00-12, waves -2 to 7). Wave -2: Gateway API CRDs, Wave -1: Istio Base, Wave 0: Istiod + CNI + ztunnel, Wave 1: Namespaces, Wave 2: Storage, Wave 3: Ollama, Wave 4: Model Loader, Wave 5: Gateway, Wave 6: HTTPRoutes, Wave 7: Open WebUI. File `05-nvidia-device-plugin.yaml` is intentionally emptied (comments only) — EKS Auto Mode manages NVIDIA plugin.
+K8s manifests: `k8s/ollama/` — deployment.yaml (pinned to v0.18.2), service.yaml (ClusterIP :11434), networkpolicy.yaml (air-gap enforced). Plus: `k8s/model-loader/`, `k8s/gateway.yaml`, `k8s/httproutes.yaml`, `k8s/monitoring-networkpolicy.yaml` (IMPLEMENTED), `k8s/nodepools/` (IMPLEMENTED — system NodePool `t3.large on-demand` + GPU NodePool `g5 spot` + NodeClasses for both, all `karpenter.sh/v1` + `eks.amazonaws.com/v1` APIs), `k8s/keda/` (IMPLEMENTED — KEDA ScaledObject for auto-scale-to-zero after 15 min idle), `k8s/open-webui/` (IMPLEMENTED — Cognito auth, model locked to admins), `k8s/cert-manager/`, `k8s/namespaces.yaml`.
 
-Scripts: `scripts/01-setup.sh`, `scripts/04-post-setup.sh`, `scripts/06-setup-github-sync.sh`, `scripts/create-model-snapshot.sh` (IMPLEMENTED), `scripts/generate-readme-html.py` (IMPLEMENTED), `scripts/deploy-stack-a.sh` (Stack A deployment), `scripts/scale-up.sh` / `scripts/scale-down.sh` (manual GPU node scaling), `scripts/test-ollama-stack.sh` (end-to-end stack test), `scripts/verify-airgap.sh` (air-gap compliance check). Removed: `03-setup-cloud-gateway.sh` (Kong), `05-generate-certs.sh` (replaced by cert-manager).
+K8s overlays: `k8s/overlays/` — Kustomize overlays per environment (dev/, prod/) with patches for GPU resources, model names, and NodePool limits.
+
+ArgoCD: `argocd/apps/` — wave-based Application manifests (files 00-12 + 01b, 02b, 04b; waves -2 to 7). Wave -2: Gateway API CRDs, Wave -1: Istio Base, Wave 0: Istiod + CNI + ztunnel, Wave 1: Namespaces + NodePools, Wave 2: Storage + KEDA, Wave 3: Ollama, Wave 4: Model Loader + KEDA ScaledObject, Wave 5: Gateway, Wave 6: HTTPRoutes, Wave 7: Open WebUI. File `05-nvidia-device-plugin.yaml` is intentionally emptied (comments only) — EKS Auto Mode manages NVIDIA plugin.
+
+Scripts: `scripts/01-setup.sh`, `scripts/04-post-setup.sh`, `scripts/06-setup-github-sync.sh`, `scripts/create-model-snapshot.sh` (IMPLEMENTED), `scripts/generate-readme-html.py` (IMPLEMENTED), `scripts/deploy-stack-a.sh` (Stack A deployment), `scripts/scale-up.sh` / `scripts/scale-down.sh` (UPDATED — Karpenter-native, pauses/unpauses KEDA, no managed node group ops), `scripts/test-ollama-stack.sh` (end-to-end stack test), `scripts/verify-airgap.sh` (air-gap compliance check). Removed: `03-setup-cloud-gateway.sh` (Kong), `05-generate-certs.sh` (replaced by cert-manager).
 
 Workflows: `.github/workflows/terraform-plan.yml` and `terraform-apply.yml` (IMPLEMENTED). Kong workflow removed.
 
@@ -242,9 +248,9 @@ A g5.12xlarge (flagship tier) requires 48 vCPUs. Without these quotas, Karpenter
 
 | Scenario | Wait Time |
 |----------|-----------|
-| Warm node (within 30-min idle window) | 4-6s to first token (flagship) |
-| Back from <30 min break | 0s (node still warm) |
-| First request of the day / after 30+ min idle | ~3 min cold start, then 4-6s |
+| Warm node (active within 15-min KEDA window) | 4-6s to first token (flagship) |
+| Back from <15 min break | 0s (pod still running) |
+| First request of the day / after 25+ min idle | ~3 min cold start (KEDA scaled to 0 at 15 min, Karpenter terminated node at 25 min), then 4-6s |
 | Spot instance reclaimed mid-session | ~2-3 min interruption (auto-recovery) |
 
 Token generation: flagship produces 30-50 tok/s. A 500-token response takes ~10-17s.
@@ -267,7 +273,7 @@ Token generation: flagship produces 30-50 tok/s. A 500-token response takes ~10-
 |-----------|-------------|
 | System nodes (1x t3.large on-demand) | ~$60 |
 | GPU compute (fallback, 8hrs/day weekdays, spot) | ~$56 |
-| 30-min idle window overhead | ~$3 |
+| KEDA idle overhead (~25 min to full shutdown) | ~$2 |
 | EBS storage (200GB gp3) | ~$14 |
 | EKS control plane | $73 |
 | CloudFront + WAF + API Gateway | ~$6 |
@@ -280,7 +286,7 @@ Token generation: flagship produces 30-50 tok/s. A 500-token response takes ~10-
 |-----------|-------------|
 | System nodes (1-2x t3.large on-demand) | ~$60-120 |
 | GPU compute (flagship, 8hrs/day weekdays, spot) | ~$304 |
-| 30-min idle window overhead | ~$16 |
+| KEDA idle overhead (~25 min to full shutdown) | ~$11 |
 | EBS storage (200GB gp3) | ~$14 |
 | EKS control plane | $73 |
 | CloudFront + WAF + API Gateway | ~$6 |
@@ -300,6 +306,7 @@ Down from $4,155/mo (24/7 on-demand + Kong) — 90%+ reduction.
 - Region — `ap-southeast-2` (Sydney) throughout. All resources in this region
 - Cluster name — `eks-ollama-dev`
 - Naming convention — resources prefixed with `ollama-eks-` or `ollama-` for easy identification
+- Environment switching — never edit base manifests to change environment. Use `terraform apply -var-file=environments/{env}.tfvars` for Terraform and update ArgoCD app paths to `k8s/overlays/{env}/` for K8s resources
 
 ### Provisioning Order (must be followed for all changes)
 
@@ -335,7 +342,7 @@ This is not optional. Documentation drift causes confusion in consulting engagem
 - Only the default model is visible to non-admin users (DEV: `qwen3.5:27b`, PROD: `qwen3.5:122b-a10b`)
 - Admins (first user + promoted users) can see and switch all tiers
 - Cluster-wide model switching is done via `./switch-model.sh use <tier>` by users with kubectl access
-- When changing the default model, update BOTH `DEFAULT_MODELS` and `MODEL_FILTER_LIST` in `k8s/open-webui/deployment.yaml`
+- When changing the default model, update the Kustomize overlay patch in `k8s/overlays/{env}/open-webui/deployment-patch.yaml`
 
 ## Companion Documents
 

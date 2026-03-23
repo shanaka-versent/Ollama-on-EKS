@@ -85,7 +85,7 @@ CloudFront connects to the internal NLB via **VPC Origins** — private connecti
 |-------|------|------------|
 | 1 — Cloud Foundations | VPC (10.0.0.0/16) | Private/public subnets, NAT Gateway, Internet Gateway |
 | 2 — EKS Cluster | Kubernetes + GPU | EKS Control Plane (Auto Mode), custom Karpenter NodePools: system (t3.large on-demand) + GPU (g5.xlarge DEV / g5.12xlarge PROD spot), EBS CSI Driver, LB Controller |
-| 3 — GitOps | ArgoCD waves -2 to 7 | Wave -2: Gateway API CRDs → Wave -1: Istio Base → Wave 0: Istiod + CNI + ztunnel → Wave 1: Namespaces + NodePools → Wave 2: Storage → Waves 3-4: Ollama + Model Loader → Waves 5-6: Gateway + Routes → Wave 7: Open WebUI |
+| 3 — GitOps | ArgoCD waves -2 to 7 | Wave -2: Gateway API CRDs → Wave -1: Istio Base → Wave 0: Istiod + CNI + ztunnel → Wave 1: Namespaces + NodePools → Wave 2: Storage + KEDA → Waves 3-4: Ollama + Model Loader + KEDA ScaledObject → Waves 5-6: Gateway + Routes → Wave 7: Open WebUI |
 | 4 — Edge + Security | CloudFront + WAF + API GW | CloudFront (+ WAF + Shield Standard) → API Gateway (REST API, x-api-key) → VPC Link → Internal NLB → Istio Gateway (mTLS) → Ollama Pod |
 
 | Component | Where | Role |
@@ -103,10 +103,10 @@ CloudFront connects to the internal NLB via **VPC Origins** — private connecti
 
 **Current phase: DEV** — using Tier 1 fallback (`qwen3.5:27b`) on g5.xlarge (1x A10G, $0.35/hr spot) for infrastructure testing and platform validation.
 
-**PROD upgrade:** When ready for production, switch to Tier 3 flagship. Only 2 files need changes (search for `# PROD:` comments):
+**PROD upgrade:** When ready for production, switch to Tier 3 flagship. Two changes:
 
-1. `k8s/nodepools/gpu-nodepool.yaml` — Uncomment `12xlarge` + `on-demand`, update limits
-2. `k8s/open-webui/deployment.yaml` — Change `DEFAULT_MODELS` and `MODEL_FILTER_LIST` to `qwen3.5:122b-a10b`
+1. **Terraform:** `terraform apply -var-file=environments/prod.tfvars`
+2. **ArgoCD:** Change `path` in 4 app files from `k8s/overlays/dev/...` to `k8s/overlays/prod/...` (nodepools, ollama, model-loader, open-webui)
 
 Three tiers available, all pre-downloaded to EBS via snapshot:
 
@@ -124,13 +124,23 @@ Switch tiers using the `/model` command in Claude Code, or directly via:
 ./switch-model.sh use 2   # code-optimised
 ```
 
+### Environment Configuration
+
+Environment-specific values (GPU instance sizes, model names, resource limits) are managed via:
+
+- **Terraform:** `terraform apply -var-file=environments/dev.tfvars` (or `prod.tfvars`)
+- **K8s manifests:** Kustomize overlays in `k8s/overlays/dev/` and `k8s/overlays/prod/`
+- **ArgoCD:** Application files point to `k8s/overlays/{env}/` paths
+
+To switch from DEV to PROD: update the 4 ArgoCD app paths and run Terraform with the prod tfvars. No file editing or uncommenting required.
+
 ### Key Design Decisions
 
 | Decision | Rationale |
 |----------|-----------|
 | CloudFront + WAF + API Gateway (not Kong) | 99% cost reduction ($756/mo → $6/mo), adds DDoS protection, eliminates Transit Gateway dependency |
 | EKS Auto Mode + Custom NodePools | Built-in pools disabled (`node_pools = []`). Two custom Karpenter NodePools: system (t3.large on-demand, `WhenEmptyOrUnderutilized` 5m) and GPU (g5 spot, `WhenEmpty` 30m). System on-demand because CoreDNS/Istio/Prometheus cannot tolerate spot interruptions. AWS manages NVIDIA device plugin and drivers |
-| 30-min idle window (`consolidateAfter: 30m`) | Nodes stay warm through coffee breaks and short meetings, terminate after 30 min idle to save costs |
+| KEDA auto-scale-to-zero | KEDA monitors CPU via Prometheus. After 15 min idle, scales Ollama to 0. Karpenter terminates empty GPU node after 10 min. Total idle-to-zero: ~25 min. Manual scale-up via `scripts/scale-up.sh` |
 | EBS snapshots for model weights | Pre-loaded models on disk, no internet needed for model loading (air-gap compliant), cold start ~3 min instead of 15-25 min |
 | High-throughput gp3 (400 MB/s + 6000 IOPS) | Fast model loading from snapshot — critical for reasonable cold start times |
 | AWS Managed Grafana (AMG) | Prometheus + DCGM Exporter in-cluster → AMP → AMG (SSO via IAM Identity Center). All dashboards including FinOps |
@@ -139,6 +149,7 @@ Switch tiers using the `/model` command in Claude Code, or directly via:
 | Ollama image pinned to v0.18.2 | Reproducible builds, no surprise breaking changes from `:latest` |
 | Custom login portal + Cognito | All auth flows (login, signup, MFA, password reset) handled by custom portal — users never see Cognito hosted UI. Cognito provides OAuth/OIDC backend with TOTP MFA and group-based roles |
 | cert-manager (not manual openssl) | Automated TLS lifecycle — 90d duration, 30d auto-renewal, no manual cert rotation |
+| Environment-based configuration (Terraform tfvars + Kustomize overlays) | DEV and PROD configs (instance types, models, resources) defined separately. No manual file editing or comment-toggling. Switch via `terraform apply -var-file=environments/prod.tfvars` + ArgoCD path update |
 
 ### Dual-Mode Pipeline — Two Separate Stacks
 
@@ -572,11 +583,12 @@ Dashboard variables let you adjust the GPU spot rate (DEV: $0.35/hr for g5.xlarg
 |-----------|-------------|
 | System node (1x t3.large on-demand) | ~$60 |
 | GPU compute (fallback, 8hrs/day weekdays, spot) | ~$56 |
+| KEDA idle overhead (~25 min to full shutdown) | ~$2 |
 | EKS control plane | $73 |
 | EBS snapshot storage + gp3 throughput | ~$14 |
 | CloudFront + WAF + API Gateway | ~$6 |
 | AWS Managed Grafana + AMP | ~$14 |
-| **Total (DEV)** | **~$226/mo** |
+| **Total (DEV)** | **~$225/mo** |
 
 **PROD Phase (Tier 3 flagship, g5.12xlarge spot):**
 
@@ -584,41 +596,50 @@ Dashboard variables let you adjust the GPU spot rate (DEV: $0.35/hr for g5.xlarg
 |-----------|-------------|
 | System nodes (1-2x t3.large on-demand) | ~$60-120 |
 | GPU compute (flagship, 8hrs/day weekdays, spot) | ~$304 |
+| KEDA idle overhead (~25 min to full shutdown) | ~$11 |
 | EKS control plane | $73 |
 | EBS snapshot storage + gp3 throughput | ~$14 |
 | CloudFront + WAF + API Gateway | ~$6 |
 | AWS Managed Grafana + AMP | ~$14 |
-| **Total (PROD)** | **~$486/mo** |
+| **Total (PROD)** | **~$482/mo** |
 
-Down from $4,155/mo (24/7 on-demand + Kong) — 88% reduction. DEV phase runs at ~$226/mo.
+Down from $4,155/mo (24/7 on-demand + Kong) — 88% reduction. DEV phase runs at ~$225/mo.
 
-**Spot instance strategy:** GPU NodePool uses spot preferred with automatic on-demand fallback (both DEV and PROD). Karpenter tries spot first — if unavailable, falls back to on-demand automatically. `GPUOnDemandFallback` alert fires (warning) when on-demand is used. System NodePool is always on-demand — system components (CoreDNS, Istio, Prometheus, ArgoCD) cannot tolerate spot interruptions. Alerts route via Alertmanager → SNS → email.
+**Spot instance strategy:** GPU NodePool uses spot preferred with automatic on-demand fallback (both DEV and PROD). Karpenter tries spot first — if unavailable, falls back to on-demand automatically. `GPUOnDemandFallback` alert fires (warning) when on-demand is used. System NodePool is always on-demand — system components (CoreDNS, Istio, Prometheus, ArgoCD) cannot tolerate spot interruptions. Alerts route via Alertmanager → SNS → email. KEDA handles idle detection and scales Ollama to 0 replicas after 15 min of no activity, then Karpenter terminates the empty GPU node after 10 min.
 
 ### Response Time Expectations
 
 | Scenario | Wait Time |
 |----------|-----------|
-| Warm node (within 30-min idle window) | 4-6s to first token (flagship) |
-| Back from <30 min break | 0s (node still warm) |
-| First request of the day / after 30+ min idle | ~3 min cold start, then 4-6s |
+| Warm node (within 15-min KEDA idle window) | 4-6s to first token (flagship) |
+| Back from <15 min break | 0s (node still warm) |
+| First request of the day / after 25+ min idle | ~3 min cold start, then 4-6s |
 | Spot instance reclaimed mid-session | ~2-3 min interruption (auto-recovery) |
 
 Token generation: flagship produces 30-50 tok/s. A 500-token response takes ~10-17s.
 
-### Scale to Zero (Stop GPU Billing)
+### Auto-Scale-to-Zero (KEDA)
 
-```bash
-kubectl scale deployment ollama -n ollama --replicas=0
-```
+KEDA monitors container CPU usage via Prometheus. When no inference activity is detected for 15 minutes, KEDA scales the Ollama deployment to 0 replicas. Karpenter then detects the empty GPU node and terminates it after 10 minutes. Total time from last request to GPU billing stop: ~25 minutes.
+
+| Stage | Trigger | Delay |
+|-------|---------|-------|
+| KEDA scales Ollama to 0 | CPU below threshold for 15 min | 15 min after last request |
+| Karpenter terminates GPU node | Node empty (`WhenEmpty`) | 10 min after pod removed |
+| **GPU billing stops** | Node terminated | **~25 min total** |
+
+**Manual scale-down (immediate):** `./scripts/scale-down.sh` scales to 0 immediately without waiting for the 15-min idle window.
 
 ### Resume Next Session
 
-The EBS snapshot has your models pre-loaded — no re-download needed. Karpenter auto-provisions a new GPU node when the pod is scaled back up:
+The EBS snapshot has your models pre-loaded — no re-download needed. Scale up manually and Karpenter auto-provisions a new GPU node:
 
 ```bash
-kubectl scale deployment ollama -n ollama --replicas=1
-# Wait ~3 min for node provision + model load from snapshot
+./scripts/scale-up.sh
+# Pauses KEDA during startup, waits for node provision + model load (~3 min), then unpauses KEDA
 ```
+
+> `scale-up.sh` pauses the KEDA ScaledObject during startup to prevent KEDA from scaling down the pod before the model finishes loading, then unpauses after the model is ready.
 
 ---
 
@@ -636,8 +657,10 @@ Terraform provisions ArgoCD during `terraform apply`. ArgoCD then auto-syncs all
 | 1 | `namespaces` | `ollama`, `istio-system` namespaces with ambient mesh label |
 | 1 | `system-nodepool` | System NodePool (t3.large on-demand) + GPU NodePool (g5 spot) + NodeClasses — GitOps-managed node lifecycle |
 | 2 | `ollama-storage` | StorageClass `gp3` (Retain, WaitForFirstConsumer) + PVC 200Gi |
+| 2 | `keda` | KEDA operator (Helm chart, auto-scale-to-zero support) |
 | 3 | `ollama` | Deployment (DEV: 1 GPU / PROD: 4 GPUs, `strategy: Recreate`), Service, NetworkPolicy |
 | 4 | `model-loader` | Job: pulls models to EBS PVC |
+| 4 | `ollama-autoscaler` | KEDA ScaledObject (15-min idle → scale to 0) |
 | 5 | `gateway` | Istio Gateway → AWS LB Controller provisions internal NLB |
 | 6 | `httproutes` | HTTPRoute: `/*` → `ollama.ollama.svc.cluster.local:11434` |
 | 7 | `open-webui` | Open WebUI v0.8.10, Cognito OAuth/OIDC, model locked to admins |
@@ -653,11 +676,13 @@ flowchart LR
         NS["Namespaces\n+ Ambient Labels"]
         NP["System + GPU NodePools\n+ NodeClasses"]
         ST["StorageClass gp3\n+ PVC 200Gi"]
+        KEDA["KEDA Operator"]
     end
 
     subgraph W2["Waves 3-4"]
         OLM["Ollama Deployment\nService + NetworkPolicy"]
         ML["Model Loader Job"]
+        KSO["KEDA ScaledObject\n15-min idle → scale to 0"]
     end
 
     subgraph W3["Waves 5-7"]
@@ -666,7 +691,7 @@ flowchart LR
         WUI["Open WebUI"]
     end
 
-    CRD --> ISTIO --> NS --> NP --> ST --> OLM --> ML --> GW --> HR --> WUI
+    CRD --> ISTIO --> NS --> NP --> ST --> KEDA --> OLM --> ML --> KSO --> GW --> HR --> WUI
 
     style W0 fill:#e8eaf6,stroke:#3f51b5,stroke-width:2px
     style W1 fill:#e0f7fa,stroke:#00bcd4,stroke-width:2px
@@ -789,6 +814,9 @@ terraform/
   variables.tf                     # All variables with defaults
   outputs.tf                       # Cluster info, CloudFront domain, commands
   backend.tf                       # S3 + DynamoDB state locking
+  environments/
+    dev.tfvars                     # DEV environment variables (Tier 1, g5.xlarge)
+    prod.tfvars                    # PROD environment variables (Tier 3, g5.12xlarge)
   modules/
     vpc/                           # VPC, subnets, NAT, IGW
     iam/                           # Cluster + node IAM roles, IRSA
@@ -810,10 +838,24 @@ k8s/
   nodepools/                       # Custom Karpenter NodePools: system (t3.large on-demand) + GPU (g5 spot), NodeClasses (eks.amazonaws.com/v1)
   cert-manager/                    # ClusterIssuer + Certificate
   open-webui/                      # Open WebUI — Cognito auth, model locked to admins
+  keda/                            # KEDA ScaledObject for auto-scale-to-zero (15-min idle → scale Ollama to 0)
   namespaces.yaml                  # Namespace manifests with ambient mesh labels
   gateway.yaml                     # Istio Gateway
   httproutes.yaml                  # HTTPRoutes to Ollama + Open WebUI
   monitoring-networkpolicy.yaml    # Monitoring namespace air-gap
+  overlays/
+    dev/                           # DEV environment (Tier 1, g5.xlarge, qwen3.5:27b)
+      kustomization.yaml           # Base + patches for DEV
+      nodepools.yaml               # DEV: xlarge only
+      ollama.yaml                  # DEV: Tier 1 model
+      model-loader.yaml            # DEV: pull qwen3.5:27b
+      open-webui.yaml              # DEV: filter to qwen3.5:27b
+    prod/                          # PROD environment (Tier 3, g5.12xlarge, qwen3.5:122b-a10b)
+      kustomization.yaml           # Base + patches for PROD
+      nodepools.yaml               # PROD: xlarge/2xlarge/12xlarge
+      ollama.yaml                  # PROD: Tier 3 model
+      model-loader.yaml            # PROD: pull qwen3.5:122b-a10b
+      open-webui.yaml              # PROD: filter to qwen3.5:122b-a10b
 
 argocd/apps/                       # Wave-based Application manifests (00-12, incl. 01b-system-nodepool.yaml)
 

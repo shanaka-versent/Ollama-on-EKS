@@ -1,0 +1,47 @@
+# KEDA ScaledObject — Auto-scale Ollama to zero after 15 min idle
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# Monitors Ollama container CPU usage via Prometheus. During inference,
+# CPU is 1-4 cores. When idle (model loaded, no requests), CPU drops
+# to ~0.01-0.05 cores. KEDA scales to 0 after 15 min of continuous idle.
+#
+# Scale-from-zero is manual: run ./scripts/scale-up.sh or
+#   kubectl scale deployment ollama -n ollama --replicas=1
+# Karpenter auto-provisions the GPU node (~2-3 min cold start).
+#
+# To pause auto-scaling (e.g., during maintenance):
+#   kubectl annotate scaledobject ollama-autoscaler -n ollama \
+#     autoscaling.keda.sh/paused="true" --overwrite
+# To resume:
+#   kubectl annotate scaledobject ollama-autoscaler -n ollama \
+#     autoscaling.keda.sh/paused- --overwrite
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: ollama-autoscaler
+  namespace: ollama
+spec:
+  scaleTargetRef:
+    name: ollama
+  minReplicaCount: 0
+  maxReplicaCount: 1
+  # 15 minutes — wait this long after last active signal before scaling to 0
+  cooldownPeriod: 900
+  # 30 minutes — on first deploy, allow time for model loading before auto-scaling kicks in
+  initialCooldownPeriod: 1800
+  # Check metric every 30 seconds
+  pollingInterval: 30
+  advanced:
+    restoreToOriginalReplicaCount: false
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://kube-prometheus-stack-prometheus.monitoring:9090
+        metricName: ollama_cpu_activity
+        # Sum of CPU usage rate across all Ollama containers over 5-min window
+        # Inference: 1.0-4.0 cores (well above threshold)
+        # Idle:      0.01-0.05 cores (below threshold)
+        query: sum(rate(container_cpu_usage_seconds_total{namespace="ollama",pod=~"ollama.*",container="ollama"}[5m]))
+        threshold: "0.1"
+        # Activation threshold — minimum value to consider "active" (prevents noise)
+        activationThreshold: "0.05"

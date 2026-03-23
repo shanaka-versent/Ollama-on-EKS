@@ -1,14 +1,18 @@
 #!/bin/bash
-# Scale down GPU node group to zero — stops GPU billing
+# Scale down Ollama — Karpenter terminates GPU node after 10 min
 # @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# With EKS Auto Mode + Karpenter: just scale the deployment to 0.
+# Karpenter detects the empty GPU node and terminates it after 10 min.
+# No managed node group operations needed.
+#
+# Note: KEDA will also auto-scale to 0 after 15 min idle. This script
+# is for immediate manual shutdown when you know you're done.
 #
 # Usage:
 #   ./scripts/scale-down.sh
 
 set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -24,32 +28,21 @@ echo ""
 
 export AWS_PROFILE="${AWS_PROFILE:-stax-stax-au1-versent-innovation}"
 
-CLUSTER=$(terraform -chdir="$ROOT_DIR/terraform" output -raw eks_cluster_name)
-NODE_GROUP=$(terraform -chdir="$ROOT_DIR/terraform" output -raw gpu_node_group_name)
-REGION=$(terraform -chdir="$ROOT_DIR/terraform" output -raw region)
+REPLICAS=$(kubectl get deployment ollama -n ollama -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "0")
+POD_STATUS=$(kubectl get pods -n ollama -l app=ollama \
+  --no-headers 2>/dev/null | awk '{print $3}' | head -1)
 
-CURRENT_DESIRED=$(aws eks describe-nodegroup \
-  --cluster-name "$CLUSTER" \
-  --nodegroup-name "$NODE_GROUP" \
-  --region "$REGION" \
-  --query 'nodegroup.scalingConfig.desiredSize' \
-  --output text 2>/dev/null)
-
-POD_STATUS=$(kubectl get deployment ollama -n ollama \
-  --no-headers 2>/dev/null | awk '{print $2}')
-
-echo -e "  Cluster    : ${CYAN}$CLUSTER${NC}"
-echo -e "  Node group : ${CYAN}$NODE_GROUP${NC}  (desired: ${YELLOW}$CURRENT_DESIRED${NC})"
-echo -e "  Ollama pod : ${CYAN}$POD_STATUS${NC}"
+echo -e "  Ollama replicas : ${YELLOW}$REPLICAS${NC}"
+echo -e "  Pod status      : ${YELLOW}${POD_STATUS:-No pods}${NC}"
 echo ""
 
-if [[ "$CURRENT_DESIRED" == "0" ]]; then
+if [[ "$REPLICAS" == "0" ]]; then
   echo -e "  ${YELLOW}Already scaled to 0 — nothing to do.${NC}"
   echo ""
   exit 0
 fi
 
-read -r -p "  Scale down now? This will stop the GPU node and end billing. [y/N] " confirm
+read -r -p "  Scale down now? GPU node will terminate ~10 min after. [y/N] " confirm
 if [[ "$(echo "$confirm" | tr '[:upper:]' '[:lower:]')" != "y" ]]; then
   echo ""
   echo "  Aborted."
@@ -58,48 +51,26 @@ if [[ "$(echo "$confirm" | tr '[:upper:]' '[:lower:]')" != "y" ]]; then
 fi
 
 echo ""
-echo -e "${CYAN}${BOLD}==> Stopping Ollama pod...${NC}"
+echo -e "${CYAN}${BOLD}==> Scaling Ollama to 0 replicas...${NC}"
 kubectl scale deployment ollama -n ollama --replicas=0
 echo -e "  ${GREEN}✓${NC} Deployment scaled to 0"
 
 echo ""
-echo -e "${CYAN}${BOLD}==> Scaling down GPU node group...${NC}"
-aws eks update-nodegroup-config \
-  --cluster-name "$CLUSTER" \
-  --nodegroup-name "$NODE_GROUP" \
-  --scaling-config minSize=0,maxSize=2,desiredSize=0 \
-  --region "$REGION" > /dev/null
-
-echo -n "  Waiting for node group ACTIVE"
-while true; do
-  STATUS=$(aws eks describe-nodegroup \
-    --cluster-name "$CLUSTER" \
-    --nodegroup-name "$NODE_GROUP" \
-    --region "$REGION" \
-    --query 'nodegroup.status' --output text 2>/dev/null)
-  if [[ "$STATUS" == "ACTIVE" ]]; then echo " — done"; break; fi
-  echo -n "."
-  sleep 15
-done
-
-echo ""
 echo -e "${CYAN}${BOLD}==> Verifying...${NC}"
-FINAL_DESIRED=$(aws eks describe-nodegroup \
-  --cluster-name "$CLUSTER" \
-  --nodegroup-name "$NODE_GROUP" \
-  --region "$REGION" \
-  --query 'nodegroup.scalingConfig.desiredSize' \
-  --output text)
-NODE_COUNT=$(kubectl get nodes --no-headers 2>/dev/null | grep "g5\." | wc -l | tr -d ' ')
-DEPLOY_STATUS=$(kubectl get deployment ollama -n ollama --no-headers 2>/dev/null | awk '{print $2}')
+sleep 3
+FINAL_REPLICAS=$(kubectl get deployment ollama -n ollama -o jsonpath='{.spec.replicas}' 2>/dev/null)
+GPU_NODES=$(kubectl get nodeclaims -o wide --no-headers 2>/dev/null | grep "gpu-ollama" | awk '{print $2, $3}')
 
-echo -e "  Node group desired   : ${GREEN}$FINAL_DESIRED${NC}"
-echo -e "  GPU nodes in cluster : ${GREEN}$NODE_COUNT${NC}"
-echo -e "  Ollama deployment    : ${GREEN}$DEPLOY_STATUS${NC}"
+echo -e "  Ollama replicas  : ${GREEN}$FINAL_REPLICAS${NC}"
+if [[ -n "$GPU_NODES" ]]; then
+  echo -e "  GPU node         : ${YELLOW}$GPU_NODES${NC} (will terminate in ~10 min)"
+else
+  echo -e "  GPU node         : ${GREEN}None${NC}"
+fi
 
 echo ""
 echo "========================================"
-echo -e "  ${GREEN}${BOLD}GPU node scaled down — billing stopped.${NC}"
+echo -e "  ${GREEN}${BOLD}Ollama stopped. GPU node drains in ~10 min.${NC}"
 echo "========================================"
 echo ""
 echo "  To resume:  ./scripts/scale-up.sh"
