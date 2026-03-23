@@ -103,7 +103,7 @@ Grafana is **AWS Managed Grafana (AMG)** — accessed via IAM Identity Center SS
 - `GPUOnDemandFallback` alert fires (warning) when on-demand is used — so you know you're paying full price.
 - `GPUSpotInterruption` alert fires when AWS reclaims a spot instance (warning, expect ~2-3 min interruption).
 - Once spot quota is approved, Karpenter will prefer spot automatically — no config change needed.
-- **Alert notifications:** Alertmanager → SNS → email. Set `alert_email` variable in observability module. Requires SNS subscription confirmation email.
+- **Alert notifications:** Alertmanager → SNS → email. Set `alert_email` in root `terraform/variables.tf` (passed to observability module). SNS subscription confirmation email must be clicked for delivery to work. 8 alert rules: GPU temp, GPU memory (high+critical), pod restarts, pod pending, on-demand fallback, spot interruption, provisioning failed.
 
 Three tiers available, all pre-downloaded to EBS via snapshot:
 
@@ -120,7 +120,7 @@ Switch with: `./switch-model.sh use 3` (flagship) or `./switch-model.sh use 1` (
 - CloudFront + WAF + API Gateway replaces Kong Cloud Gateway — 99% cost reduction ($756/mo → $6/mo), adds DDoS protection, eliminates Transit Gateway dependency
 - EKS Auto Mode with custom NodePools — Auto Mode manages Karpenter, NVIDIA plugin, EBS CSI, LB controller. Built-in pools disabled (`node_pools = []`). Custom system pool (t3.large on-demand, x86 only) and GPU pool (g5 spot with on-demand fallback) give full control over instance types and cost
 - System nodes on-demand only — CoreDNS, Istio, Prometheus, ArgoCD cannot tolerate spot interruptions (full cluster outage). GPU nodes use spot (inference tolerates 2-3 min interruptions). `GPUOnDemandFallback` alert fires if GPU falls back to on-demand
-- KEDA auto-scale-to-zero — KEDA monitors Ollama CPU usage via Prometheus. After 15 min of no inference requests, KEDA scales the Ollama deployment to 0 replicas. Karpenter then terminates the empty GPU node after 10 min (`consolidateAfter: 10m`). Total idle-to-zero: ~25 min. Scale-from-zero is manual via `scripts/scale-up.sh`. System nodes use 5-min consolidation (`WhenEmptyOrUnderutilized`)
+- KEDA auto-scale-to-zero — KEDA monitors Ollama CPU usage via Prometheus. After 15 min of no inference requests, KEDA scales the Ollama deployment to 0 replicas. Karpenter then terminates the empty GPU node after 10 min (`consolidateAfter: 10m`). Total idle-to-zero: ~25 min. Scale-from-zero is manual via `scripts/scale-up.sh`. System nodes use 5-min consolidation (`WhenEmptyOrUnderutilized`). ArgoCD Ollama app uses `ignoreDifferences` on `/spec/replicas` so `selfHeal` doesn't fight KEDA. KEDA ArgoCD app uses `ServerSideApply=true` to install all CRDs including `scaledjobs.keda.sh`
 - EKS Auto Mode NodeClass requires explicit `role` field and subnet/SG IDs (tag-based discovery not supported)
 - EBS snapshots for model weights — pre-loaded models on disk, no internet needed for model loading (air-gap compliant), cold start ~3 min instead of 15-25 min
 - High-throughput gp3 — 400 MB/s + 6000 IOPS for fast model loading from snapshot
@@ -165,7 +165,7 @@ K8s overlays: `k8s/overlays/` — Kustomize overlays per environment (dev/, prod
 
 ArgoCD: `argocd/apps/` — wave-based Application manifests (files 00-12 + 01b, 02b, 04b; waves -2 to 7). Wave -2: Gateway API CRDs, Wave -1: Istio Base, Wave 0: Istiod + CNI + ztunnel, Wave 1: Namespaces + NodePools, Wave 2: Storage + KEDA, Wave 3: Ollama, Wave 4: Model Loader + KEDA ScaledObject, Wave 5: Gateway, Wave 6: HTTPRoutes, Wave 7: Open WebUI. File `05-nvidia-device-plugin.yaml` is intentionally emptied (comments only) — EKS Auto Mode manages NVIDIA plugin.
 
-Scripts: `scripts/01-setup.sh`, `scripts/04-post-setup.sh`, `scripts/06-setup-github-sync.sh`, `scripts/create-model-snapshot.sh` (IMPLEMENTED), `scripts/generate-readme-html.py` (IMPLEMENTED), `scripts/deploy-stack-a.sh` (Stack A deployment), `scripts/scale-up.sh` / `scripts/scale-down.sh` (UPDATED — Karpenter-native, pauses/unpauses KEDA, no managed node group ops), `scripts/test-ollama-stack.sh` (end-to-end stack test), `scripts/verify-airgap.sh` (air-gap compliance check). Removed: `03-setup-cloud-gateway.sh` (Kong), `05-generate-certs.sh` (replaced by cert-manager).
+Scripts: `scripts/01-setup.sh`, `scripts/04-post-setup.sh`, `scripts/06-setup-github-sync.sh`, `scripts/create-model-snapshot.sh` (IMPLEMENTED), `scripts/generate-readme-html.py` (IMPLEMENTED), `scripts/deploy-stack-a.sh` (Stack A deployment), `scripts/scale-up.sh` / `scripts/scale-down.sh` (UPDATED — Karpenter-native, pauses/unpauses KEDA, no managed node group ops), `scripts/setup-amg.sh` (IMPLEMENTED — AMG data source + dashboard setup, run once after first deploy), `scripts/test-ollama-stack.sh` (end-to-end stack test), `scripts/verify-airgap.sh` (air-gap compliance check). Removed: `03-setup-cloud-gateway.sh` (Kong), `05-generate-certs.sh` (replaced by cert-manager).
 
 Workflows: `.github/workflows/terraform-plan.yml` and `terraform-apply.yml` (IMPLEMENTED). Kong workflow removed.
 
@@ -219,7 +219,7 @@ Kong cleanup completed: removed `scripts/03-setup-cloud-gateway.sh`, `.github/wo
 
 ### Already Implemented
 
-**Gap 5: Observability** — `terraform/modules/observability/` with Prometheus (kube-prometheus-stack Helm chart), DCGM Exporter (NVIDIA GPU metrics DaemonSet), 6 alert rules (GPU temp > 85°C, GPU memory > 90%, Ollama pod restarts, node not ready, high error rate, PV > 80%). 4 dashboards: GPU metrics, Ollama API metrics, Karpenter node lifecycle, FinOps Showback.
+**Gap 5: Observability** — `terraform/modules/observability/` with Prometheus (kube-prometheus-stack Helm chart), DCGM Exporter (NVIDIA GPU metrics DaemonSet, 256Mi/512Mi memory), 8 alert rules (GPU temp, GPU memory high+critical, pod restarts, pod pending, on-demand fallback, spot interruption, provisioning failed), Alertmanager → SNS → email notifications. 4 dashboards: GPU metrics, Ollama API metrics, Karpenter node lifecycle, FinOps Showback. AMG data sources and dashboards configured via `scripts/setup-amg.sh` (run once after first deploy).
 
 **Origin Lockdown** — CloudFront → API Gateway lockdown via shared secret. CloudFront sends a `Referer` header with a 64-char auto-generated secret; API Gateway resource policy denies requests without a matching `aws:Referer`. Zero additional cost. Toggle: `enable_origin_lockdown` (default: true). Verify: `curl -s https://<api-gw-endpoint>/prod/api/tags` returns 403; requests via CloudFront succeed.
 
@@ -231,7 +231,7 @@ Metrics flow:
 - AMG reads from AMP (IAM role: `ollama-amg-workspace` with `aps:QueryMetrics`)
 - AMG reads CloudWatch natively via its IAM role — FinOps dashboard uses CloudWatch datasource
 - No pod egress needed for Grafana, no IRSA for Grafana, no Grafana-specific NetworkPolicy exception
-- Dashboard JSON files in `terraform/modules/observability/dashboards/` — import into AMG workspace manually or via API
+- Dashboard JSON files in `terraform/modules/observability/dashboards/` — import into AMG via `scripts/setup-amg.sh` (creates service account, configures AMP + CloudWatch data sources, imports all 4 dashboards)
 
 ## AWS Account Prerequisites
 
