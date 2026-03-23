@@ -33,48 +33,28 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              {
-                "color": "grey",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              },
-              {
-                "color": "yellow",
-                "value": 3
-              }
+              { "color": "grey", "value": null },
+              { "color": "green", "value": 1 },
+              { "color": "yellow", "value": 3 }
             ]
           }
         },
         "overrides": []
       },
-      "gridPos": {
-        "h": 5,
-        "w": 6,
-        "x": 0,
-        "y": 0
-      },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
       "id": 1,
       "options": {
         "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
-        "reduceOptions": {
-          "values": false,
-          "fields": "",
-          "calcs": [
-            "lastNotNull"
-          ]
-        },
+        "reduceOptions": { "values": false, "fields": "", "calcs": ["lastNotNull"] },
         "textMode": "auto"
       },
       "pluginVersion": "9.5.0",
       "targets": [
         {
-          "expr": "count(karpenter_nodes_total{nodepool=\"gpu-ollama\"}) or vector(0)",
+          "expr": "count(kube_node_status_capacity{resource=\"nvidia_com_gpu\"} > 0) or vector(0)",
           "format": "time_series",
           "intervalFactor": 2,
           "refId": "A"
@@ -97,50 +77,33 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 1
-              }
+              { "color": "green", "value": null },
+              { "color": "blue", "value": 1 }
             ]
           }
         },
         "overrides": []
       },
-      "gridPos": {
-        "h": 5,
-        "w": 6,
-        "x": 6,
-        "y": 0
-      },
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
       "id": 2,
       "options": {
         "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
-        "reduceOptions": {
-          "values": false,
-          "fields": "",
-          "calcs": [
-            "lastNotNull"
-          ]
-        },
+        "reduceOptions": { "values": false, "fields": "", "calcs": ["lastNotNull"] },
         "textMode": "auto"
       },
       "pluginVersion": "9.5.0",
       "targets": [
         {
-          "expr": "karpenter_nodeclaims_pending or vector(0)",
+          "expr": "kube_deployment_spec_replicas{namespace=\"ollama\", deployment=\"ollama\"}",
           "format": "time_series",
           "intervalFactor": 2,
           "refId": "A"
         }
       ],
-      "title": "Pending NodeClaims",
+      "title": "Ollama Replicas",
       "type": "stat"
     },
     {
@@ -157,46 +120,33 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 }
             ]
           }
         },
         "overrides": []
       },
-      "gridPos": {
-        "h": 5,
-        "w": 6,
-        "x": 12,
-        "y": 0
-      },
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
       "id": 3,
       "options": {
         "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
-        "reduceOptions": {
-          "values": false,
-          "fields": "",
-          "calcs": [
-            "lastNotNull"
-          ]
-        },
+        "reduceOptions": { "values": false, "fields": "", "calcs": ["lastNotNull"] },
         "textMode": "auto"
       },
       "pluginVersion": "9.5.0",
       "targets": [
         {
-          "expr": "increase(karpenter_nodeclaims_created_total{nodepool=\"gpu-ollama\"}[24h]) or vector(0)",
+          "expr": "count(kube_pod_status_phase{namespace=\"ollama\", phase=\"Pending\"} == 1) or vector(0)",
           "format": "time_series",
           "intervalFactor": 2,
           "refId": "A"
         }
       ],
-      "title": "Nodes Created (24h)",
+      "title": "Pending Ollama Pods",
       "type": "stat"
     },
     {
@@ -213,46 +163,32 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
+              { "color": "green", "value": null }
             ]
           }
         },
         "overrides": []
       },
-      "gridPos": {
-        "h": 5,
-        "w": 6,
-        "x": 18,
-        "y": 0
-      },
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
       "id": 4,
       "options": {
         "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
-        "reduceOptions": {
-          "values": false,
-          "fields": "",
-          "calcs": [
-            "lastNotNull"
-          ]
-        },
+        "reduceOptions": { "values": false, "fields": "", "calcs": ["lastNotNull"] },
         "textMode": "auto"
       },
       "pluginVersion": "9.5.0",
       "targets": [
         {
-          "expr": "increase(karpenter_nodeclaims_terminated_total{nodepool=\"gpu-ollama\"}[24h]) or vector(0)",
+          "expr": "count(kube_node_info) or vector(0)",
           "format": "time_series",
           "intervalFactor": 2,
           "refId": "A"
         }
       ],
-      "title": "Nodes Terminated (24h)",
+      "title": "Total Cluster Nodes",
       "type": "stat"
     },
     {
@@ -268,242 +204,68 @@
           "custom": {
             "axisCenteredZero": false,
             "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "bars",
-            "fillOpacity": 100,
-            "gradientMode": "none",
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 0,
-        "y": 5
-      },
-      "id": 5,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "9.5.0",
-      "targets": [
-        {
-          "expr": "increase(karpenter_nodeclaims_created_total{nodepool=\"gpu-ollama\"}[1h])",
-          "format": "time_series",
-          "intervalFactor": 2,
-          "refId": "A"
-        }
-      ],
-      "title": "Node Provision Events",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 100,
-            "gradientMode": "none",
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 5
-      },
-      "id": 6,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "9.5.0",
-      "targets": [
-        {
-          "expr": "increase(karpenter_nodeclaims_terminated_total{nodepool=\"gpu-ollama\"}[1h])",
-          "format": "time_series",
-          "intervalFactor": 2,
-          "legendFormat": "{{reason}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Node Termination by Reason",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
+            "axisLabel": "Nodes",
             "axisPlacement": "auto",
             "barAlignment": 0,
             "drawStyle": "line",
             "fillOpacity": 30,
             "gradientMode": "none",
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
+            "hideFrom": { "tooltip": false, "viz": false, "legend": false },
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
             "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
+            "scaleDistribution": { "type": "linear" },
             "showPoints": "auto",
             "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
           },
+          "decimals": 0,
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
+            "steps": [{ "color": "green", "value": null }]
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "GPU Nodes" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "#FF9800", "mode": "fixed" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "System Nodes" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "#4CAF50", "mode": "fixed" } }
+            ]
+          }
+        ]
       },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 5
-      },
-      "id": 7,
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 5 },
+      "id": 5,
       "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "single", "sort": "none" }
       },
       "pluginVersion": "9.5.0",
       "targets": [
         {
-          "expr": "count(karpenter_nodes_total{nodepool=\"gpu-ollama\"}) or vector(0)",
+          "expr": "count(kube_node_status_capacity{resource=\"nvidia_com_gpu\"} > 0) or vector(0)",
           "format": "time_series",
           "intervalFactor": 2,
+          "legendFormat": "GPU Nodes",
           "refId": "A"
+        },
+        {
+          "expr": "count(kube_node_info unless on(node) (kube_node_status_capacity{resource=\"nvidia_com_gpu\"} > 0)) or vector(0)",
+          "format": "time_series",
+          "intervalFactor": 2,
+          "legendFormat": "System Nodes",
+          "refId": "B"
         }
       ],
-      "title": "Active Nodes Over Time",
+      "title": "Node Count Over Time (GPU vs System)",
       "type": "timeseries"
     },
     {
@@ -514,57 +276,83 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
+            "mode": "palette-classic"
           },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Replicas",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 30,
+            "gradientMode": "none",
+            "hideFrom": { "tooltip": false, "viz": false, "legend": false },
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "decimals": 0,
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
+            "steps": [{ "color": "green", "value": null }]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Desired Replicas" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "#2196F3", "mode": "fixed" } }
             ]
           },
-          "unit": "short"
-        },
-        "overrides": []
+          {
+            "matcher": { "id": "byName", "options": "Ready Replicas" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "#4CAF50", "mode": "fixed" } }
+            ]
+          }
+        ]
       },
-      "gridPos": {
-        "h": 6,
-        "w": 8,
-        "x": 0,
-        "y": 13
-      },
-      "id": 8,
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 5 },
+      "id": 6,
       "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "values": false,
-          "fields": "",
-          "calcs": [
-            "lastNotNull"
-          ]
-        },
-        "textMode": "auto"
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "single", "sort": "none" }
       },
       "pluginVersion": "9.5.0",
       "targets": [
         {
-          "expr": "count_over_time(karpenter_nodes_total{nodepool=\"gpu-ollama\"}[24h]) / 240",
+          "expr": "kube_deployment_spec_replicas{namespace=\"ollama\", deployment=\"ollama\"}",
           "format": "time_series",
           "intervalFactor": 2,
+          "legendFormat": "Desired Replicas",
           "refId": "A"
+        },
+        {
+          "expr": "kube_deployment_status_replicas_ready{namespace=\"ollama\", deployment=\"ollama\"}",
+          "format": "time_series",
+          "intervalFactor": 2,
+          "legendFormat": "Ready Replicas",
+          "refId": "B"
         }
       ],
-      "title": "Active Node Hours Today",
-      "type": "stat",
+      "title": "Ollama Scaling Events (KEDA)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "fieldConfig": {
         "defaults": {
-          "unit": "hours",
+          "unit": "h",
           "decimals": 1,
           "color": {
             "mode": "thresholds"
@@ -573,24 +361,37 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
+              { "color": "green", "value": null }
             ]
           }
         },
         "overrides": []
-      }
+      },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 14 },
+      "id": 8,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "values": false, "fields": "", "calcs": ["lastNotNull"] },
+        "textMode": "auto"
+      },
+      "pluginVersion": "9.5.0",
+      "targets": [
+        {
+          "expr": "sum_over_time((count(kube_node_status_capacity{resource=\"nvidia_com_gpu\"} > 0) or vector(0))[24h:5m]) * 5 / 60",
+          "format": "time_series",
+          "intervalFactor": 2,
+          "refId": "A"
+        }
+      ],
+      "title": "GPU Node Hours (24h)",
+      "type": "stat"
     },
     {
       "type": "text",
-      "gridPos": {
-        "h": 6,
-        "w": 16,
-        "x": 8,
-        "y": 13
-      },
+      "gridPos": { "h": 6, "w": 16, "x": 8, "y": 14 },
       "id": 9,
       "options": {
         "code": {
@@ -599,26 +400,17 @@
           "showMiniMap": false
         },
         "mode": "markdown",
-        "content": "### GPU Cost Reference\n\n| Instance | Spot | On-Demand |\n|---|---|---|\n| g5.xlarge (Tier 1/2) | ~$0.35/hr | ~$1.01/hr |\n| g5.12xlarge (Tier 3) | ~$1.90/hr | ~$5.67/hr |\n\n**Multiply by active node hours above.**\n\nWith scale-to-zero: cost = $0 when idle."
+        "content": "### GPU Cost Reference\n\n| Instance | Spot | On-Demand |\n|---|---|---|\n| g5.xlarge (Tier 1/2) | ~$0.35/hr | ~$1.01/hr |\n| g5.12xlarge (Tier 3) | ~$1.90/hr | ~$5.67/hr |\n\n**Multiply by GPU node hours above.**\n\nWith KEDA scale-to-zero: cost = $0 when idle.\n\n### How Scaling Works\n\n1. **KEDA** monitors CPU activity — scales Ollama to 0 after 15 min idle\n2. **Karpenter** detects empty GPU node — terminates after 10 min\n3. **Total idle-to-zero: ~25 min**\n4. Scale up: `./scripts/scale-up.sh` → Karpenter provisions GPU node (~3 min)\n\n> **Note:** EKS Auto Mode runs Karpenter on the control plane. Native `karpenter_*` metrics are unavailable — this dashboard uses `kube-state-metrics` instead."
       },
-      "title": "Estimated Daily Cost"
+      "title": "Cost & Scaling Info"
     }
   ],
   "refresh": "30s",
   "schemaVersion": 38,
   "style": "dark",
-  "tags": [
-    "karpenter",
-    "gpu",
-    "scaling"
-  ],
-  "templating": {
-    "list": []
-  },
-  "time": {
-    "from": "now-24h",
-    "to": "now"
-  },
+  "tags": ["karpenter", "gpu", "scaling"],
+  "templating": { "list": [] },
+  "time": { "from": "now-24h", "to": "now" },
   "timepicker": {},
   "timezone": "",
   "title": "Karpenter Node Lifecycle — GPU Scaling",
