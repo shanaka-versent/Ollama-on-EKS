@@ -102,13 +102,14 @@ DS_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$AMG_ENDPOINT/api/datasources
   -d "{
     \"name\": \"Amazon Managed Prometheus\",
     \"type\": \"prometheus\",
+    \"uid\": \"prometheus\",
     \"url\": \"$AMP_ENDPOINT\",
     \"access\": \"proxy\",
     \"isDefault\": true,
     \"jsonData\": {
       \"httpMethod\": \"POST\",
       \"sigV4Auth\": true,
-      \"sigV4AuthType\": \"workspace-iam-role\",
+      \"sigV4AuthType\": \"default\",
       \"sigV4Region\": \"$REGION\"
     }
   }")
@@ -133,6 +134,7 @@ CW_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$AMG_ENDPOINT/api/datasources
   -d "{
     \"name\": \"CloudWatch\",
     \"type\": \"cloudwatch\",
+    \"uid\": \"cloudwatch\",
     \"access\": \"proxy\",
     \"jsonData\": {
       \"authType\": \"workspace-iam-role\",
