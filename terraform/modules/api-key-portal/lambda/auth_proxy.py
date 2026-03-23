@@ -162,8 +162,25 @@ def handle_login(event):
             # User changed password previously but hasn't enrolled MFA yet
             return _initiate_mfa_setup(email, api_result.get('Session', ''))
 
-        # If SOFTWARE_TOKEN_MFA challenge or auth succeeded, continue to
-        # hosted UI scraping for the full OAuth flow (Phase 2 below)
+        if challenge == 'SOFTWARE_TOKEN_MFA':
+            # Normal login with MFA — handle via Cognito API, not hosted UI
+            state = json.dumps({
+                'session': api_result.get('Session', ''),
+                'email': email,
+                'password': password,
+                'challenge': 'SOFTWARE_TOKEN_MFA',
+            })
+            return api_response(200, {
+                'status': 'mfa_required',
+                'message': 'Enter the 6-digit code from your authenticator app',
+                'session': base64.b64encode(state.encode()).decode(),
+                'use_api_mfa': True,
+            })
+
+        # Auth succeeded without MFA (shouldn't happen with MFA required,
+        # but handle gracefully) — complete OAuth flow for session token
+        if api_result.get('AuthenticationResult'):
+            return _complete_oauth_with_tokens(email, password)
 
     except Exception as e:
         error_msg = str(e)
@@ -171,107 +188,7 @@ def handle_login(event):
             return api_response(401, {'error': 'Invalid email or password'})
         if 'UserNotFoundException' in error_msg:
             return api_response(401, {'error': 'Invalid email or password'})
-        # For other errors, log and fall through to hosted UI approach
-        print(f'InitiateAuth pre-check failed (falling through): {error_msg}')
-
-    # --- Phase 2: Full OAuth flow via hosted UI scraping ---
-    try:
-        # Step 1: Start OAuth flow — GET /oauth/oidc/login
-        # Open WebUI returns 303 → Cognito /authorize and sets owui-session cookie
-        resp = http_get(f'{BASE_URL}/oauth/oidc/login')
-        owui_session = resp['cookies'].get('owui-session', '')
-        authorize_url = resp['location']
-
-        if not owui_session or not authorize_url:
-            print(f'Step 1 failed: status={resp["status"]}, has_location={bool(authorize_url)}')
-            return api_response(500, {'error': 'Failed to start authentication flow'})
-
-        # Step 2: Follow to Cognito /authorize → redirects to /login
-        resp = http_get(authorize_url)
-        login_page_url = resp['location']
-        cognito_cookies = resp['cookies']
-
-        if not login_page_url:
-            print(f'Step 2 failed: status={resp["status"]}')
-            return api_response(500, {'error': 'Failed to reach authentication provider'})
-
-        # Resolve relative URL
-        login_page_url = resolve_url(authorize_url, login_page_url)
-
-        # Step 3: GET login page, extract CSRF token
-        resp = http_get(login_page_url, cookies=cognito_cookies)
-        cognito_cookies.update(resp['cookies'])
-        csrf_token = extract_csrf(resp['body'])
-
-        if not csrf_token:
-            # Try alternate CSRF extraction patterns for newer Cognito UI
-            csrf_token = _extract_csrf_alternate(resp['body'])
-
-        if not csrf_token:
-            print('Step 3 failed: could not extract CSRF token from login page')
-            print(f'Step 3 login page URL: {login_page_url}')
-            print(f'Step 3 response status: {resp["status"]}')
-            # Log first 500 chars of body for debugging
-            print(f'Step 3 body preview: {resp["body"][:500]}')
-            return api_response(500, {'error': 'Failed to load login form'})
-
-        # Step 4: POST credentials to Cognito login
-        form_data = urllib.parse.urlencode({
-            '_csrf': csrf_token,
-            'username': email,
-            'password': password,
-            'cognitoAsfData': '',
-        }).encode('utf-8')
-
-        resp = http_post(login_page_url, data=form_data, cookies=cognito_cookies)
-        cognito_cookies.update(resp['cookies'])
-        redirect_url = resp['location']
-
-        if not redirect_url:
-            # Auth failed — Cognito returned the login page with an error
-            error_msg = extract_error_message(resp['body'])
-            return api_response(401, {'error': error_msg or 'Invalid email or password'})
-
-        # Resolve relative URL
-        redirect_url = resolve_url(login_page_url, redirect_url)
-
-        # Cognito redirects back to /login on invalid credentials
-        if '/login' in redirect_url and '/mfa' not in redirect_url and '/oauth/oidc/callback' not in redirect_url:
-            return api_response(401, {'error': 'Invalid email or password'})
-
-        # Check for password change required (first-time login)
-        if '/newpassword' in redirect_url.lower() or '/changepassword' in redirect_url.lower() or '/confirmpassword' in redirect_url.lower():
-            return _initiate_first_time_setup(email, password)
-
-        # Check if MFA is required
-        if '/mfa' in redirect_url:
-            state = json.dumps({
-                'mfa_url': redirect_url,
-                'cookies': cognito_cookies,
-                'owui_session': owui_session,
-            })
-            encoded_state = base64.b64encode(state.encode()).decode()
-
-            return api_response(200, {
-                'status': 'mfa_required',
-                'message': 'Enter the 6-digit code from your authenticator app',
-                'session': encoded_state,
-            })
-
-        # Check if it's the callback URL (no MFA — shouldn't happen since MFA is required)
-        if '/oauth/oidc/callback' in redirect_url:
-            token_cookie = complete_callback(redirect_url, owui_session)
-            if token_cookie:
-                return api_response(200, {'status': 'success'}, set_cookie=token_cookie)
-            return api_response(500, {'error': 'Failed to complete authentication'})
-
-        print(f'Step 4 unexpected redirect: {redirect_url}')
-        return api_response(500, {'error': 'Unexpected authentication response'})
-
-    except Exception as e:
-        print(f'Login error: {e}')
-        import traceback
-        traceback.print_exc()
+        print(f'InitiateAuth error: {error_msg}')
         return api_response(500, {'error': 'Authentication failed. Please try again.'})
 
 
@@ -368,7 +285,12 @@ def _initiate_first_time_setup(email, password):
 # ==============================================================================
 
 def handle_mfa(event):
-    """Handle MFA verification with TOTP code."""
+    """Handle MFA verification with TOTP code via Cognito API.
+
+    After successful MFA, completes the Open WebUI OAuth flow by driving
+    the full hosted UI login server-side (credentials + MFA are already
+    verified, so this is just to get the OAuth session token).
+    """
     try:
         body = parse_body(event)
     except (json.JSONDecodeError, TypeError):
@@ -385,54 +307,53 @@ def handle_mfa(event):
 
     try:
         state = json.loads(base64.b64decode(encoded_state))
-        mfa_url = state['mfa_url']
-        cognito_cookies = state['cookies']
-        owui_session = state['owui_session']
+        session = state['session']
+        email = state['email']
+        password = state.get('password', '')
     except (json.JSONDecodeError, KeyError) as e:
         print(f'State decode error: {e}')
         return api_response(400, {'error': 'Session expired. Please sign in again.'})
 
     try:
-        # Step 5: GET MFA page, extract CSRF token
-        resp = http_get(mfa_url, cookies=cognito_cookies)
-        cognito_cookies.update(resp['cookies'])
-        csrf_token = extract_csrf(resp['body'])
+        # Verify TOTP via Cognito API
+        challenge_responses = {
+            'USERNAME': email,
+            'SOFTWARE_TOKEN_MFA_CODE': totp_code,
+        }
+        secret_hash = compute_secret_hash(email)
+        if secret_hash:
+            challenge_responses['SECRET_HASH'] = secret_hash
 
-        if not csrf_token:
-            print('MFA: could not extract CSRF token')
-            return api_response(500, {'error': 'Failed to load MFA form'})
+        result = cognito_api('RespondToAuthChallenge', {
+            'ClientId': CLIENT_ID,
+            'ChallengeName': 'SOFTWARE_TOKEN_MFA',
+            'Session': session,
+            'ChallengeResponses': challenge_responses,
+        })
 
-        # Step 6: POST TOTP code
-        form_data = urllib.parse.urlencode({
-            '_csrf': csrf_token,
-            'code': totp_code,
-            'cognitoAsfData': '',
-        }).encode('utf-8')
+        if not result.get('AuthenticationResult'):
+            print(f'MFA: unexpected result after challenge: {result.get("ChallengeName", "none")}')
+            return api_response(401, {'error': 'MFA verification failed. Please try again.'})
 
-        resp = http_post(mfa_url, data=form_data, cookies=cognito_cookies)
-        redirect_url = resp['location']
+        # MFA verified — now complete the OAuth flow to get Open WebUI session.
+        # The same TOTP code can be reused within the 30-second window because
+        # the Cognito API and hosted UI are independent auth sessions.
+        if password:
+            return _complete_oauth_with_tokens(email, password, totp_code=totp_code)
 
-        if not redirect_url:
-            error_msg = extract_error_message(resp['body'])
-            return api_response(401, {'error': error_msg or 'Invalid MFA code. Please try again.'})
-
-        # Resolve relative URL
-        redirect_url = resolve_url(mfa_url, redirect_url)
-
-        # Check for callback URL → auth succeeded
-        if '/oauth/oidc/callback' in redirect_url:
-            token_cookie = complete_callback(redirect_url, owui_session)
-            if token_cookie:
-                return api_response(200, {'status': 'success'}, set_cookie=token_cookie)
-            return api_response(500, {'error': 'Failed to complete authentication'})
-
-        print(f'MFA unexpected redirect: {redirect_url}')
-        return api_response(401, {'error': 'MFA verification failed'})
+        # No password in state (e.g., from change-password flow) — tell user to sign in
+        return api_response(200, {
+            'status': 'setup_complete',
+            'message': 'Verification complete! Please sign in.',
+        })
 
     except Exception as e:
-        print(f'MFA error: {e}')
-        import traceback
-        traceback.print_exc()
+        error_msg = str(e)
+        print(f'MFA error: {error_msg}')
+        if 'CodeMismatchException' in error_msg:
+            return api_response(401, {'error': 'Invalid code. Please check your authenticator app and try again.'})
+        if 'NotAuthorizedException' in error_msg or 'ExpiredCodeException' in error_msg:
+            return api_response(401, {'error': 'Session expired. Please sign in again.'})
         return api_response(500, {'error': 'MFA verification failed. Please try again.'})
 
 
@@ -763,6 +684,147 @@ def cognito_api(action, params):
         error_type = error_data.get('__type', '')
         error_msg = error_data.get('message', error_data.get('Message', ''))
         raise Exception(f'{error_type}: {error_msg}')
+
+
+# ==============================================================================
+# COMPLETE OAUTH FLOW (drives Cognito hosted UI server-side)
+# ==============================================================================
+
+def _complete_oauth_with_tokens(email, password, totp_code=None):
+    """Complete the OAuth flow by driving Cognito hosted UI server-side.
+
+    Credentials (and TOTP) are already verified via Cognito API. This drives
+    the hosted UI to obtain the OAuth authorization code that Open WebUI
+    needs for its session token. The same TOTP code can be reused within
+    the 30-second time window (API and hosted UI are separate sessions).
+    """
+    try:
+        # Step 1: Start OAuth flow
+        resp = http_get(f'{BASE_URL}/oauth/oidc/login')
+        owui_session = resp['cookies'].get('owui-session', '')
+        authorize_url = resp['location']
+
+        if not owui_session or not authorize_url:
+            print(f'OAuth flow step 1 failed: status={resp["status"]}')
+            return api_response(500, {'error': 'Failed to start authentication'})
+
+        # Step 2: Follow to Cognito /authorize → /login
+        resp = http_get(authorize_url)
+        login_page_url = resp['location']
+        cognito_cookies = resp['cookies']
+
+        if not login_page_url:
+            print(f'OAuth flow step 2 failed: status={resp["status"]}')
+            return api_response(500, {'error': 'Failed to reach authentication provider'})
+
+        login_page_url = resolve_url(authorize_url, login_page_url)
+
+        # Step 3: GET login page, extract CSRF
+        resp = http_get(login_page_url, cookies=cognito_cookies)
+        cognito_cookies.update(resp['cookies'])
+        csrf_token = extract_csrf(resp['body']) or _extract_csrf_alternate(resp['body'])
+
+        if not csrf_token:
+            print(f'OAuth flow step 3: CSRF extraction failed. Preview: {resp["body"][:500]}')
+            return api_response(500, {'error': 'Failed to load login form'})
+
+        # Step 4: POST credentials
+        form_data = urllib.parse.urlencode({
+            '_csrf': csrf_token,
+            'username': email,
+            'password': password,
+            'cognitoAsfData': '',
+        }).encode('utf-8')
+
+        resp = http_post(login_page_url, data=form_data, cookies=cognito_cookies)
+        cognito_cookies.update(resp['cookies'])
+        redirect_url = resp['location']
+
+        if not redirect_url:
+            print(f'OAuth flow step 4: no redirect after login POST')
+            return api_response(500, {'error': 'Authentication flow failed'})
+
+        redirect_url = resolve_url(login_page_url, redirect_url)
+
+        # Direct to callback (no MFA — shouldn't happen but handle it)
+        if '/oauth/oidc/callback' in redirect_url:
+            token_cookie = complete_callback(redirect_url, owui_session)
+            if token_cookie:
+                return api_response(200, {'status': 'success'}, set_cookie=token_cookie)
+            return api_response(500, {'error': 'Failed to complete authentication'})
+
+        # Step 5: MFA page
+        if '/mfa' not in redirect_url:
+            print(f'OAuth flow step 5: unexpected redirect: {redirect_url}')
+            return api_response(500, {'error': 'Unexpected authentication response'})
+
+        if not totp_code:
+            print('OAuth flow: MFA required but no TOTP code available')
+            return api_response(500, {'error': 'Authentication requires MFA code'})
+
+        resp = http_get(redirect_url, cookies=cognito_cookies)
+        cognito_cookies.update(resp['cookies'])
+
+        mfa_csrf = extract_csrf(resp['body']) or _extract_csrf_alternate(resp['body'])
+        mfa_action = _extract_form_action(resp['body'], redirect_url)
+
+        if not mfa_csrf:
+            print(f'OAuth flow step 5: MFA CSRF failed. Preview: {resp["body"][:500]}')
+            return api_response(500, {'error': 'Failed to load MFA form'})
+
+        # Step 6: POST TOTP code — try multiple field names
+        for field_name in ['softwareTokenMfaCode', 'code', 'mfaCode']:
+            form_data = urllib.parse.urlencode({
+                '_csrf': mfa_csrf,
+                field_name: totp_code,
+                'cognitoAsfData': '',
+            }).encode('utf-8')
+
+            resp = http_post(mfa_action, data=form_data, cookies=cognito_cookies)
+            callback_url = resp['location']
+
+            if callback_url:
+                callback_url = resolve_url(mfa_action, callback_url)
+
+                if '/oauth/oidc/callback' in callback_url:
+                    token_cookie = complete_callback(callback_url, owui_session)
+                    if token_cookie:
+                        print(f'OAuth flow: MFA succeeded with field={field_name}')
+                        return api_response(200, {'status': 'success'}, set_cookie=token_cookie)
+                    return api_response(500, {'error': 'Failed to complete authentication'})
+
+                # Not a callback redirect — try next field name
+                if '/mfa' not in callback_url:
+                    print(f'OAuth flow step 6: unexpected redirect with field={field_name}: {callback_url}')
+                    break
+
+            # Re-fetch MFA page for fresh CSRF before retrying
+            resp = http_get(redirect_url, cookies=cognito_cookies)
+            cognito_cookies.update(resp['cookies'])
+            mfa_csrf = extract_csrf(resp['body']) or _extract_csrf_alternate(resp['body'])
+            mfa_action = _extract_form_action(resp['body'], redirect_url)
+
+        print(f'OAuth flow: all MFA field names failed')
+        return api_response(500, {'error': 'Failed to complete MFA verification'})
+
+    except Exception as e:
+        print(f'OAuth flow error: {e}')
+        import traceback
+        traceback.print_exc()
+        return api_response(500, {'error': 'Authentication failed. Please try again.'})
+
+
+def _extract_form_action(html, default_url):
+    """Extract form action URL from HTML, falling back to the page URL."""
+    if not html:
+        return default_url
+    match = re.search(r'<form[^>]*action=["\']([^"\']+)["\']', html)
+    if match:
+        action = match.group(1)
+        if action.startswith('http'):
+            return action
+        return resolve_url(default_url, action)
+    return default_url
 
 
 # ==============================================================================
