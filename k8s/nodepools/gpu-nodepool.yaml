@@ -2,8 +2,10 @@
 # @author Shanaka Jayasundera - shanakaj@gmail.com
 #
 # EKS Auto Mode NodePool for GPU workloads. Provisions g5 instances with spot
-# preference and on-demand fallback. Nodes terminate 30 minutes after becoming
-# empty to save costs.
+# preference and on-demand fallback. Karpenter always tries spot first (cheaper).
+# If spot unavailable, falls back to on-demand. GPUOnDemandFallback alert fires
+# via Prometheus → SNS → email so you know you're paying full price.
+# Nodes terminate 30 minutes after becoming empty to save costs.
 #
 # IMPORTANT: EKS Auto Mode uses karpenter.sh/v1 API (NOT v1beta1) and
 # eks.amazonaws.com NodeClass (NOT karpenter.k8s.aws EC2NodeClass).
@@ -50,9 +52,10 @@ spec:
         - key: eks.amazonaws.com/instance-gpu-manufacturer
           operator: In
           values: ["nvidia"]
-        # Spot preferred, on-demand fallback — Karpenter tries spot first.
-        # If spot unavailable (quota pending or capacity), falls back to on-demand.
-        # GPUOnDemandFallback alert fires via Prometheus → SNS when on-demand is used.
+        # Spot preferred, on-demand fallback — Karpenter always tries spot first
+        # because it's cheaper. Only falls back to on-demand when spot capacity is
+        # genuinely unavailable. GPUOnDemandFallback Prometheus alert fires via
+        # Alertmanager → SNS → email when on-demand is used.
         - key: karpenter.sh/capacity-type
           operator: In
           values:
@@ -73,12 +76,12 @@ spec:
           effect: NoSchedule
       # Auto-expire nodes after 14 days (forces refresh, picks up new AMIs)
       expireAfter: 336h
-  # Resource limits for the entire NodePool
-  # DEV: g5.xlarge limits (4 vCPU, 16Gi, 1 GPU)
+  # Resource limits for the entire NodePool (total allocatable across all nodes)
+  # DEV: one g5.xlarge (4 vCPU, 16Gi RAM, 1 GPU)
   # PROD: increase to cpu: "48", memory: 192Gi, nvidia.com/gpu: "4" for flagship
   limits:
-    cpu: "4"
-    memory: 16Gi
+    cpu: "8"
+    memory: 32Gi
     nvidia.com/gpu: "1"
   # Disruption — scale to zero after 30 min idle
   disruption:

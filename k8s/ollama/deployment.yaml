@@ -59,15 +59,15 @@ spec:
             - name: OLLAMA_CONTEXT_LENGTH
               value: "32768"
           resources:
-            # DEV: g5.xlarge (1x A10G, 4 vCPU, 16Gi)
+            # DEV: g5.xlarge (1x A10G, 4 vCPU, ~15Gi allocatable)
             # PROD: nvidia.com/gpu: "4", memory: "96Gi"/"64Gi", cpu: "16"/"8"
             limits:
               nvidia.com/gpu: "1"
-              memory: "24Gi"
-              cpu: "4"
+              memory: "14Gi"
+              cpu: "3"
             requests:
               nvidia.com/gpu: "1"
-              memory: "16Gi"
+              memory: "12Gi"
               cpu: "2"
           volumeMounts:
             - name: ollama-data
