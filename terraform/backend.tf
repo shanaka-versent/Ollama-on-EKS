@@ -35,7 +35,7 @@
 
 terraform {
   backend "s3" {
-    bucket         = "ollama-eks-tfstate-695418593935"
+    bucket         = "ollama-eks-tfstate-183758910727"
     key            = "ollama-eks/terraform.tfstate"
     region         = "ap-southeast-2"
     encrypt        = true

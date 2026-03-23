@@ -32,12 +32,6 @@ variable "subnet_ids" {
   type        = list(string)
 }
 
-variable "node_subnet_ids" {
-  description = "Subnet IDs for EKS nodes (system node group uses all)"
-  type        = list(string)
-}
-
-
 variable "cluster_security_group_ids" {
   description = "Additional security group IDs for cluster"
   type        = list(string)
@@ -56,42 +50,8 @@ variable "endpoint_public_access" {
   default     = true
 }
 
-# System Node Pool
-variable "system_node_count" {
-  description = "Number of system nodes"
-  type        = number
-  default     = 2
-}
-
-variable "system_node_instance_type" {
-  description = "Instance type for system nodes"
-  type        = string
-  default     = "t3.medium"
-}
-
-variable "system_node_disk_size" {
-  description = "Disk size for system nodes (GB)"
-  type        = number
-  default     = 50
-}
-
-variable "system_node_min_count" {
-  description = "Minimum system nodes"
-  type        = number
-  default     = 1
-}
-
-variable "system_node_max_count" {
-  description = "Maximum system nodes"
-  type        = number
-  default     = 3
-}
-
-variable "system_capacity_type" {
-  description = "Capacity type for system nodes (ON_DEMAND or SPOT)"
-  type        = string
-  default     = "ON_DEMAND"
-}
+# System Node Pool — REMOVED: Auto Mode manages all nodes via Karpenter.
+# Auto Mode's built-in "system" pool provisions system nodes automatically.
 
 # GPU Node Pool — REMOVED: Auto Mode manages GPU nodes via Karpenter.
 # GPU instances provision automatically when pods request nvidia.com/gpu.

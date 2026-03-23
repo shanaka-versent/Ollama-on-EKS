@@ -8,7 +8,7 @@ metadata:
   name: gp3
   annotations:
     storageclass.kubernetes.io/is-default-class: "false"
-provisioner: ebs.csi.aws.com
+provisioner: ebs.csi.eks.amazonaws.com
 reclaimPolicy: Retain
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true

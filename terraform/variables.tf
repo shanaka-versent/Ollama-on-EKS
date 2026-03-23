@@ -61,32 +61,8 @@ variable "enable_logging" {
   default     = false
 }
 
-# System Node Pool
-variable "system_node_count" {
-  description = "Number of system nodes"
-  type        = number
-  default     = 2
-}
-
-variable "system_node_instance_type" {
-  description = "Instance type for system nodes"
-  type        = string
-  default     = "t3.medium"
-}
-
-variable "system_node_min_count" {
-  description = "Minimum system nodes"
-  type        = number
-  default     = 1
-}
-
-variable "system_node_max_count" {
-  description = "Maximum system nodes"
-  type        = number
-  default     = 3
-}
-
-# GPU Node Pool — managed by EKS Auto Mode (Karpenter).
+# All nodes managed by EKS Auto Mode (Karpenter).
+# System nodes provision via built-in "system" pool.
 # GPU instances provision automatically when pods request nvidia.com/gpu.
 # No manual node group variables needed.
 

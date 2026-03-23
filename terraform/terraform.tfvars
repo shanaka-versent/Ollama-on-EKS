@@ -28,25 +28,20 @@ enable_nat_gateway = true
 kubernetes_version = "1.31"
 enable_logging     = false
 
-# System Nodes (3 nodes needed for ArgoCD + cert-manager + monitoring stack)
-system_node_count         = 3
-system_node_instance_type = "t3.medium"
-system_node_min_count     = 2
-system_node_max_count     = 4
-
-# GPU Nodes — managed by EKS Auto Mode (Karpenter).
+# All nodes managed by EKS Auto Mode (Karpenter).
+# System nodes provision via built-in "system" pool (c6g.large Bottlerocket).
 # GPU instances (g5.xlarge/g5.12xlarge) provision automatically when pods
 # request nvidia.com/gpu. Spot preferred with on-demand fallback.
 
 # Ollama — Flagship model (Tier 3)
 ollama_namespace         = "ollama"
-ollama_model             = "qwen3.5:122b-a10b"
+ollama_model             = "qwen3.5:27b"
 model_storage_size       = "200Gi"
-gpu_count                = 4
-ollama_memory_limit      = "96Gi"
-ollama_memory_request    = "64Gi"
-ollama_cpu_limit         = 16
-ollama_cpu_request       = 8
+gpu_count                = 1
+ollama_memory_limit      = "24Gi"
+ollama_memory_request    = "16Gi"
+ollama_cpu_limit         = 4
+ollama_cpu_request       = 2
 ollama_keep_alive        = "24h"
 ollama_num_parallel      = 4
 ollama_max_loaded_models = 1
@@ -57,8 +52,8 @@ auto_pull_model          = true
 enable_bedrock = false
 
 # NLB (created by Istio Gateway via ArgoCD — set after first deploy)
-nlb_arn      = "arn:aws:elasticloadbalancing:ap-southeast-2:695418593935:loadbalancer/net/k8s-istioing-ollamaga-d67dab2c37/8a64fd762757025b"
-nlb_dns_name = "k8s-istioing-ollamaga-d67dab2c37-8a64fd762757025b.elb.ap-southeast-2.amazonaws.com"
+nlb_arn      = ""
+nlb_dns_name = ""
 
 # CloudFront + WAF + API Gateway
 # Client → CloudFront (WAF) → API Gateway → VPC Link → NLB → Istio → Ollama
@@ -70,7 +65,7 @@ waf_geo_countries     = ["AU", "US"]
 waf_enable_bot_control = false
 
 # CloudFront domain (set after first apply — used by Cognito callback URLs)
-cloudfront_domain = "d3f4nz5crzf5t8.cloudfront.net"
+cloudfront_domain = ""
 
 # Cognito Authentication (Open WebUI)
 # Cognito handles all user management: signup, login, MFA, role assignment.

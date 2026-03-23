@@ -20,6 +20,10 @@ resource "aws_eks_cluster" "main" {
     bootstrap_cluster_creator_admin_permissions = true
   }
 
+  # Auto Mode requires disabling self-managed addons (vpc-cni, coredns, kube-proxy)
+  # so they don't conflict with Auto Mode's managed versions.
+  bootstrap_self_managed_addons = false
+
   # Auto Mode — AWS manages Karpenter, NVIDIA device plugin, EBS CSI, and LB controller.
   # GPU nodes only provision when a pod requests nvidia.com/gpu resources.
   compute_config {
@@ -58,48 +62,17 @@ resource "aws_iam_openid_connect_provider" "cluster" {
   tags = var.tags
 }
 
-# System Node Group (for kube-system, addons, controllers)
-resource "aws_eks_node_group" "system" {
-  cluster_name    = aws_eks_cluster.main.name
-  node_group_name = "system-${var.name_prefix}"
-  node_role_arn   = var.node_role_arn
-  subnet_ids      = var.node_subnet_ids
-
-  instance_types = [var.system_node_instance_type]
-  capacity_type  = var.system_capacity_type
-  disk_size      = var.system_node_disk_size
-
-  scaling_config {
-    desired_size = var.system_node_count
-    min_size     = var.system_node_min_count
-    max_size     = var.system_node_max_count
-  }
-
-  update_config {
-    max_unavailable = 1
-  }
-
-  labels = {
-    role = "system"
-  }
-
-  # Taint system nodes so GPU workloads don't land here
-  taint {
-    key    = "CriticalAddonsOnly"
-    value  = "true"
-    effect = "NO_SCHEDULE"
-  }
-
-  tags = var.tags
-
-  depends_on = [aws_eks_cluster.main]
-}
+# System Node Group — REMOVED: Auto Mode manages all nodes via Karpenter.
+# Auto Mode's built-in "system" pool provisions system nodes automatically.
+# Managed node groups are incompatible with Auto Mode (DaemonSets like vpc-cni
+# show DESIRED=0 on Bottlerocket Auto Mode nodes, blocking managed node registration).
 
 # GPU Node Group — REMOVED: Auto Mode manages GPU nodes via Karpenter.
 # GPU instances (g5.xlarge/g5.12xlarge) provision automatically when pods
 # request nvidia.com/gpu resources. Spot with on-demand fallback is the default.
 
-# EKS Addons
+# EKS Addons — Auto Mode manages networking and storage natively, but explicit
+# addon resources ensure version pinning and Terraform lifecycle management.
 resource "aws_eks_addon" "vpc_cni" {
   cluster_name = aws_eks_cluster.main.name
   addon_name   = "vpc-cni"
@@ -108,8 +81,6 @@ resource "aws_eks_addon" "vpc_cni" {
   resolve_conflicts_on_update = "OVERWRITE"
 
   tags = var.tags
-
-  depends_on = [aws_eks_node_group.system]
 }
 
 resource "aws_eks_addon" "coredns" {
@@ -120,8 +91,6 @@ resource "aws_eks_addon" "coredns" {
   resolve_conflicts_on_update = "OVERWRITE"
 
   tags = var.tags
-
-  depends_on = [aws_eks_node_group.system]
 }
 
 resource "aws_eks_addon" "kube_proxy" {
@@ -132,6 +101,4 @@ resource "aws_eks_addon" "kube_proxy" {
   resolve_conflicts_on_update = "OVERWRITE"
 
   tags = var.tags
-
-  depends_on = [aws_eks_node_group.system]
 }
