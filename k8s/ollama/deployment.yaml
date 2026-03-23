@@ -29,9 +29,10 @@ spec:
       labels:
         app: ollama
     spec:
-      # Schedule on GPU nodes only
+      # Schedule on GPU nodes only (matches gpu-ollama NodePool template label)
+      # EKS Auto Mode doesn't recognize nvidia.com/gpu.present — use our custom label
       nodeSelector:
-        nvidia.com/gpu.present: "true"
+        workload-type: gpu-inference
       tolerations:
         - key: nvidia.com/gpu
           operator: Exists
@@ -58,14 +59,16 @@ spec:
             - name: OLLAMA_CONTEXT_LENGTH
               value: "32768"
           resources:
+            # DEV: g5.xlarge (1x A10G, 4 vCPU, 16Gi)
+            # PROD: nvidia.com/gpu: "4", memory: "96Gi"/"64Gi", cpu: "16"/"8"
             limits:
-              nvidia.com/gpu: "4"   # 4x NVIDIA A10G on g5.12xlarge
-              memory: "96Gi"
-              cpu: "16"
+              nvidia.com/gpu: "1"
+              memory: "24Gi"
+              cpu: "4"
             requests:
-              nvidia.com/gpu: "4"
-              memory: "64Gi"
-              cpu: "8"
+              nvidia.com/gpu: "1"
+              memory: "16Gi"
+              cpu: "2"
           volumeMounts:
             - name: ollama-data
               mountPath: /root/.ollama
