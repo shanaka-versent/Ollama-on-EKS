@@ -73,12 +73,12 @@ spec:
           effect: NoSchedule
       # Auto-expire nodes after 14 days (forces refresh, picks up new AMIs)
       expireAfter: 336h
-  # Resource limits for the entire NodePool
-  # DEV: g5.xlarge limits (4 vCPU, 16Gi, 1 GPU)
+  # Resource limits for the entire NodePool (total allocatable across all nodes)
+  # DEV: one g5.xlarge (4 vCPU, 16Gi RAM, 1 GPU)
   # PROD: increase to cpu: "48", memory: 192Gi, nvidia.com/gpu: "4" for flagship
   limits:
-    cpu: "4"
-    memory: 16Gi
+    cpu: "8"
+    memory: 32Gi
     nvidia.com/gpu: "1"
   # Disruption — scale to zero after 30 min idle
   disruption:
