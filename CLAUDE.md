@@ -11,7 +11,7 @@ A fully private, air-gapped LLM inference platform on AWS EKS. Ollama serves Qwe
 ## Architecture (4 Layers)
 
 Layer 1 — VPC (10.0.0.0/16) with private/public subnets + NAT Gateway.
-Layer 2 — EKS Control Plane with Auto Mode enabled. Custom Karpenter NodePools: system pool (t3.large on-demand, x86 only) + GPU pool (g5 spot, on-demand fallback). Built-in pools disabled (`node_pools = []`). EBS CSI Driver + AWS LB Controller managed by Auto Mode.
+Layer 2 — EKS Control Plane with Auto Mode enabled. Custom Karpenter NodePools: system pool (t3.xlarge on-demand, x86 only — fits all system workloads + Open WebUI on one node) + GPU pool (g5 spot, on-demand fallback). Built-in pools disabled (`node_pools = []`). EBS CSI Driver + AWS LB Controller managed by Auto Mode.
 Layer 3 — ArgoCD with wave orchestration (waves -2 to 7). Wave -2: Gateway API CRDs → Wave -1: Istio Base → Wave 0: Istiod + Istio CNI + ztunnel (ambient mesh) → Wave 1: Namespaces + NodePools → Wave 2: Storage + KEDA → Wave 3-4: Ollama + Model Loader + KEDA ScaledObject → Wave 5-6: Gateway + Routes → Wave 7: Open WebUI. NVIDIA device plugin is managed by EKS Auto Mode (NOT deployed via ArgoCD — the ArgoCD app file `05-nvidia-device-plugin.yaml` is intentionally emptied).
 Layer 4 — CloudFront (+ WAF + Shield Standard) → API Gateway (REST API, native API key auth) → VPC Link → Internal NLB → Istio Gateway (mTLS) → Ollama Pod.
 
@@ -73,14 +73,14 @@ Grafana is **AWS Managed Grafana (AMG)** — accessed via IAM Identity Center SS
 
 #### Key Implementation Details
 
-- `WEBUI_URL` and `OPENID_REDIRECT_URI` env vars on Open WebUI ensure OAuth redirect uses CloudFront domain (not internal NLB hostname)
+- `WEBUI_URL` and `OPENID_REDIRECT_URI` are set dynamically — `CLOUDFRONT_DOMAIN` is stored in the `webui-oauth-cognito` K8s secret (Terraform sets it from `module.cdn_waf.cloudfront_domain`), and both env vars reference it via `$(CLOUDFRONT_DOMAIN)` substitution. No hardcoded CloudFront URLs in deployment YAML
 - CloudFront adds `X-Forwarded-Proto: https` as custom origin header (CloudFront uses `CloudFront-Forwarded-Proto`, but uvicorn reads `X-Forwarded-Proto`)
 - VPC Origins require `AllViewerExceptHostHeader` origin request policy — `AllViewer` breaks the private NLB connection
 - WAF rate limit set to 2000/5min (web UIs load many assets; 100/5min caused false 403s)
 - SES email identity must be verified for access-granted notifications to work. If SES is in sandbox mode, recipient emails must also be verified
 - Password reset is handled entirely by the custom login portal — user clicks "Forgot password?" on the login page, receives a code via email, then enters the code + new password in the portal. No Cognito hosted UI involved
 - `WEBUI_BANNERS` env var is stored in the `webui-oauth-cognito` K8s secret (not hardcoded in deployment YAML) with banner links to `/auth/login.html` for password reset and `/portal/` for API key generation
-- Auth proxy Lambda (`auth_proxy.py`) handles 6 endpoints: login, mfa, change-password, setup-mfa, forgot-password, confirm-reset. Normal login/MFA uses server-side Cognito hosted UI scraping (for OAuth flow); first-time setup and forgot password use Cognito APIs directly (`InitiateAuth`, `RespondToAuthChallenge`, `ForgotPassword`, `ConfirmForgotPassword`, `AssociateSoftwareToken`, `VerifySoftwareToken`)
+- Auth proxy Lambda (`auth_proxy.py`) handles 6 endpoints: login, mfa, change-password, setup-mfa, forgot-password, confirm-reset. Login uses a two-phase approach: Phase 1 tries Cognito `InitiateAuth` API directly to detect `NEW_PASSWORD_REQUIRED` and `MFA_SETUP` challenges (first-time users); Phase 2 falls back to Cognito hosted UI scraping for the full OAuth token exchange (returning users with MFA). Forgot password uses Cognito APIs directly (`ForgotPassword`, `ConfirmForgotPassword`). First-time setup uses `RespondToAuthChallenge`, `AssociateSoftwareToken`, `VerifySoftwareToken`
 - Auth proxy Lambda requires IAM permissions for `cognito-idp:InitiateAuth`, `cognito-idp:RespondToAuthChallenge`, `cognito-idp:ForgotPassword`, `cognito-idp:ConfirmForgotPassword`, `cognito-idp:AssociateSoftwareToken`, `cognito-idp:VerifySoftwareToken`
 - Cognito `webui` app client has `ALLOW_USER_PASSWORD_AUTH` enabled (required for `InitiateAuth` API used by first-time setup flow)
 - CloudFront Function (`auth_redirect`) runs on `viewer-request` event — checks for `token` cookie, redirects unauthenticated users to `/auth/login.html` (custom login page). Excludes: `/oauth/*`, `/_app/*`, `/static/*`, `/api/*`, `/v1/*`, `/portal/*`, `/auth/*`, favicons
@@ -118,9 +118,9 @@ Switch with: `./switch-model.sh use 3` (flagship) or `./switch-model.sh use 1` (
 ## Key Design Decisions
 
 - CloudFront + WAF + API Gateway replaces Kong Cloud Gateway — 99% cost reduction ($756/mo → $6/mo), adds DDoS protection, eliminates Transit Gateway dependency
-- EKS Auto Mode with custom NodePools — Auto Mode manages Karpenter, NVIDIA plugin, EBS CSI, LB controller. Built-in pools disabled (`node_pools = []`). Custom system pool (t3.large on-demand, x86 only) and GPU pool (g5 spot with on-demand fallback) give full control over instance types and cost
+- EKS Auto Mode with custom NodePools — Auto Mode manages Karpenter, NVIDIA plugin, EBS CSI, LB controller. Built-in pools disabled (`node_pools = []`). Custom system pool (t3.xlarge on-demand, x86 only) and GPU pool (g5 spot with on-demand fallback) give full control over instance types and cost
 - System nodes on-demand only — CoreDNS, Istio, Prometheus, ArgoCD cannot tolerate spot interruptions (full cluster outage). GPU nodes use spot (inference tolerates 2-3 min interruptions). `GPUOnDemandFallback` alert fires if GPU falls back to on-demand
-- KEDA auto-scale-to-zero — KEDA monitors Ollama CPU usage via Prometheus. After 15 min of no inference requests, KEDA scales the Ollama deployment to 0 replicas. Karpenter then terminates the empty GPU node after 10 min (`consolidateAfter: 10m`). Total idle-to-zero: ~25 min. Scale-from-zero is manual via `scripts/scale-up.sh`. System nodes use 5-min consolidation (`WhenEmptyOrUnderutilized`). ArgoCD Ollama app uses `ignoreDifferences` on `/spec/replicas` so `selfHeal` doesn't fight KEDA. KEDA ArgoCD app uses `ServerSideApply=true` to install all CRDs including `scaledjobs.keda.sh`
+- KEDA auto-scale-to-zero — KEDA **only targets the Ollama deployment** (GPU workload). After 15 min of no inference requests, KEDA scales Ollama to 0 replicas. Karpenter then terminates the empty GPU node after 10 min (`consolidateAfter: 10m`). Total idle-to-zero: ~25 min. Scale-from-zero is manual via `scripts/scale-up.sh`. **Open WebUI stays at 1 replica on system nodes (never scaled to zero)** — it runs on t3.xlarge which is always-on. System nodes use 5-min consolidation (`WhenEmptyOrUnderutilized`). ArgoCD Ollama app uses `ignoreDifferences` on `/spec/replicas` so `selfHeal` doesn't fight KEDA. KEDA ArgoCD app uses `ServerSideApply=true` to install all CRDs including `scaledjobs.keda.sh`
 - EKS Auto Mode NodeClass requires explicit `role` field and subnet/SG IDs (tag-based discovery not supported)
 - EBS snapshots for model weights — pre-loaded models on disk, no internet needed for model loading (air-gap compliant), cold start ~3 min instead of 15-25 min
 - High-throughput gp3 — 400 MB/s + 6000 IOPS for fast model loading from snapshot
@@ -159,7 +159,7 @@ Terraform modules: `terraform/modules/` — vpc, iam, eks, argocd, lb-controller
 
 Terraform environments: `terraform/environments/` — per-environment tfvars (dev.tfvars, prod.tfvars).
 
-K8s manifests: `k8s/ollama/` — deployment.yaml (pinned to v0.18.2), service.yaml (ClusterIP :11434), networkpolicy.yaml (air-gap enforced). Plus: `k8s/model-loader/`, `k8s/gateway.yaml`, `k8s/httproutes.yaml`, `k8s/monitoring-networkpolicy.yaml` (IMPLEMENTED), `k8s/nodepools/` (IMPLEMENTED — system NodePool `t3.large on-demand` + GPU NodePool `g5 spot` + NodeClasses for both, all `karpenter.sh/v1` + `eks.amazonaws.com/v1` APIs), `k8s/keda/` (IMPLEMENTED — KEDA ScaledObject for auto-scale-to-zero after 15 min idle), `k8s/open-webui/` (IMPLEMENTED — Cognito auth, model locked to admins), `k8s/cert-manager/`, `k8s/namespaces.yaml`.
+K8s manifests: `k8s/ollama/` — deployment.yaml (pinned to v0.18.2), service.yaml (ClusterIP :11434), networkpolicy.yaml (air-gap enforced). Plus: `k8s/model-loader/`, `k8s/gateway.yaml`, `k8s/httproutes.yaml`, `k8s/monitoring-networkpolicy.yaml` (IMPLEMENTED), `k8s/nodepools/` (IMPLEMENTED — system NodePool `t3.xlarge on-demand` + GPU NodePool `g5 spot` + NodeClasses for both, all `karpenter.sh/v1` + `eks.amazonaws.com/v1` APIs), `k8s/keda/` (IMPLEMENTED — KEDA ScaledObject for auto-scale-to-zero after 15 min idle), `k8s/open-webui/` (IMPLEMENTED — Cognito auth, model locked to admins), `k8s/cert-manager/`, `k8s/namespaces.yaml`.
 
 K8s overlays: `k8s/overlays/` — Kustomize overlays per environment (dev/, prod/) with patches for GPU resources, model names, and NodePool limits.
 
@@ -261,37 +261,37 @@ Token generation: flagship produces 30-50 tok/s. A 500-token response takes ~10-
 
 | Component | Monthly Cost |
 |-----------|-------------|
-| System nodes (1x t3.large on-demand, always-on) | ~$60 |
+| System nodes (1x t3.xlarge on-demand, always-on) | ~$122 |
 | EKS control plane | $73 |
 | CloudFront + WAF + API Gateway | ~$6 |
 | AWS Managed Grafana + AMP | ~$9-14 |
-| **Total (idle)** | **~$152/mo** |
+| **Total (idle)** | **~$214/mo** |
 
 ### DEV Phase (current — Tier 1 fallback, g5.2xlarge spot)
 
 | Component | Monthly Cost |
 |-----------|-------------|
-| System nodes (1x t3.large on-demand) | ~$60 |
+| System nodes (1x t3.xlarge on-demand) | ~$122 |
 | GPU compute (fallback, 8hrs/day weekdays, spot) | ~$56 |
 | KEDA idle overhead (~25 min to full shutdown) | ~$2 |
 | EBS storage (200GB gp3) | ~$14 |
 | EKS control plane | $73 |
 | CloudFront + WAF + API Gateway | ~$6 |
 | AWS Managed Grafana + AMP | ~$9-14 |
-| **Total (DEV)** | **~$226/mo** |
+| **Total (DEV)** | **~$288/mo** |
 
 ### PROD Phase (Tier 3 flagship, g5.12xlarge spot)
 
 | Component | Monthly Cost |
 |-----------|-------------|
-| System nodes (1-2x t3.large on-demand) | ~$60-120 |
+| System nodes (1-2x t3.xlarge on-demand) | ~$122-244 |
 | GPU compute (flagship, 8hrs/day weekdays, spot) | ~$304 |
 | KEDA idle overhead (~25 min to full shutdown) | ~$11 |
 | EBS storage (200GB gp3) | ~$14 |
 | EKS control plane | $73 |
 | CloudFront + WAF + API Gateway | ~$6 |
 | AWS Managed Grafana + AMP | ~$9-14 |
-| **Total (PROD)** | **~$486/mo** |
+| **Total (PROD)** | **~$548/mo** |
 
 Down from $4,155/mo (24/7 on-demand + Kong) — 90%+ reduction.
 

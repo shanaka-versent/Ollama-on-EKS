@@ -285,3 +285,6 @@ kubeControllerManager:
 
 kubeScheduler:
   enabled: false  # Not accessible on EKS managed control plane
+
+kubeProxy:
+  enabled: false  # EKS Auto Mode doesn't run kube-proxy as a DaemonSet

@@ -42,13 +42,19 @@ spec:
           env:
             # External URL — required for OAuth redirect_uri to use CloudFront domain
             # Without this, Open WebUI uses the internal NLB hostname from the request
+            # Value injected from K8s Secret (Terraform sets it from CloudFront output)
+            - name: CLOUDFRONT_DOMAIN
+              valueFrom:
+                secretKeyRef:
+                  name: webui-oauth-cognito
+                  key: CLOUDFRONT_DOMAIN
             - name: WEBUI_URL
-              value: "https://d3f4nz5crzf5t8.cloudfront.net"
+              value: "https://$(CLOUDFRONT_DOMAIN)"
             # OAuth redirect URI — must match Cognito callback URL exactly
             # CloudFront connects to NLB via HTTP, so without this Open WebUI
             # generates http:// redirect_uri which Cognito rejects.
             - name: OPENID_REDIRECT_URI
-              value: "https://d3f4nz5crzf5t8.cloudfront.net/oauth/oidc/callback"
+              value: "https://$(CLOUDFRONT_DOMAIN)/oauth/oidc/callback"
             # Connect to Ollama via ClusterIP service
             - name: OLLAMA_BASE_URL
               value: "http://ollama.ollama.svc.cluster.local:11434"

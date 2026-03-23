@@ -110,10 +110,21 @@ def compute_secret_hash(username):
 # ==============================================================================
 
 def handle_login(event):
-    """Handle initial login with email + password."""
+    """Handle initial login with email + password.
+
+    Strategy: Try Cognito InitiateAuth API first to detect first-time setup
+    challenges (NEW_PASSWORD_REQUIRED, MFA_SETUP). If auth succeeds or
+    SOFTWARE_TOKEN_MFA is required, fall through to hosted UI scraping for
+    the OAuth token exchange that gives us the Open WebUI session.
+    """
     try:
-        body = json.loads(event.get('body', '{}'))
-    except (json.JSONDecodeError, TypeError):
+        raw_body = event.get('body', '{}')
+        # API Gateway may base64-encode the body
+        if event.get('isBase64Encoded') and raw_body:
+            raw_body = base64.b64decode(raw_body).decode('utf-8')
+        body = json.loads(raw_body or '{}')
+    except (json.JSONDecodeError, TypeError) as e:
+        print(f'Body parse error: {e}')
         return api_response(400, {'error': 'Invalid request body'})
 
     email = body.get('email', '').strip()
@@ -122,6 +133,49 @@ def handle_login(event):
     if not email or not password:
         return api_response(400, {'error': 'Email and password are required'})
 
+    # --- Phase 1: Try Cognito API to detect first-time challenges ---
+    try:
+        api_result = _cognito_initiate_auth(email, password)
+        challenge = api_result.get('ChallengeName', '')
+
+        if challenge == 'NEW_PASSWORD_REQUIRED':
+            state = json.dumps({
+                'session': api_result.get('Session', ''),
+                'email': email,
+                'challenge': 'NEW_PASSWORD_REQUIRED',
+            })
+            return api_response(200, {
+                'status': 'new_password_required',
+                'message': 'Please set a new password to continue.',
+                'session': base64.b64encode(state.encode()).decode(),
+            })
+
+        if challenge == 'MFA_SETUP':
+            # User changed password but hasn't enrolled MFA yet
+            state = json.dumps({
+                'session': api_result.get('Session', ''),
+                'email': email,
+                'challenge': 'MFA_SETUP',
+            })
+            return api_response(200, {
+                'status': 'mfa_setup_required',
+                'message': 'Please set up your authenticator app.',
+                'session': base64.b64encode(state.encode()).decode(),
+            })
+
+        # If SOFTWARE_TOKEN_MFA challenge or auth succeeded, continue to
+        # hosted UI scraping for the full OAuth flow (Phase 2 below)
+
+    except Exception as e:
+        error_msg = str(e)
+        if 'NotAuthorizedException' in error_msg:
+            return api_response(401, {'error': 'Invalid email or password'})
+        if 'UserNotFoundException' in error_msg:
+            return api_response(401, {'error': 'Invalid email or password'})
+        # For other errors, log and fall through to hosted UI approach
+        print(f'InitiateAuth pre-check failed (falling through): {error_msg}')
+
+    # --- Phase 2: Full OAuth flow via hosted UI scraping ---
     try:
         # Step 1: Start OAuth flow — GET /oauth/oidc/login
         # Open WebUI returns 303 → Cognito /authorize and sets owui-session cookie
@@ -151,7 +205,15 @@ def handle_login(event):
         csrf_token = extract_csrf(resp['body'])
 
         if not csrf_token:
+            # Try alternate CSRF extraction patterns for newer Cognito UI
+            csrf_token = _extract_csrf_alternate(resp['body'])
+
+        if not csrf_token:
             print('Step 3 failed: could not extract CSRF token from login page')
+            print(f'Step 3 login page URL: {login_page_url}')
+            print(f'Step 3 response status: {resp["status"]}')
+            # Log first 500 chars of body for debugging
+            print(f'Step 3 body preview: {resp["body"][:500]}')
             return api_response(500, {'error': 'Failed to load login form'})
 
         # Step 4: POST credentials to Cognito login
@@ -180,8 +242,6 @@ def handle_login(event):
 
         # Check for password change required (first-time login)
         if '/newpassword' in redirect_url.lower() or '/changepassword' in redirect_url.lower() or '/confirmpassword' in redirect_url.lower():
-            # Instead of redirecting to Cognito hosted UI, use Cognito API
-            # to handle password change in our custom form
             return _initiate_first_time_setup(email, password)
 
         # Check if MFA is required
@@ -214,6 +274,41 @@ def handle_login(event):
         import traceback
         traceback.print_exc()
         return api_response(500, {'error': 'Authentication failed. Please try again.'})
+
+
+def _cognito_initiate_auth(email, password):
+    """Call Cognito InitiateAuth API to validate credentials and detect challenges."""
+    auth_params = {
+        'USERNAME': email,
+        'PASSWORD': password,
+    }
+    secret_hash = compute_secret_hash(email)
+    if secret_hash:
+        auth_params['SECRET_HASH'] = secret_hash
+
+    return cognito_api('InitiateAuth', {
+        'AuthFlow': 'USER_PASSWORD_AUTH',
+        'ClientId': CLIENT_ID,
+        'AuthParameters': auth_params,
+    })
+
+
+def _extract_csrf_alternate(html):
+    """Try alternate CSRF extraction patterns for newer Cognito hosted UI."""
+    if not html:
+        return ''
+    # Meta tag pattern
+    match = re.search(r'<meta\s+name=["\']csrf-token["\']\s+content=["\']([^"\']+)["\']', html)
+    if match:
+        return match.group(1)
+    # Hidden input with different attribute order or spacing
+    match = re.search(r'name\s*=\s*["\']_csrf["\']\s*[^>]*value\s*=\s*["\']([^"\']+)["\']', html)
+    if match:
+        return match.group(1)
+    match = re.search(r'value\s*=\s*["\']([^"\']+)["\']\s*[^>]*name\s*=\s*["\']_csrf["\']', html)
+    if match:
+        return match.group(1)
+    return ''
 
 
 def _initiate_first_time_setup(email, password):

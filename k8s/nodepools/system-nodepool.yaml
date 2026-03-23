@@ -10,14 +10,14 @@
 # A spot reclaim would kill CoreDNS, Istio gateway, Prometheus, and ArgoCD
 # simultaneously, causing a full cluster outage for 2-3 minutes.
 #
-# Cost: ~$60/mo (1x t3.large on-demand, always-on)
+# Cost: ~$60/mo (1x t3.xlarge on-demand, always-on)
 #
 # Instance sizing:
-#   t3.medium — 2 vCPU / 4 GiB — secondary (Karpenter uses for overflow)
-#   t3.large  — 2 vCPU / 8 GiB — primary (fits all system pods at idle)
+#   t3.large   — 2 vCPU / 8 GiB  — fallback (Karpenter uses if xlarge unavailable)
+#   t3.xlarge  — 4 vCPU / 16 GiB — primary (fits all system pods + Open WebUI on one node)
 #
 # Karpenter consolidation: WhenUnderutilized with 5-min delay.
-# At idle, all system pods fit on 1x t3.large (~2.25 vCPU requested, ~3.8 GiB).
+# At idle, all system pods + Open WebUI fit on 1x t3.xlarge (~3 vCPU, ~5 GiB).
 # Under load, Karpenter scales to 2+ nodes and consolidates back down.
 apiVersion: karpenter.sh/v1
 kind: NodePool
@@ -41,12 +41,12 @@ spec:
         - key: eks.amazonaws.com/instance-family
           operator: In
           values: ["t3"]
-        # medium (overflow) + large (primary)
+        # xlarge (primary) + large (fallback)
         - key: eks.amazonaws.com/instance-size
           operator: In
           values:
-            - medium
             - large
+            - xlarge
         # x86 ONLY — Open WebUI doesn't reliably support ARM64 (Graviton)
         - key: kubernetes.io/arch
           operator: In

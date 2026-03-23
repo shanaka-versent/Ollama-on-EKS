@@ -531,6 +531,9 @@ resource "kubernetes_secret" "webui_oauth" {
     OAUTH_CLIENT_SECRET   = module.cognito.client_secret
     OPENID_PROVIDER_URL   = module.cognito.openid_config_url
     OAUTH_LOGOUT_URL      = module.cognito.logout_url
+    # CloudFront domain — injected so Open WebUI uses the correct external URL
+    # for OAuth redirect_uri without hardcoding in K8s manifests
+    CLOUDFRONT_DOMAIN     = module.cdn_waf.cloudfront_domain
     # Banner timestamp must be Unix epoch (number), not a date string
     # HTML content with styled button links for better visibility
     WEBUI_BANNERS = jsonencode([

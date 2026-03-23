@@ -84,7 +84,7 @@ CloudFront connects to the internal NLB via **VPC Origins** — private connecti
 | Layer | What | Components |
 |-------|------|------------|
 | 1 — Cloud Foundations | VPC (10.0.0.0/16) | Private/public subnets, NAT Gateway, Internet Gateway |
-| 2 — EKS Cluster | Kubernetes + GPU | EKS Control Plane (Auto Mode), custom Karpenter NodePools: system (t3.large on-demand) + GPU (g5.xlarge DEV / g5.12xlarge PROD spot), EBS CSI Driver, LB Controller |
+| 2 — EKS Cluster | Kubernetes + GPU | EKS Control Plane (Auto Mode), custom Karpenter NodePools: system (t3.xlarge on-demand) + GPU (g5.xlarge DEV / g5.12xlarge PROD spot), EBS CSI Driver, LB Controller |
 | 3 — GitOps | ArgoCD waves -2 to 7 | Wave -2: Gateway API CRDs → Wave -1: Istio Base → Wave 0: Istiod + CNI + ztunnel → Wave 1: Namespaces + NodePools → Wave 2: Storage + KEDA → Waves 3-4: Ollama + Model Loader + KEDA ScaledObject → Waves 5-6: Gateway + Routes → Wave 7: Open WebUI |
 | 4 — Edge + Security | CloudFront + WAF + API GW | CloudFront (+ WAF + Shield Standard) → API Gateway (REST API, x-api-key) → VPC Link → Internal NLB → Istio Gateway (mTLS) → Ollama Pod |
 
@@ -139,8 +139,8 @@ To switch from DEV to PROD: update the 4 ArgoCD app paths and run Terraform with
 | Decision | Rationale |
 |----------|-----------|
 | CloudFront + WAF + API Gateway (not Kong) | 99% cost reduction ($756/mo → $6/mo), adds DDoS protection, eliminates Transit Gateway dependency |
-| EKS Auto Mode + Custom NodePools | Built-in pools disabled (`node_pools = []`). Two custom Karpenter NodePools: system (t3.large on-demand, `WhenEmptyOrUnderutilized` 5m) and GPU (g5 spot, `WhenEmpty` 30m). System on-demand because CoreDNS/Istio/Prometheus cannot tolerate spot interruptions. AWS manages NVIDIA device plugin and drivers |
-| KEDA auto-scale-to-zero | KEDA monitors CPU via Prometheus. After 15 min idle, scales Ollama to 0. Karpenter terminates empty GPU node after 10 min. Total idle-to-zero: ~25 min. Manual scale-up via `scripts/scale-up.sh` |
+| EKS Auto Mode + Custom NodePools | Built-in pools disabled (`node_pools = []`). Two custom Karpenter NodePools: system (t3.xlarge on-demand, `WhenEmptyOrUnderutilized` 5m) and GPU (g5 spot, `WhenEmpty` 30m). System on-demand because CoreDNS/Istio/Prometheus cannot tolerate spot interruptions. AWS manages NVIDIA device plugin and drivers |
+| KEDA auto-scale-to-zero | KEDA **only targets the Ollama deployment** (GPU workload). After 15 min idle, scales Ollama to 0. Karpenter terminates empty GPU node after 10 min. Total idle-to-zero: ~25 min. Open WebUI stays at 1 replica on system nodes (never scaled to zero). Manual scale-up via `scripts/scale-up.sh` |
 | EBS snapshots for model weights | Pre-loaded models on disk, no internet needed for model loading (air-gap compliant), cold start ~3 min instead of 15-25 min |
 | High-throughput gp3 (400 MB/s + 6000 IOPS) | Fast model loading from snapshot — critical for reasonable cold start times |
 | AWS Managed Grafana (AMG) | Prometheus + DCGM Exporter in-cluster → AMP → AMG (SSO via IAM Identity Center). All dashboards including FinOps |
@@ -456,7 +456,7 @@ Open WebUI (v0.8.10) provides a ChatGPT-like interface for Ollama. Deployed on E
 
 **Password changes:** A banner in Open WebUI links to the custom login portal at `/auth/login.html`. Users click "Forgot password?", receive a verification code via email, and set a new password — all within the custom portal (no Cognito hosted UI).
 
-**Access URL:** `https://<CLOUDFRONT_DOMAIN>` (e.g., `https://d3f4nz5crzf5t8.cloudfront.net`)
+**Access URL:** `https://<CLOUDFRONT_DOMAIN>` — dynamically injected from Terraform output. The CloudFront domain is stored in the `webui-oauth-cognito` K8s secret, and Open WebUI reads it via `$(CLOUDFRONT_DOMAIN)` env var substitution (no hardcoded URLs in deployment YAML)
 
 **Auto-redirect:** A CloudFront Function intercepts all viewer requests at the edge. Unauthenticated users (no `token` cookie) are automatically redirected to the custom login page at `/auth/login.html` — they never see a landing page or the Cognito hosted UI. Authenticated users pass through to the Open WebUI dashboard. OAuth callback, static asset, API, auth, and portal paths are excluded from the redirect.
 
@@ -466,8 +466,8 @@ Open WebUI (v0.8.10) provides a ChatGPT-like interface for Ollama. Deployed on E
 
 1. Terraform creates admin user → receives temporary password by email
 2. Admin visits CloudFront URL → redirected to custom login page (`/auth/login.html`)
-3. Enters email + temp password → portal detects `NEW_PASSWORD_REQUIRED` → shows password change form
-4. Sets new password → portal detects `MFA_SETUP` → shows QR code for authenticator app
+3. Enters email + temp password → auth proxy Lambda calls Cognito `InitiateAuth` API → detects `NEW_PASSWORD_REQUIRED` challenge → shows password change form
+4. Sets new password → auth proxy detects `MFA_SETUP` challenge → shows QR code for authenticator app
 5. Scans QR code → enters TOTP code → setup complete
 6. Signs in with new password + TOTP → logged into Open WebUI as admin
 
@@ -594,9 +594,9 @@ Dashboard variables let you adjust the GPU spot rate (DEV: $0.35/hr for g5.xlarg
 
 | Component | Monthly Cost |
 |-----------|-------------|
-| System node (1x t3.large on-demand, always-on) | ~$60 |
+| System node (1x t3.xlarge on-demand, always-on) | ~$122 |
 | EKS control plane | $73 |
-| **Total (Idle)** | **~$133/mo** |
+| **Total (Idle)** | **~$195/mo** |
 
 > System nodes run on-demand because CoreDNS, Istio, Prometheus, and ArgoCD cannot tolerate spot interruptions — a spot reclaim would cause full cluster outage for 2-3 min. GPU spot is fine because inference can tolerate brief interruptions.
 
@@ -604,27 +604,27 @@ Dashboard variables let you adjust the GPU spot rate (DEV: $0.35/hr for g5.xlarg
 
 | Component | Monthly Cost |
 |-----------|-------------|
-| System node (1x t3.large on-demand) | ~$60 |
+| System node (1x t3.xlarge on-demand) | ~$122 |
 | GPU compute (fallback, 8hrs/day weekdays, spot) | ~$56 |
 | KEDA idle overhead (~25 min to full shutdown) | ~$2 |
 | EKS control plane | $73 |
 | EBS snapshot storage + gp3 throughput | ~$14 |
 | CloudFront + WAF + API Gateway | ~$6 |
 | AWS Managed Grafana + AMP | ~$14 |
-| **Total (DEV)** | **~$225/mo** |
+| **Total (DEV)** | **~$287/mo** |
 
 **PROD Phase (Tier 3 flagship, g5.12xlarge spot):**
 
 | Component | Monthly Cost |
 |-----------|-------------|
-| System nodes (1-2x t3.large on-demand) | ~$60-120 |
+| System nodes (1-2x t3.xlarge on-demand) | ~$122-244 |
 | GPU compute (flagship, 8hrs/day weekdays, spot) | ~$304 |
 | KEDA idle overhead (~25 min to full shutdown) | ~$11 |
 | EKS control plane | $73 |
 | EBS snapshot storage + gp3 throughput | ~$14 |
 | CloudFront + WAF + API Gateway | ~$6 |
 | AWS Managed Grafana + AMP | ~$14 |
-| **Total (PROD)** | **~$482/mo** |
+| **Total (PROD)** | **~$544/mo** |
 
 Down from $4,155/mo (24/7 on-demand + Kong) — 88% reduction. DEV phase runs at ~$225/mo.
 
@@ -643,7 +643,7 @@ Token generation: flagship produces 30-50 tok/s. A 500-token response takes ~10-
 
 ### Auto-Scale-to-Zero (KEDA)
 
-KEDA monitors container CPU usage via Prometheus. When no inference activity is detected for 15 minutes, KEDA scales the Ollama deployment to 0 replicas. Karpenter then detects the empty GPU node and terminates it after 10 minutes. Total time from last request to GPU billing stop: ~25 minutes.
+KEDA **only targets the Ollama deployment** (GPU workload) — Open WebUI stays at 1 replica on system nodes and is never scaled to zero. When no inference activity is detected for 15 minutes, KEDA scales the Ollama deployment to 0 replicas. Karpenter then detects the empty GPU node and terminates it after 10 minutes. Total time from last request to GPU billing stop: ~25 minutes.
 
 > **ArgoCD compatibility:** The Ollama ArgoCD app uses `ignoreDifferences` on `/spec/replicas` so ArgoCD's `selfHeal` doesn't fight KEDA's scaling. Without this, ArgoCD would constantly reset replicas to 1.
 
@@ -680,7 +680,7 @@ Terraform provisions ArgoCD during `terraform apply`. ArgoCD then auto-syncs all
 | -1 | `istio-base` | Istio CRDs and cluster-wide resources |
 | 0 | `istiod`, `istio-cni`, `ztunnel` | Ambient mesh (NVIDIA plugin managed by EKS Auto Mode) |
 | 1 | `namespaces` | `ollama`, `istio-system` namespaces with ambient mesh label |
-| 1 | `system-nodepool` | System NodePool (t3.large on-demand) + GPU NodePool (g5 spot) + NodeClasses — GitOps-managed node lifecycle |
+| 1 | `system-nodepool` | System NodePool (t3.xlarge on-demand) + GPU NodePool (g5 spot) + NodeClasses — GitOps-managed node lifecycle |
 | 2 | `ollama-storage` | StorageClass `gp3` (Retain, WaitForFirstConsumer) + PVC 200Gi |
 | 2 | `keda` | KEDA operator (Helm chart, auto-scale-to-zero support) |
 | 3 | `ollama` | Deployment (DEV: 1 GPU / PROD: 4 GPUs, `strategy: Recreate`), Service, NetworkPolicy |
@@ -741,7 +741,7 @@ flowchart LR
 | **Ollama Service** | `ClusterIP` — never directly exposed outside the cluster |
 | **NetworkPolicy** | Air-gap enforced: ingress from `istio-system` and `istio-ingress` on port 11434; egress DNS + intra-cluster only |
 | **AWS VPC** | Nodes in private subnets, NAT for outbound only |
-| **Node Isolation** | System NodePool (t3.large on-demand, all non-GPU workloads), GPU NodePool (g5 spot, `workload-type: gpu-inference` nodeSelector + `nvidia.com/gpu` taint) |
+| **Node Isolation** | System NodePool (t3.xlarge on-demand, all non-GPU workloads), GPU NodePool (g5 spot, `workload-type: gpu-inference` nodeSelector + `nvidia.com/gpu` taint) |
 | **EBS Snapshot** | Pre-loaded models — no internet needed for model loading |
 | **Cognito + Custom Portal** | Custom login portal (auth_proxy Lambda + login.html SPA) handles all auth flows — users never see Cognito hosted UI. OAuth/OIDC with mandatory TOTP MFA, roles synced from Cognito groups, admin-approved signups, in-app password reset, no local passwords, admin chat access and DB export disabled |
 | **IRSA** | EBS CSI + LB Controller + Bedrock (Stack B) use least-privilege IAM roles via OIDC |
@@ -860,7 +860,7 @@ terraform/
 k8s/
   ollama/                          # Deployment, Service, NetworkPolicy (air-gapped)
   model-loader/                    # Job to pull models
-  nodepools/                       # Custom Karpenter NodePools: system (t3.large on-demand) + GPU (g5 spot), NodeClasses (eks.amazonaws.com/v1)
+  nodepools/                       # Custom Karpenter NodePools: system (t3.xlarge on-demand) + GPU (g5 spot), NodeClasses (eks.amazonaws.com/v1)
   cert-manager/                    # ClusterIssuer + Certificate
   open-webui/                      # Open WebUI — Cognito auth, model locked to admins
   keda/                            # KEDA ScaledObject for auto-scale-to-zero (15-min idle → scale Ollama to 0)
