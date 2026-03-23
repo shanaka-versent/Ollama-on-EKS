@@ -3,12 +3,6 @@ variable "eks_cluster_name" {
   type        = string
 }
 
-variable "grafana_admin_password" {
-  description = "Admin password for Grafana"
-  type        = string
-  sensitive   = true
-}
-
 variable "prometheus_retention_days" {
   description = "Number of days to retain Prometheus data"
   type        = number
@@ -19,12 +13,6 @@ variable "prometheus_storage_size" {
   description = "Size of Prometheus persistent volume"
   type        = string
   default     = "50Gi"
-}
-
-variable "grafana_storage_size" {
-  description = "Size of Grafana persistent volume"
-  type        = string
-  default     = "10Gi"
 }
 
 variable "gpu_node_selector_key" {
@@ -51,24 +39,6 @@ variable "eks_oidc_issuer_url" {
   default     = ""
 }
 
-variable "enable_grafana" {
-  description = "Enable in-cluster Grafana. Set false when using AWS Managed Grafana."
-  type        = bool
-  default     = true
-}
-
-variable "grafana_oauth_secret_name" {
-  description = "K8s Secret name containing GF_ env vars for Cognito OAuth. Empty to skip."
-  type        = string
-  default     = ""
-}
-
-variable "grafana_root_url" {
-  description = "Grafana root URL (e.g. https://example.cloudfront.net/grafana/). Used for server.root_url in grafana.ini."
-  type        = string
-  default     = "%(protocol)s://%(domain)s:%(http_port)s/"
-}
-
 variable "amp_remote_write_endpoint" {
   description = "AMP remote write endpoint. When set, Prometheus sends all metrics to AMP for AMG to read."
   type        = string
@@ -77,6 +47,12 @@ variable "amp_remote_write_endpoint" {
 
 variable "amp_remote_write_role_arn" {
   description = "IRSA role ARN for Prometheus remote write to AMP."
+  type        = string
+  default     = ""
+}
+
+variable "alert_email" {
+  description = "Email address to receive alert notifications via SNS. Empty to skip SNS setup."
   type        = string
   default     = ""
 }

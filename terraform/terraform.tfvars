@@ -72,11 +72,6 @@ waf_enable_bot_control = false
 # CloudFront domain (set after first apply — used by Cognito callback URLs)
 cloudfront_domain = "d3f4nz5crzf5t8.cloudfront.net"
 
-# Observability — AWS Managed Grafana (replaces in-cluster Grafana)
-# Requires IAM Identity Center (AWS SSO) to be enabled in the account.
-# When true: creates AMG workspace + AMP, disables in-cluster Grafana pod.
-enable_managed_grafana = true
-
 # Cognito Authentication (Open WebUI)
 # Cognito handles all user management: signup, login, MFA, role assignment.
 # Initial admin receives temporary password via email.

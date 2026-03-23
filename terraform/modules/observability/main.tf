@@ -10,92 +10,18 @@ resource "helm_release" "kube_prometheus_stack" {
   version          = "67.4.0" # check latest
 
   values = [templatefile("${path.module}/values/kube-prometheus-stack.yaml", {
-    grafana_admin_password        = var.grafana_admin_password
     prometheus_retention          = "${var.prometheus_retention_days}d"
     prometheus_storage_size       = var.prometheus_storage_size
-    grafana_storage_size          = var.grafana_storage_size
     cluster_name                  = var.eks_cluster_name
-    grafana_cloudwatch_role_arn   = var.enable_grafana ? aws_iam_role.grafana_cloudwatch[0].arn : ""
-    enable_grafana                = var.enable_grafana
-    grafana_oauth_secret_name     = var.grafana_oauth_secret_name
-    grafana_root_url              = var.grafana_root_url
     amp_remote_write_endpoint     = var.amp_remote_write_endpoint
     amp_remote_write_role_arn     = var.amp_remote_write_role_arn
+    sns_alert_topic_arn           = var.alert_email != "" ? aws_sns_topic.alerts[0].arn : ""
+    alertmanager_sns_role_arn     = var.alert_email != "" ? aws_iam_role.alertmanager_sns[0].arn : ""
   })]
 
   # Wait for CRDs to be ready before DCGM exporter creates ServiceMonitors
   wait    = true
   timeout = 600 # 10 minutes — large chart with many CRDs
-}
-
-# ──────────────────────────────────────────────────────────────────────
-# 1b. IRSA Role for in-cluster Grafana → CloudWatch (FinOps dashboard)
-#     Only needed when running Grafana in-cluster (not AMG)
-# ──────────────────────────────────────────────────────────────────────
-resource "aws_iam_role" "grafana_cloudwatch" {
-  count = var.enable_grafana ? 1 : 0
-  name  = "${var.eks_cluster_name}-grafana-cloudwatch"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Principal = {
-        Federated = var.eks_oidc_provider_arn
-      }
-      Action = "sts:AssumeRoleWithWebIdentity"
-      Condition = {
-        StringEquals = {
-          "${replace(var.eks_oidc_issuer_url, "https://", "")}:sub" = "system:serviceaccount:monitoring:kube-prometheus-stack-grafana"
-          "${replace(var.eks_oidc_issuer_url, "https://", "")}:aud" = "sts.amazonaws.com"
-        }
-      }
-    }]
-  })
-
-  tags = var.tags
-}
-
-resource "aws_iam_role_policy" "grafana_cloudwatch" {
-  count = var.enable_grafana ? 1 : 0
-  name  = "cloudwatch-read"
-  role  = aws_iam_role.grafana_cloudwatch[0].id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "cloudwatch:DescribeAlarmsForMetric",
-          "cloudwatch:DescribeAlarmHistory",
-          "cloudwatch:DescribeAlarms",
-          "cloudwatch:ListMetrics",
-          "cloudwatch:GetMetricData",
-          "cloudwatch:GetMetricStatistics",
-          "cloudwatch:GetInsightRuleReport"
-        ]
-        Resource = "*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "logs:DescribeLogGroups",
-          "logs:GetLogGroupFields",
-          "logs:StartQuery",
-          "logs:StopQuery",
-          "logs:GetQueryResults",
-          "logs:GetLogEvents"
-        ]
-        Resource = "*"
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["tag:GetResources"]
-        Resource = "*"
-      }
-    ]
-  })
 }
 
 # ──────────────────────────────────────────────────────────────────────
@@ -119,73 +45,58 @@ resource "helm_release" "dcgm_exporter" {
 }
 
 # ──────────────────────────────────────────────────────────────────────
-# 3. Grafana dashboards as ConfigMaps (in-cluster Grafana only)
-#    When using AMG, import dashboard JSON files directly into the workspace.
+# 4. SNS Topic for Alert Notifications (email)
+#    Alertmanager → SNS → Email for spot failures, cost warnings, etc.
 # ──────────────────────────────────────────────────────────────────────
-resource "kubernetes_config_map" "gpu_dashboard" {
-  count = var.enable_grafana ? 1 : 0
-  metadata {
-    name      = "grafana-dashboard-gpu"
-    namespace = "monitoring"
-    labels = {
-      grafana_dashboard = "1" # Auto-discovered by Grafana sidecar
-    }
-  }
-
-  data = {
-    "gpu-metrics.json" = file("${path.module}/dashboards/gpu-metrics.json")
-  }
-
-  depends_on = [helm_release.kube_prometheus_stack]
+resource "aws_sns_topic" "alerts" {
+  count = var.alert_email != "" ? 1 : 0
+  name  = "${var.eks_cluster_name}-alerts"
+  tags  = var.tags
 }
 
-resource "kubernetes_config_map" "ollama_dashboard" {
-  count = var.enable_grafana ? 1 : 0
-  metadata {
-    name      = "grafana-dashboard-ollama"
-    namespace = "monitoring"
-    labels = {
-      grafana_dashboard = "1"
-    }
-  }
-
-  data = {
-    "ollama-api-metrics.json" = file("${path.module}/dashboards/ollama-api-metrics.json")
-  }
-
-  depends_on = [helm_release.kube_prometheus_stack]
+resource "aws_sns_topic_subscription" "alert_email" {
+  count     = var.alert_email != "" ? 1 : 0
+  topic_arn = aws_sns_topic.alerts[0].arn
+  protocol  = "email"
+  endpoint  = var.alert_email
 }
 
-resource "kubernetes_config_map" "karpenter_dashboard" {
-  count = var.enable_grafana ? 1 : 0
-  metadata {
-    name      = "grafana-dashboard-karpenter"
-    namespace = "monitoring"
-    labels = {
-      grafana_dashboard = "1"
-    }
-  }
+# IRSA role for Alertmanager → SNS publish
+resource "aws_iam_role" "alertmanager_sns" {
+  count = var.alert_email != "" ? 1 : 0
+  name  = "${var.eks_cluster_name}-alertmanager-sns"
 
-  data = {
-    "karpenter-metrics.json" = file("${path.module}/dashboards/karpenter-metrics.json")
-  }
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Federated = var.eks_oidc_provider_arn
+      }
+      Action = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "${replace(var.eks_oidc_issuer_url, "https://", "")}:sub" = "system:serviceaccount:monitoring:kube-prometheus-stack-alertmanager"
+          "${replace(var.eks_oidc_issuer_url, "https://", "")}:aud" = "sts.amazonaws.com"
+        }
+      }
+    }]
+  })
 
-  depends_on = [helm_release.kube_prometheus_stack]
+  tags = var.tags
 }
 
-resource "kubernetes_config_map" "finops_dashboard" {
-  count = var.enable_grafana ? 1 : 0
-  metadata {
-    name      = "grafana-dashboard-finops"
-    namespace = "monitoring"
-    labels = {
-      grafana_dashboard = "1"
-    }
-  }
+resource "aws_iam_role_policy" "alertmanager_sns" {
+  count = var.alert_email != "" ? 1 : 0
+  name  = "sns-publish"
+  role  = aws_iam_role.alertmanager_sns[0].id
 
-  data = {
-    "finops-showback.json" = file("${path.module}/dashboards/finops-showback.json")
-  }
-
-  depends_on = [helm_release.kube_prometheus_stack]
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "sns:Publish"
+      Resource = aws_sns_topic.alerts[0].arn
+    }]
+  })
 }

@@ -47,7 +47,6 @@ resource "aws_cloudfront_function" "auth_redirect" {
           uri.startsWith('/v1/') ||
           uri.startsWith('/portal/') ||
           uri.startsWith('/auth/') ||
-          uri.startsWith('/grafana/') ||
           uri === '/favicon.ico' ||
           uri === '/favicon.png' ||
           uri === '/health' ||
@@ -424,24 +423,6 @@ resource "aws_cloudfront_distribution" "ollama" {
 
       cache_policy_id          = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # CachingDisabled (login page should never be cached)
       origin_request_policy_id = "88a5eaf4-2fd4-4709-b370-b4c650ea3fcf" # CORS-S3Origin
-
-      viewer_protocol_policy = "https-only"
-      compress               = true
-    }
-  }
-
-  # Grafana → NLB (same origin, Istio routes by path)
-  # TEMPORARY: Remove when AMG SSO access is resolved
-  dynamic "ordered_cache_behavior" {
-    for_each = local.webui_enabled ? [1] : []
-    content {
-      path_pattern     = "/grafana/*"
-      allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
-      cached_methods   = ["GET", "HEAD"]
-      target_origin_id = "nlb-webui"
-
-      cache_policy_id          = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # CachingDisabled
-      origin_request_policy_id = "b689b0a8-53d0-40ab-baf2-68738e2966ac" # AllViewerExceptHostHeader
 
       viewer_protocol_policy = "https-only"
       compress               = true

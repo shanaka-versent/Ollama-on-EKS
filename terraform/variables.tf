@@ -267,14 +267,8 @@ variable "argocd_chart_version" {
 }
 
 # ==============================================================================
-# MANAGED GRAFANA (Optional — replaces in-cluster Grafana)
+# AWS MANAGED GRAFANA (AMG — SSO via IAM Identity Center)
 # ==============================================================================
-
-variable "enable_managed_grafana" {
-  description = "Enable AWS Managed Grafana + AMP (replaces in-cluster Grafana). Requires IAM Identity Center."
-  type        = bool
-  default     = false
-}
 
 variable "grafana_admin_user_ids" {
   description = "IAM Identity Center user IDs to grant Grafana ADMIN role"
@@ -306,13 +300,6 @@ variable "cognito_notification_email" {
 # OBSERVABILITY
 # ==============================================================================
 
-variable "grafana_admin_password" {
-  description = "Admin password for Grafana"
-  type        = string
-  sensitive   = true
-  default     = "OllamaAdmin2024!"
-}
-
 variable "prometheus_retention_days" {
   description = "Number of days to retain Prometheus data"
   type        = number
@@ -323,12 +310,6 @@ variable "prometheus_storage_size" {
   description = "Size of Prometheus persistent volume"
   type        = string
   default     = "50Gi"
-}
-
-variable "grafana_storage_size" {
-  description = "Size of Grafana persistent volume"
-  type        = string
-  default     = "10Gi"
 }
 
 # ==============================================================================

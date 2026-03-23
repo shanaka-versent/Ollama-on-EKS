@@ -1,16 +1,9 @@
 # Monitoring namespace — air-gapped
 # @author Shanaka Jayasundera - shanakaj@gmail.com
 #
-# When using AWS Managed Grafana (AMG):
-#   - No in-cluster Grafana pod exists — no CloudWatch egress needed from pods
-#   - AMG reads CloudWatch natively via its IAM role (no pod egress)
-#   - Prometheus needs HTTPS egress to AMP for remote write (SigV4 auth via IRSA)
-#
-# When using in-cluster Grafana:
-#   - Grafana pod needs HTTPS egress to CloudWatch APIs (for FinOps dashboard)
-#   - Apply the grafana-cloudwatch policy below
-#
-# Current config: In-cluster Grafana via CloudFront (temporary until AMG SSO resolved)
+# No in-cluster Grafana — all dashboards in AWS Managed Grafana (AMG).
+# AMG reads from AMP (Prometheus metrics) and CloudWatch natively via IAM role.
+# Prometheus needs HTTPS egress to AMP for remote write (SigV4 auth via IRSA).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -22,15 +15,7 @@ spec:
     - Ingress
     - Egress
   ingress:
-    # Allow traffic from Istio Gateway (internet-facing NLB → Grafana)
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: istio-ingress
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: istio-system
-    # Allow intra-namespace (Prometheus → Grafana, etc.)
+    # Allow intra-namespace (Prometheus scraping Alertmanager, etc.)
     - from:
         - namespaceSelector:
             matchLabels:
@@ -47,7 +32,6 @@ spec:
         - port: 53
           protocol: TCP
     # HTTPS to AWS APIs (AMP remote write via SigV4 + STS for IRSA token exchange)
-    # Required for Prometheus → AMP when using AWS Managed Grafana
     - to: []
       ports:
         - port: 443

@@ -57,86 +57,20 @@ prometheus:
 %{ endif }
 
 # ──────────────────────────────────────────────────────────────────────
-# Grafana (disabled when using AWS Managed Grafana)
+# Grafana — DISABLED (using AWS Managed Grafana via IAM Identity Center)
 # ──────────────────────────────────────────────────────────────────────
 grafana:
-%{ if enable_grafana }
-  adminPassword: "${grafana_admin_password}"
-
-  tolerations:
-    - key: CriticalAddonsOnly
-      operator: Exists
-      effect: NoSchedule
-
-  serviceAccount:
-    annotations:
-      eks.amazonaws.com/role-arn: "${grafana_cloudwatch_role_arn}"
-
-  persistence:
-    enabled: true
-    storageClassName: gp3
-    size: "${grafana_storage_size}"
-
-%{ if grafana_oauth_secret_name != "" }
-  # Mount Cognito OAuth config as GF_ env vars (overrides grafana.ini)
-  envFromSecret: "${grafana_oauth_secret_name}"
-%{ endif }
-
-  # Auto-discover dashboards from ConfigMaps with label grafana_dashboard=1
-  sidecar:
-    dashboards:
-      enabled: true
-      label: grafana_dashboard
-      labelValue: "1"
-      searchNamespace: monitoring
-
-  resources:
-    requests:
-      cpu: "250m"
-      memory: "256Mi"
-    limits:
-      cpu: "500m"
-      memory: "512Mi"
-
-  # Additional datasource: CloudWatch (for API Gateway metrics)
-  # Note: Prometheus datasource is auto-configured by the chart — do not re-declare
-  additionalDataSources:
-    - name: CloudWatch
-      type: cloudwatch
-      uid: cloudwatch
-      access: proxy
-      isDefault: false
-      editable: false
-      jsonData:
-        authType: default
-        defaultRegion: ap-southeast-2
-
-  # Grafana.ini overrides for air-gapped mode
-  grafana.ini:
-    analytics:
-      check_for_updates: false
-      check_for_plugin_updates: false
-      reporting_enabled: false
-    server:
-      root_url: "${grafana_root_url}"
-      serve_from_sub_path: true
-    security:
-      cookie_samesite: none
-      cookie_secure: true
-      allow_embedding: false
-    # Disable external calls
-    external_image_storage:
-      provider: ""
-    unified_alerting:
-      enabled: true
-%{ else }
   enabled: false
-%{ endif }
 
 # ──────────────────────────────────────────────────────────────────────
 # Alertmanager
 # ──────────────────────────────────────────────────────────────────────
 alertmanager:
+%{ if sns_alert_topic_arn != "" }
+  serviceAccount:
+    annotations:
+      eks.amazonaws.com/role-arn: "${alertmanager_sns_role_arn}"
+%{ endif }
   alertmanagerSpec:
     tolerations:
       - key: CriticalAddonsOnly
@@ -149,6 +83,59 @@ alertmanager:
       limits:
         cpu: "200m"
         memory: "256Mi"
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      receiver: "default"
+      group_by: ["alertname", "namespace"]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      routes:
+        # Spot/capacity alerts — immediate notification
+        - match:
+            alert_type: spot_unavailable
+          receiver: "sns-critical"
+          group_wait: 10s
+          repeat_interval: 30m
+        - match:
+            alert_type: cost_warning
+          receiver: "sns-warning"
+          group_wait: 1m
+          repeat_interval: 2h
+        - match:
+            alert_type: spot_interruption
+          receiver: "sns-warning"
+          group_wait: 10s
+          repeat_interval: 15m
+        # All critical alerts
+        - match:
+            severity: critical
+          receiver: "sns-critical"
+          group_wait: 10s
+          repeat_interval: 1h
+    receivers:
+      - name: "default"
+        # Default receiver — no action (alerts visible in Grafana/Alertmanager UI)
+      - name: "sns-critical"
+        sns_configs:
+          - topic_arn: "${sns_alert_topic_arn}"
+            region: "ap-southeast-2"
+            subject: "[CRITICAL] Ollama EKS Alert"
+            sigv4:
+              region: "ap-southeast-2"
+            attributes:
+              severity: "critical"
+      - name: "sns-warning"
+        sns_configs:
+          - topic_arn: "${sns_alert_topic_arn}"
+            region: "ap-southeast-2"
+            subject: "[WARNING] Ollama EKS Alert"
+            sigv4:
+              region: "ap-southeast-2"
+            attributes:
+              severity: "warning"
 
 # ──────────────────────────────────────────────────────────────────────
 # Additional PrometheusRules for Ollama/GPU alerts
@@ -220,6 +207,44 @@ additionalPrometheusRulesMap:
             annotations:
               summary: "Karpenter failed to provision GPU node"
               description: "Karpenter could not provision a GPU node. Check capacity, quotas, and instance availability."
+
+          # GPU pod stuck in Pending — no node available (spot unavailable in DEV)
+          - alert: GPUPodPending
+            expr: |
+              kube_pod_status_phase{namespace="ollama", phase="Pending"} == 1
+              and on(pod) kube_pod_container_resource_requests{resource="nvidia_com_gpu"} > 0
+            for: 5m
+            labels:
+              severity: critical
+              alert_type: spot_unavailable
+            annotations:
+              summary: "GPU pod stuck in Pending — spot instance likely unavailable"
+              description: "Ollama GPU pod {{ $labels.pod }} has been Pending for 5+ minutes. In DEV mode (spot-only), this means no spot capacity. Check Karpenter logs and consider switching to PROD config (spot + on-demand)."
+
+          # On-demand fallback active — cost warning (PROD only)
+          # Fires when a GPU node is running on-demand instead of spot
+          - alert: GPUOnDemandFallback
+            expr: |
+              kube_node_labels{label_karpenter_sh_capacity_type="on-demand", label_workload_type="gpu-inference"} == 1
+            for: 2m
+            labels:
+              severity: warning
+              alert_type: cost_warning
+            annotations:
+              summary: "GPU node running on-demand — higher cost"
+              description: "GPU node {{ $labels.node }} is using on-demand pricing instead of spot. Spot may be unavailable in this AZ. On-demand cost is ~5x spot. Monitor and consider scaling down if not needed."
+
+          # Spot interruption — node being reclaimed
+          - alert: GPUSpotInterruption
+            expr: |
+              increase(karpenter_nodeclaims_terminated_total{reason="SpotInterruption"}[10m]) > 0
+            for: 0m
+            labels:
+              severity: warning
+              alert_type: spot_interruption
+            annotations:
+              summary: "GPU spot instance reclaimed by AWS"
+              description: "A GPU spot node was interrupted. Karpenter will attempt to provision a replacement. Expect ~2-3 min interruption."
 
 # ──────────────────────────────────────────────────────────────────────
 # Disable components we don't need

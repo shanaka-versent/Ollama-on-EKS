@@ -8,10 +8,13 @@
 # IMPORTANT: EKS Auto Mode uses karpenter.sh/v1 API (NOT v1beta1) and
 # eks.amazonaws.com NodeClass (NOT karpenter.k8s.aws EC2NodeClass).
 #
+# DEV config: g5.xlarge only (Tier 1: qwen3.5:27b, $0.35/hr spot)
+# PROD config: uncomment g5.12xlarge and update limits for flagship
+#
 # Instance types:
 #   g5.xlarge   — 1x A10G (24GB) — Tier 1 (27b) / Tier 2 (coder:30b)
 #   g5.2xlarge  — 1x A10G (24GB) — Same GPU, more CPU/RAM
-#   g5.12xlarge — 4x A10G (96GB) — Tier 3 flagship (122b-a10b)
+#   g5.12xlarge — 4x A10G (96GB) — Tier 3 flagship (122b-a10b) [PROD only]
 apiVersion: karpenter.sh/v1
 kind: NodePool
 metadata:
@@ -35,18 +38,21 @@ spec:
         - key: eks.amazonaws.com/instance-family
           operator: In
           values: ["g5"]
-        # Specific sizes for our model tiers
+        # DEV: g5.xlarge only (1x A10G, 4 vCPU) — spot at $0.35/hr
+        # PROD: add "12xlarge" for flagship model (4x A10G, 48 vCPU)
         - key: eks.amazonaws.com/instance-size
           operator: In
           values:
             - xlarge
             - 2xlarge
-            - 12xlarge
+            # - 12xlarge  # PROD: uncomment for flagship (qwen3.5:122b-a10b)
         # NVIDIA GPUs only
         - key: eks.amazonaws.com/instance-gpu-manufacturer
           operator: In
           values: ["nvidia"]
-        # Spot first, on-demand fallback
+        # Spot preferred, on-demand fallback — Karpenter tries spot first.
+        # If spot unavailable (quota pending or capacity), falls back to on-demand.
+        # GPUOnDemandFallback alert fires via Prometheus → SNS when on-demand is used.
         - key: karpenter.sh/capacity-type
           operator: In
           values:
@@ -68,10 +74,12 @@ spec:
       # Auto-expire nodes after 14 days (forces refresh, picks up new AMIs)
       expireAfter: 336h
   # Resource limits for the entire NodePool
+  # DEV: g5.xlarge limits (4 vCPU, 16Gi, 1 GPU)
+  # PROD: increase to cpu: "48", memory: 192Gi, nvidia.com/gpu: "4" for flagship
   limits:
-    cpu: "48"
-    memory: 192Gi
-    nvidia.com/gpu: "4"
+    cpu: "4"
+    memory: 16Gi
+    nvidia.com/gpu: "1"
   # Disruption — scale to zero after 30 min idle
   disruption:
     consolidationPolicy: WhenEmpty

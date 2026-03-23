@@ -148,15 +148,13 @@ resource "aws_s3_object" "login_html" {
   bucket       = aws_s3_bucket.login.id
   key          = "auth/login.html"
   content      = templatefile("${path.module}/static/login.html", {
-    signup_client_id    = var.signup_client_id
-    region              = var.region
-    change_password_url = var.change_password_url
+    signup_client_id = var.signup_client_id
+    region           = var.region
   })
   content_type = "text/html"
   etag         = md5(templatefile("${path.module}/static/login.html", {
-    signup_client_id    = var.signup_client_id
-    region              = var.region
-    change_password_url = var.change_password_url
+    signup_client_id = var.signup_client_id
+    region           = var.region
   }))
 }
 
@@ -690,7 +688,10 @@ resource "aws_lambda_function" "auth_proxy" {
 
   environment {
     variables = {
-      CLOUDFRONT_DOMAIN = var.cloudfront_domain
+      CLOUDFRONT_DOMAIN     = var.cloudfront_domain
+      USER_POOL_ID          = var.cognito_user_pool_id
+      COGNITO_CLIENT_ID     = var.cognito_client_id
+      COGNITO_CLIENT_SECRET = var.cognito_client_secret
     }
   }
 
@@ -713,20 +714,34 @@ resource "aws_iam_role" "auth_proxy" {
 }
 
 resource "aws_iam_role_policy" "auth_proxy" {
-  name = "cloudwatch-logs"
+  name = "auth-proxy-permissions"
   role = aws_iam_role.auth_proxy.id
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "logs:CreateLogGroup",
-        "logs:CreateLogStream",
-        "logs:PutLogEvents",
-      ]
-      Resource = "arn:aws:logs:${var.region}:${data.aws_caller_identity.current.account_id}:*"
-    }]
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+        ]
+        Resource = "arn:aws:logs:${var.region}:${data.aws_caller_identity.current.account_id}:*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "cognito-idp:InitiateAuth",
+          "cognito-idp:RespondToAuthChallenge",
+          "cognito-idp:ForgotPassword",
+          "cognito-idp:ConfirmForgotPassword",
+          "cognito-idp:AssociateSoftwareToken",
+          "cognito-idp:VerifySoftwareToken",
+        ]
+        Resource = "arn:aws:cognito-idp:${var.region}:${data.aws_caller_identity.current.account_id}:userpool/${var.cognito_user_pool_id}"
+      },
+    ]
   })
 }
 
@@ -899,6 +914,311 @@ resource "aws_api_gateway_integration_response" "auth_mfa_options" {
 }
 
 # ==============================================================================
+# API GATEWAY — Additional Auth Endpoints (first-time setup + forgot password)
+# ==============================================================================
+# These endpoints handle flows that previously required Cognito hosted UI:
+#   - change-password: NEW_PASSWORD_REQUIRED challenge (first-time login)
+#   - setup-mfa: MFA_SETUP challenge — TOTP enrollment (first-time login)
+#   - forgot-password: Initiates password reset (sends code via email)
+#   - confirm-reset: Completes password reset (code + new password)
+
+# /portal/api/auth/change-password
+resource "aws_api_gateway_resource" "portal_auth_change_password" {
+  rest_api_id = var.rest_api_id
+  parent_id   = aws_api_gateway_resource.portal_auth.id
+  path_part   = "change-password"
+}
+
+# /portal/api/auth/setup-mfa
+resource "aws_api_gateway_resource" "portal_auth_setup_mfa" {
+  rest_api_id = var.rest_api_id
+  parent_id   = aws_api_gateway_resource.portal_auth.id
+  path_part   = "setup-mfa"
+}
+
+# /portal/api/auth/forgot-password
+resource "aws_api_gateway_resource" "portal_auth_forgot_password" {
+  rest_api_id = var.rest_api_id
+  parent_id   = aws_api_gateway_resource.portal_auth.id
+  path_part   = "forgot-password"
+}
+
+# /portal/api/auth/confirm-reset
+resource "aws_api_gateway_resource" "portal_auth_confirm_reset" {
+  rest_api_id = var.rest_api_id
+  parent_id   = aws_api_gateway_resource.portal_auth.id
+  path_part   = "confirm-reset"
+}
+
+# --- POST /portal/api/auth/change-password ---
+resource "aws_api_gateway_method" "auth_change_password" {
+  rest_api_id      = var.rest_api_id
+  resource_id      = aws_api_gateway_resource.portal_auth_change_password.id
+  http_method      = "POST"
+  authorization    = "NONE"
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "auth_change_password" {
+  rest_api_id             = var.rest_api_id
+  resource_id             = aws_api_gateway_resource.portal_auth_change_password.id
+  http_method             = aws_api_gateway_method.auth_change_password.http_method
+  type                    = "AWS_PROXY"
+  integration_http_method = "POST"
+  uri                     = aws_lambda_function.auth_proxy.invoke_arn
+  timeout_milliseconds    = 29000
+}
+
+# --- POST /portal/api/auth/setup-mfa ---
+resource "aws_api_gateway_method" "auth_setup_mfa" {
+  rest_api_id      = var.rest_api_id
+  resource_id      = aws_api_gateway_resource.portal_auth_setup_mfa.id
+  http_method      = "POST"
+  authorization    = "NONE"
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "auth_setup_mfa" {
+  rest_api_id             = var.rest_api_id
+  resource_id             = aws_api_gateway_resource.portal_auth_setup_mfa.id
+  http_method             = aws_api_gateway_method.auth_setup_mfa.http_method
+  type                    = "AWS_PROXY"
+  integration_http_method = "POST"
+  uri                     = aws_lambda_function.auth_proxy.invoke_arn
+  timeout_milliseconds    = 29000
+}
+
+# --- POST /portal/api/auth/forgot-password ---
+resource "aws_api_gateway_method" "auth_forgot_password" {
+  rest_api_id      = var.rest_api_id
+  resource_id      = aws_api_gateway_resource.portal_auth_forgot_password.id
+  http_method      = "POST"
+  authorization    = "NONE"
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "auth_forgot_password" {
+  rest_api_id             = var.rest_api_id
+  resource_id             = aws_api_gateway_resource.portal_auth_forgot_password.id
+  http_method             = aws_api_gateway_method.auth_forgot_password.http_method
+  type                    = "AWS_PROXY"
+  integration_http_method = "POST"
+  uri                     = aws_lambda_function.auth_proxy.invoke_arn
+  timeout_milliseconds    = 29000
+}
+
+# --- POST /portal/api/auth/confirm-reset ---
+resource "aws_api_gateway_method" "auth_confirm_reset" {
+  rest_api_id      = var.rest_api_id
+  resource_id      = aws_api_gateway_resource.portal_auth_confirm_reset.id
+  http_method      = "POST"
+  authorization    = "NONE"
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "auth_confirm_reset" {
+  rest_api_id             = var.rest_api_id
+  resource_id             = aws_api_gateway_resource.portal_auth_confirm_reset.id
+  http_method             = aws_api_gateway_method.auth_confirm_reset.http_method
+  type                    = "AWS_PROXY"
+  integration_http_method = "POST"
+  uri                     = aws_lambda_function.auth_proxy.invoke_arn
+  timeout_milliseconds    = 29000
+}
+
+# --- OPTIONS /portal/api/auth/change-password (CORS preflight) ---
+resource "aws_api_gateway_method" "auth_change_password_options" {
+  rest_api_id      = var.rest_api_id
+  resource_id      = aws_api_gateway_resource.portal_auth_change_password.id
+  http_method      = "OPTIONS"
+  authorization    = "NONE"
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "auth_change_password_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.portal_auth_change_password.id
+  http_method = aws_api_gateway_method.auth_change_password_options.http_method
+  type        = "MOCK"
+
+  request_templates = {
+    "application/json" = "{\"statusCode\": 200}"
+  }
+}
+
+resource "aws_api_gateway_method_response" "auth_change_password_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.portal_auth_change_password.id
+  http_method = aws_api_gateway_method.auth_change_password_options.http_method
+  status_code = "200"
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = true
+    "method.response.header.Access-Control-Allow-Methods" = true
+    "method.response.header.Access-Control-Allow-Origin"  = true
+  }
+}
+
+resource "aws_api_gateway_integration_response" "auth_change_password_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.portal_auth_change_password.id
+  http_method = aws_api_gateway_method.auth_change_password_options.http_method
+  status_code = "200"
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type'"
+    "method.response.header.Access-Control-Allow-Methods" = "'POST,OPTIONS'"
+    "method.response.header.Access-Control-Allow-Origin"  = "'https://${var.cloudfront_domain}'"
+  }
+
+  depends_on = [aws_api_gateway_integration.auth_change_password_options]
+}
+
+# --- OPTIONS /portal/api/auth/setup-mfa (CORS preflight) ---
+resource "aws_api_gateway_method" "auth_setup_mfa_options" {
+  rest_api_id      = var.rest_api_id
+  resource_id      = aws_api_gateway_resource.portal_auth_setup_mfa.id
+  http_method      = "OPTIONS"
+  authorization    = "NONE"
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "auth_setup_mfa_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.portal_auth_setup_mfa.id
+  http_method = aws_api_gateway_method.auth_setup_mfa_options.http_method
+  type        = "MOCK"
+
+  request_templates = {
+    "application/json" = "{\"statusCode\": 200}"
+  }
+}
+
+resource "aws_api_gateway_method_response" "auth_setup_mfa_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.portal_auth_setup_mfa.id
+  http_method = aws_api_gateway_method.auth_setup_mfa_options.http_method
+  status_code = "200"
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = true
+    "method.response.header.Access-Control-Allow-Methods" = true
+    "method.response.header.Access-Control-Allow-Origin"  = true
+  }
+}
+
+resource "aws_api_gateway_integration_response" "auth_setup_mfa_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.portal_auth_setup_mfa.id
+  http_method = aws_api_gateway_method.auth_setup_mfa_options.http_method
+  status_code = "200"
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type'"
+    "method.response.header.Access-Control-Allow-Methods" = "'POST,OPTIONS'"
+    "method.response.header.Access-Control-Allow-Origin"  = "'https://${var.cloudfront_domain}'"
+  }
+
+  depends_on = [aws_api_gateway_integration.auth_setup_mfa_options]
+}
+
+# --- OPTIONS /portal/api/auth/forgot-password (CORS preflight) ---
+resource "aws_api_gateway_method" "auth_forgot_password_options" {
+  rest_api_id      = var.rest_api_id
+  resource_id      = aws_api_gateway_resource.portal_auth_forgot_password.id
+  http_method      = "OPTIONS"
+  authorization    = "NONE"
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "auth_forgot_password_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.portal_auth_forgot_password.id
+  http_method = aws_api_gateway_method.auth_forgot_password_options.http_method
+  type        = "MOCK"
+
+  request_templates = {
+    "application/json" = "{\"statusCode\": 200}"
+  }
+}
+
+resource "aws_api_gateway_method_response" "auth_forgot_password_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.portal_auth_forgot_password.id
+  http_method = aws_api_gateway_method.auth_forgot_password_options.http_method
+  status_code = "200"
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = true
+    "method.response.header.Access-Control-Allow-Methods" = true
+    "method.response.header.Access-Control-Allow-Origin"  = true
+  }
+}
+
+resource "aws_api_gateway_integration_response" "auth_forgot_password_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.portal_auth_forgot_password.id
+  http_method = aws_api_gateway_method.auth_forgot_password_options.http_method
+  status_code = "200"
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type'"
+    "method.response.header.Access-Control-Allow-Methods" = "'POST,OPTIONS'"
+    "method.response.header.Access-Control-Allow-Origin"  = "'https://${var.cloudfront_domain}'"
+  }
+
+  depends_on = [aws_api_gateway_integration.auth_forgot_password_options]
+}
+
+# --- OPTIONS /portal/api/auth/confirm-reset (CORS preflight) ---
+resource "aws_api_gateway_method" "auth_confirm_reset_options" {
+  rest_api_id      = var.rest_api_id
+  resource_id      = aws_api_gateway_resource.portal_auth_confirm_reset.id
+  http_method      = "OPTIONS"
+  authorization    = "NONE"
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "auth_confirm_reset_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.portal_auth_confirm_reset.id
+  http_method = aws_api_gateway_method.auth_confirm_reset_options.http_method
+  type        = "MOCK"
+
+  request_templates = {
+    "application/json" = "{\"statusCode\": 200}"
+  }
+}
+
+resource "aws_api_gateway_method_response" "auth_confirm_reset_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.portal_auth_confirm_reset.id
+  http_method = aws_api_gateway_method.auth_confirm_reset_options.http_method
+  status_code = "200"
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = true
+    "method.response.header.Access-Control-Allow-Methods" = true
+    "method.response.header.Access-Control-Allow-Origin"  = true
+  }
+}
+
+resource "aws_api_gateway_integration_response" "auth_confirm_reset_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.portal_auth_confirm_reset.id
+  http_method = aws_api_gateway_method.auth_confirm_reset_options.http_method
+  status_code = "200"
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type'"
+    "method.response.header.Access-Control-Allow-Methods" = "'POST,OPTIONS'"
+    "method.response.header.Access-Control-Allow-Origin"  = "'https://${var.cloudfront_domain}'"
+  }
+
+  depends_on = [aws_api_gateway_integration.auth_confirm_reset_options]
+}
+
+# ==============================================================================
 # API GATEWAY — Redeployment (updates existing prod stage)
 # ==============================================================================
 
@@ -913,6 +1233,10 @@ resource "aws_api_gateway_deployment" "portal" {
       aws_api_gateway_method.delete_key,
       aws_api_gateway_method.auth_login,
       aws_api_gateway_method.auth_mfa,
+      aws_api_gateway_method.auth_change_password,
+      aws_api_gateway_method.auth_setup_mfa,
+      aws_api_gateway_method.auth_forgot_password,
+      aws_api_gateway_method.auth_confirm_reset,
       aws_api_gateway_authorizer.cognito,
     ]))
   }
@@ -936,6 +1260,18 @@ resource "aws_api_gateway_deployment" "portal" {
     aws_api_gateway_integration.auth_mfa_options,
     aws_api_gateway_integration_response.auth_login_options,
     aws_api_gateway_integration_response.auth_mfa_options,
+    aws_api_gateway_integration.auth_change_password,
+    aws_api_gateway_integration.auth_setup_mfa,
+    aws_api_gateway_integration.auth_forgot_password,
+    aws_api_gateway_integration.auth_confirm_reset,
+    aws_api_gateway_integration.auth_change_password_options,
+    aws_api_gateway_integration.auth_setup_mfa_options,
+    aws_api_gateway_integration.auth_forgot_password_options,
+    aws_api_gateway_integration.auth_confirm_reset_options,
+    aws_api_gateway_integration_response.auth_change_password_options,
+    aws_api_gateway_integration_response.auth_setup_mfa_options,
+    aws_api_gateway_integration_response.auth_forgot_password_options,
+    aws_api_gateway_integration_response.auth_confirm_reset_options,
   ]
 }
 
