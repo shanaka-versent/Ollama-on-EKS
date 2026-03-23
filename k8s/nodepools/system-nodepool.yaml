@@ -13,8 +13,7 @@
 # Cost: ~$60/mo (1x t3.xlarge on-demand, always-on)
 #
 # Instance sizing:
-#   t3.large   — 2 vCPU / 8 GiB  — fallback (Karpenter uses if xlarge unavailable)
-#   t3.xlarge  — 4 vCPU / 16 GiB — primary (fits all system pods + Open WebUI on one node)
+#   t3.xlarge  — 4 vCPU / 16 GiB — fits all system pods + Open WebUI on a single node
 #
 # Karpenter consolidation: WhenUnderutilized with 5-min delay.
 # At idle, all system pods + Open WebUI fit on 1x t3.xlarge (~3 vCPU, ~5 GiB).
@@ -41,11 +40,10 @@ spec:
         - key: eks.amazonaws.com/instance-family
           operator: In
           values: ["t3"]
-        # xlarge (primary) + large (fallback)
+        # xlarge ONLY — fits all system workloads + Open WebUI on a single node
         - key: eks.amazonaws.com/instance-size
           operator: In
           values:
-            - large
             - xlarge
         # x86 ONLY — Open WebUI doesn't reliably support ARM64 (Graviton)
         - key: kubernetes.io/arch
