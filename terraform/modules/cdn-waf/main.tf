@@ -72,6 +72,31 @@ resource "aws_cloudfront_function" "auth_redirect" {
   JS
 }
 
+# --- CloudFront Function: S3 Index Rewrite ---
+# S3 with OAC doesn't auto-resolve directory requests (e.g. /portal/) to
+# index.html. This function appends index.html to bare directory paths.
+resource "aws_cloudfront_function" "s3_index_rewrite" {
+  count = local.portal_enabled ? 1 : 0
+
+  name    = "${var.project_name}-s3-index-rewrite"
+  runtime = "cloudfront-js-2.0"
+  publish = true
+
+  code = <<-JS
+    function handler(event) {
+      var request = event.request;
+      var uri = request.uri;
+
+      // /portal/ → /portal/index.html
+      if (uri.endsWith('/')) {
+        request.uri = uri + 'index.html';
+      }
+
+      return request;
+    }
+  JS
+}
+
 # --- CloudFront VPC Origin (private connectivity to internal NLB) ---
 # This is the key pattern: CloudFront connects privately to the internal NLB
 # via VPC Origins, no internet-facing NLB needed. This is why we use the
@@ -409,6 +434,12 @@ resource "aws_cloudfront_distribution" "ollama" {
 
       viewer_protocol_policy = "https-only"
       compress               = true
+
+      # Rewrite /portal/ → /portal/index.html (S3 OAC doesn't auto-resolve)
+      function_association {
+        event_type   = "viewer-request"
+        function_arn = aws_cloudfront_function.s3_index_rewrite[0].arn
+      }
     }
   }
 
