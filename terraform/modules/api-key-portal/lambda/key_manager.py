@@ -6,13 +6,15 @@ Handles:
   PATCH  /portal/api/keys/{keyId}  — Disable/Enable a key
   DELETE /portal/api/keys/{keyId}  — Revoke a key (soft-delete)
 
-Authentication: Cognito JWT via API Gateway authorizer.
-The user's identity comes from requestContext.authorizer.claims.
+Authentication: Reads user identity from the Open WebUI session token cookie.
+CloudFront auth redirect + origin lockdown ensure only authenticated users
+can reach these endpoints.
 """
 
 import json
 import os
 import uuid
+import base64
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -32,15 +34,43 @@ DEFAULT_EXPIRY_DAYS = int(os.environ.get("KEY_EXPIRY_DAYS", "90"))
 VALID_EXPIRY_OPTIONS = [0, 7, 30, 90]
 
 
+def _get_user_from_event(event):
+    """Get user identity from token cookie or Cognito authorizer claims."""
+    # Try Cognito authorizer claims first (backwards compatibility)
+    try:
+        claims = event["requestContext"]["authorizer"]["claims"]
+        return claims.get("sub", ""), claims.get("email", "unknown")
+    except (KeyError, TypeError):
+        pass
+
+    # Read Open WebUI token from Cookie header
+    headers = event.get("headers") or {}
+    cookie_header = headers.get("Cookie", "") or headers.get("cookie", "")
+    for part in cookie_header.split(";"):
+        part = part.strip()
+        if part.startswith("token="):
+            jwt_token = part[6:]
+            try:
+                payload = jwt_token.split(".")[1]
+                # Add base64 padding
+                payload += "=" * (4 - len(payload) % 4)
+                decoded = json.loads(base64.b64decode(payload))
+                user_id = decoded.get("id", decoded.get("sub", ""))
+                user_email = decoded.get("email", "unknown")
+                if user_id:
+                    return user_id, user_email
+            except Exception as e:
+                logger.warning("Failed to decode token cookie: %s", e)
+
+    return "", "unknown"
+
+
 def handler(event, context):
     method = event["httpMethod"]
     path = event.get("resource", "")
 
-    try:
-        claims = event["requestContext"]["authorizer"]["claims"]
-        user_id = claims.get("sub", "")
-        user_email = claims.get("email", "unknown")
-    except (KeyError, TypeError):
+    user_id, user_email = _get_user_from_event(event)
+    if not user_id:
         return _response(401, {"error": "Unauthorized"})
 
     try:

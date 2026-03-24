@@ -1,4 +1,31 @@
 # ──────────────────────────────────────────────────────────────────────
+# Disable built-in alerts incompatible with EKS + ephemeral GPU nodes
+# ──────────────────────────────────────────────────────────────────────
+# Two categories of false positives:
+#
+# 1. EKS managed control plane — API server, etcd, scheduler, and
+#    controller manager are AWS-managed. Their metrics endpoints are
+#    proxied and intermittently unreachable for scraping, triggering
+#    *Down alerts even though the control plane is healthy.
+#
+# 2. Ephemeral GPU nodes — KEDA scales Ollama to 0 after 15 min idle,
+#    Karpenter terminates the GPU node after 10 min. Built-in alerts
+#    that assume permanent nodes fire every time the GPU node is removed.
+#
+# System/app health is covered by custom alerts: OllamaUnavailable,
+# GPUPodPending, KarpenterProvisioningFailed, GPUOnDemandFallback.
+defaultRules:
+  disabled:
+    # --- EKS managed control plane (metrics scraping unreliable) ---
+    KubeAPIDown: true              # API server metrics endpoint flaky on EKS
+    KubeAPITerminatedRequests: true # Control plane managed by AWS
+    # --- Ephemeral GPU nodes (terminated by design) ---
+    KubeletDown: true              # Fires when GPU node kubelet disappears
+    KubeNodeNotReady: true         # Fires briefly during GPU node termination
+    KubeNodeUnreachable: true      # Fires after GPU node is terminated
+    NodeFilesystemAlmostOutOfSpace: true  # Transient on short-lived GPU nodes
+
+# ──────────────────────────────────────────────────────────────────────
 # Prometheus
 # ──────────────────────────────────────────────────────────────────────
 prometheus:
@@ -26,9 +53,9 @@ prometheus:
         cpu: "1"
         memory: "2Gi"
 
-    # Scrape interval
-    scrapeInterval: "15s"
-    evaluationInterval: "15s"
+    # Scrape interval — 15m reduces AMP ingestion cost (~60x vs 15s)
+    scrapeInterval: "15m"
+    evaluationInterval: "15m"
 
     # Tolerate CriticalAddonsOnly taint on system nodes
     tolerations:
@@ -263,6 +290,11 @@ prometheusOperator:
           effect: NoSchedule
 
 kube-state-metrics:
+  # 10m interval for Karpenter Node Lifecycle / GPU Scaling dashboard visibility
+  # while staying within AMP free tier (~170M / 200M samples/month)
+  prometheus:
+    monitor:
+      interval: "10m"
   tolerations:
     - key: CriticalAddonsOnly
       operator: Exists
@@ -276,6 +308,22 @@ prometheus-node-exporter:
     - key: nvidia.com/gpu
       operator: Exists
       effect: NoSchedule
+
+# ──────────────────────────────────────────────────────────────────────
+# Heavyweight ServiceMonitors — scrape every 1h to stay within AMP free tier
+# These generate ~100K+ series but are rarely needed for dashboards/alerts
+# ──────────────────────────────────────────────────────────────────────
+kubeApiServer:
+  serviceMonitor:
+    interval: "1h"
+
+kubelet:
+  serviceMonitor:
+    interval: "1h"
+
+coreDns:
+  serviceMonitor:
+    interval: "1h"
 
 kubeEtcd:
   enabled: false  # Not accessible on EKS managed control plane

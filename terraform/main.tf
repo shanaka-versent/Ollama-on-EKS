@@ -63,9 +63,11 @@ module "vpc" {
 module "iam" {
   source = "./modules/iam"
 
-  name_prefix      = local.name_prefix
-  enable_auto_mode = true
-  tags             = var.tags
+  name_prefix        = local.name_prefix
+  enable_auto_mode   = true
+  enable_github_oidc = true
+  github_repo        = "shanaka-versent/Ollama-on-EKS"
+  tags               = var.tags
 }
 
 # EKS Module - Kubernetes cluster with System + GPU node groups
@@ -580,12 +582,34 @@ module "api_key_portal" {
   rest_api_root_resource_id = module.api_gateway.root_resource_id
   rest_api_execution_arn    = module.api_gateway.api_execution_arn
   usage_plan_id             = module.api_gateway.usage_plan_id
+  eks_cluster_name          = module.eks.cluster_name
   tags                      = var.tags
 
   # Note: depends_on removed — variable references create implicit dependencies.
   # Explicit depends_on defers ALL data sources in the module to apply time,
   # which causes aws_caller_identity to be (known after apply) and forces
   # S3 bucket replacement on every plan.
+}
+
+# EKS access entry for GPU controller Lambda — allows it to patch
+# deployments and ScaledObjects in the ollama namespace
+resource "aws_eks_access_entry" "gpu_controller" {
+  cluster_name  = module.eks.cluster_name
+  principal_arn = module.api_key_portal.gpu_controller_role_arn
+  type          = "STANDARD"
+}
+
+resource "aws_eks_access_policy_association" "gpu_controller" {
+  cluster_name  = module.eks.cluster_name
+  principal_arn = module.api_key_portal.gpu_controller_role_arn
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy"
+
+  access_scope {
+    type       = "namespace"
+    namespaces = ["ollama"]
+  }
+
+  depends_on = [aws_eks_access_entry.gpu_controller]
 }
 
 # ==============================================================================

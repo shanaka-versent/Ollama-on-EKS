@@ -21,11 +21,6 @@ output "dynamo_table_name" {
   value       = aws_dynamodb_table.api_keys.name
 }
 
-output "portal_client_id" {
-  description = "Cognito app client ID for the portal SPA"
-  value       = aws_cognito_user_pool_client.portal.id
-}
-
 output "lambda_manager_invoke_arn" {
   description = "Lambda invoke ARN for the key management function"
   value       = aws_lambda_function.key_manager.invoke_arn
@@ -44,4 +39,14 @@ output "login_s3_bucket_regional_domain" {
 output "login_oac_id" {
   description = "CloudFront Origin Access Control ID for login SPA S3 origin"
   value       = aws_cloudfront_origin_access_control.login.id
+}
+
+output "gpu_controller_role_arn" {
+  description = "IAM role ARN for the GPU controller Lambda (needs EKS access entry)"
+  value       = aws_iam_role.gpu_controller.arn
+}
+
+output "gpu_control_url" {
+  description = "URL for GPU control page"
+  value       = "https://${var.cloudfront_domain}/portal/gpu.html"
 }

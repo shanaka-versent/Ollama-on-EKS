@@ -1,10 +1,7 @@
 # Wave 3: Ollama Deployment
 # Deploys the Ollama LLM server with GPU resources.
-# DEV: 1x A10G (g5.xlarge) — PROD: 4x A10G (g5.12xlarge)
-# Resources set via Kustomize overlays.
+# Default: 1x A10G (Tier 1). switch-model.sh patches resources for other tiers.
 # Requires: namespaces (wave 1), storage (wave 2), NVIDIA plugin (wave 0)
-#
-# Environment switch: change path to k8s/overlays/prod/ollama for PROD
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -15,16 +12,19 @@ metadata:
 spec:
   project: default
   # Ignore replicas — KEDA manages scaling (including scale-to-zero).
-  # Without this, ArgoCD selfHeal resets replicas to 1, fighting KEDA.
+  # Ignore container resources — switch-model.sh patches GPU/memory/CPU
+  # when switching tiers (e.g., 1 GPU for Tier 1, 4 GPUs for Tier 3).
+  # Without this, ArgoCD selfHeal reverts the kubectl patch.
   ignoreDifferences:
     - group: apps
       kind: Deployment
       jsonPointers:
         - /spec/replicas
+        - /spec/template/spec/containers/0/resources
   source:
     repoURL: https://github.com/shanaka-versent/Ollama-on-EKS
     targetRevision: HEAD
-    path: k8s/overlays/dev/ollama
+    path: k8s/ollama
   destination:
     server: https://kubernetes.default.svc
     namespace: ollama

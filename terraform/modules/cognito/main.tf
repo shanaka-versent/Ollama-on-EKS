@@ -220,6 +220,7 @@ resource "aws_cognito_user" "admin" {
   attributes = {
     email          = var.admin_email
     email_verified = true
+    name           = split("@", var.admin_email)[0]
   }
 
   # Cognito sends a temporary password via email

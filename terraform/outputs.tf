@@ -157,6 +157,15 @@ output "amp_remote_write_endpoint" {
 }
 
 # ==============================================================================
+# CI/CD (GitHub Actions OIDC)
+# ==============================================================================
+
+output "github_actions_role_arn" {
+  description = "GitHub Actions Terraform CI/CD role ARN"
+  value       = module.iam.github_actions_role_arn
+}
+
+# ==============================================================================
 # QUICK START COMMANDS
 # ==============================================================================
 

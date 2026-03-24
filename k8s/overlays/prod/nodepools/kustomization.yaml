@@ -1,8 +1,0 @@
-# PROD overlay for NodePools
-# Patches GPU NodePool: adds g5.12xlarge, increases limits for 4x A10G flagship
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-resources:
-  - ../../../nodepools
-patches:
-  - path: gpu-nodepool-patch.yaml

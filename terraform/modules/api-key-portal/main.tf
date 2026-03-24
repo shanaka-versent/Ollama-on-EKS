@@ -75,15 +75,11 @@ resource "aws_s3_object" "index_html" {
   bucket       = aws_s3_bucket.portal.id
   key          = "portal/index.html"
   content      = templatefile("${path.module}/static/index.html", {
-    cognito_domain    = var.cognito_domain
-    client_id         = aws_cognito_user_pool_client.portal.id
     cloudfront_domain = var.cloudfront_domain
     api_base_url      = "https://${var.cloudfront_domain}"
   })
   content_type = "text/html"
   etag         = md5(templatefile("${path.module}/static/index.html", {
-    cognito_domain    = var.cognito_domain
-    client_id         = aws_cognito_user_pool_client.portal.id
     cloudfront_domain = var.cloudfront_domain
     api_base_url      = "https://${var.cloudfront_domain}"
   }))
@@ -205,39 +201,6 @@ resource "aws_dynamodb_table" "api_keys" {
   }
 
   tags = var.tags
-}
-
-# ==============================================================================
-# COGNITO APP CLIENT — Portal SPA (public client, no secret)
-# ==============================================================================
-
-resource "aws_cognito_user_pool_client" "portal" {
-  name         = "${var.project_name}-portal-client"
-  user_pool_id = var.cognito_user_pool_id
-
-  allowed_oauth_flows                  = ["code"]
-  allowed_oauth_flows_user_pool_client = true
-  allowed_oauth_scopes                 = ["openid", "email", "profile"]
-  supported_identity_providers         = ["COGNITO"]
-  generate_secret                      = false # SPA client — no secret
-
-  callback_urls = ["https://${var.cloudfront_domain}/portal/"]
-  logout_urls   = ["https://${var.cloudfront_domain}/portal/"]
-
-  access_token_validity  = 1
-  id_token_validity      = 1
-  refresh_token_validity = 30
-
-  token_validity_units {
-    access_token  = "hours"
-    id_token      = "hours"
-    refresh_token = "days"
-  }
-
-  explicit_auth_flows = [
-    "ALLOW_REFRESH_TOKEN_AUTH",
-    "ALLOW_USER_SRP_AUTH",
-  ]
 }
 
 # ==============================================================================
@@ -454,15 +417,6 @@ resource "aws_lambda_permission" "eventbridge_expiry" {
 # API GATEWAY — Portal API Resources (on existing REST API)
 # ==============================================================================
 
-# Cognito authorizer — validates JWT from the ollama-webui user pool
-resource "aws_api_gateway_authorizer" "cognito" {
-  name            = "${var.project_name}-cognito"
-  rest_api_id     = var.rest_api_id
-  type            = "COGNITO_USER_POOLS"
-  provider_arns   = ["arn:aws:cognito-idp:${var.region}:${data.aws_caller_identity.current.account_id}:userpool/${var.cognito_user_pool_id}"]
-  identity_source = "method.request.header.Authorization"
-}
-
 # /portal
 resource "aws_api_gateway_resource" "portal" {
   rest_api_id = var.rest_api_id
@@ -492,12 +446,13 @@ resource "aws_api_gateway_resource" "portal_key_by_id" {
 }
 
 # --- GET /portal/api/keys (list user's keys) ---
+# Auth: User identity read from Open WebUI token cookie by the Lambda.
+# CloudFront auth redirect + origin lockdown ensure only authenticated users reach here.
 resource "aws_api_gateway_method" "list_keys" {
   rest_api_id      = var.rest_api_id
   resource_id      = aws_api_gateway_resource.portal_keys.id
   http_method      = "GET"
-  authorization    = "COGNITO_USER_POOLS"
-  authorizer_id    = aws_api_gateway_authorizer.cognito.id
+  authorization    = "NONE"
   api_key_required = false
 }
 
@@ -515,8 +470,7 @@ resource "aws_api_gateway_method" "create_key" {
   rest_api_id      = var.rest_api_id
   resource_id      = aws_api_gateway_resource.portal_keys.id
   http_method      = "POST"
-  authorization    = "COGNITO_USER_POOLS"
-  authorizer_id    = aws_api_gateway_authorizer.cognito.id
+  authorization    = "NONE"
   api_key_required = false
 }
 
@@ -534,8 +488,7 @@ resource "aws_api_gateway_method" "update_key" {
   rest_api_id      = var.rest_api_id
   resource_id      = aws_api_gateway_resource.portal_key_by_id.id
   http_method      = "PATCH"
-  authorization    = "COGNITO_USER_POOLS"
-  authorizer_id    = aws_api_gateway_authorizer.cognito.id
+  authorization    = "NONE"
   api_key_required = false
 }
 
@@ -553,8 +506,7 @@ resource "aws_api_gateway_method" "delete_key" {
   rest_api_id      = var.rest_api_id
   resource_id      = aws_api_gateway_resource.portal_key_by_id.id
   http_method      = "DELETE"
-  authorization    = "COGNITO_USER_POOLS"
-  authorizer_id    = aws_api_gateway_authorizer.cognito.id
+  authorization    = "NONE"
   api_key_required = false
 }
 
@@ -1237,7 +1189,6 @@ resource "aws_api_gateway_deployment" "portal" {
       aws_api_gateway_method.auth_setup_mfa,
       aws_api_gateway_method.auth_forgot_password,
       aws_api_gateway_method.auth_confirm_reset,
-      aws_api_gateway_authorizer.cognito,
     ]))
   }
 
@@ -1272,6 +1223,16 @@ resource "aws_api_gateway_deployment" "portal" {
     aws_api_gateway_integration_response.auth_setup_mfa_options,
     aws_api_gateway_integration_response.auth_forgot_password_options,
     aws_api_gateway_integration_response.auth_confirm_reset_options,
+    # GPU controller routes
+    aws_api_gateway_integration.gpu_status,
+    aws_api_gateway_integration.gpu_start,
+    aws_api_gateway_integration.gpu_stop,
+    aws_api_gateway_integration.gpu_status_options,
+    aws_api_gateway_integration.gpu_start_options,
+    aws_api_gateway_integration.gpu_stop_options,
+    aws_api_gateway_integration_response.gpu_status_options,
+    aws_api_gateway_integration_response.gpu_start_options,
+    aws_api_gateway_integration_response.gpu_stop_options,
   ]
 }
 
@@ -1284,4 +1245,309 @@ resource "null_resource" "update_stage" {
   provisioner "local-exec" {
     command = "aws apigateway update-stage --rest-api-id ${var.rest_api_id} --stage-name prod --patch-operations op=replace,path=/deploymentId,value=${aws_api_gateway_deployment.portal.id} --region ${var.region}"
   }
+}
+
+# ==============================================================================
+# LAMBDA — GPU Controller (self-service GPU start/stop/status)
+# ==============================================================================
+# Allows users to start/stop the Ollama GPU node from the WebUI without
+# requiring kubectl access. Uses K8s API via EKS bearer token (STS presigned).
+
+data "archive_file" "gpu_controller" {
+  type        = "zip"
+  source_file = "${path.module}/lambda/gpu_controller.py"
+  output_path = "${path.module}/lambda/gpu_controller.zip"
+}
+
+resource "aws_lambda_function" "gpu_controller" {
+  function_name    = "${var.project_name}-gpu-controller"
+  handler          = "gpu_controller.handler"
+  runtime          = "python3.12"
+  timeout          = 15
+  memory_size      = 128
+  filename         = data.archive_file.gpu_controller.output_path
+  source_code_hash = data.archive_file.gpu_controller.output_base64sha256
+  role             = aws_iam_role.gpu_controller.arn
+
+  environment {
+    variables = {
+      EKS_CLUSTER_NAME   = var.eks_cluster_name
+      OLLAMA_NAMESPACE   = "ollama"
+      OLLAMA_DEPLOYMENT  = "ollama"
+      KEDA_SCALED_OBJECT = "ollama-autoscaler"
+      CLOUDFRONT_DOMAIN  = var.cloudfront_domain
+    }
+  }
+
+  tags = var.tags
+}
+
+resource "aws_iam_role" "gpu_controller" {
+  name = "${var.project_name}-gpu-controller"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+    }]
+  })
+
+  tags = var.tags
+}
+
+resource "aws_iam_role_policy" "gpu_controller" {
+  name = "gpu-controller-permissions"
+  role = aws_iam_role.gpu_controller.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+        ]
+        Resource = "arn:aws:logs:${var.region}:${data.aws_caller_identity.current.account_id}:*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["eks:DescribeCluster"]
+        Resource = "arn:aws:eks:${var.region}:${data.aws_caller_identity.current.account_id}:cluster/${var.eks_cluster_name}"
+      },
+    ]
+  })
+}
+
+resource "aws_lambda_permission" "gpu_controller_apigw" {
+  statement_id  = "AllowAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.gpu_controller.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${var.rest_api_execution_arn}/*/*"
+}
+
+# ==============================================================================
+# S3 — GPU Control Page (served via login S3 bucket)
+# ==============================================================================
+
+resource "aws_s3_object" "gpu_html" {
+  bucket       = aws_s3_bucket.portal.id
+  key          = "portal/gpu.html"
+  source       = "${path.module}/static/gpu.html"
+  content_type = "text/html"
+  etag         = filemd5("${path.module}/static/gpu.html")
+}
+
+# ==============================================================================
+# API GATEWAY — GPU Controller Resources (/portal/api/gpu/*)
+# ==============================================================================
+
+# /portal/api/gpu
+resource "aws_api_gateway_resource" "portal_gpu" {
+  rest_api_id = var.rest_api_id
+  parent_id   = aws_api_gateway_resource.portal_api.id
+  path_part   = "gpu"
+}
+
+# /portal/api/gpu/status
+resource "aws_api_gateway_resource" "gpu_status" {
+  rest_api_id = var.rest_api_id
+  parent_id   = aws_api_gateway_resource.portal_gpu.id
+  path_part   = "status"
+}
+
+# /portal/api/gpu/start
+resource "aws_api_gateway_resource" "gpu_start" {
+  rest_api_id = var.rest_api_id
+  parent_id   = aws_api_gateway_resource.portal_gpu.id
+  path_part   = "start"
+}
+
+# /portal/api/gpu/stop
+resource "aws_api_gateway_resource" "gpu_stop" {
+  rest_api_id = var.rest_api_id
+  parent_id   = aws_api_gateway_resource.portal_gpu.id
+  path_part   = "stop"
+}
+
+# --- GET /portal/api/gpu/status ---
+resource "aws_api_gateway_method" "gpu_status" {
+  rest_api_id      = var.rest_api_id
+  resource_id      = aws_api_gateway_resource.gpu_status.id
+  http_method      = "GET"
+  authorization    = "NONE"
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "gpu_status" {
+  rest_api_id             = var.rest_api_id
+  resource_id             = aws_api_gateway_resource.gpu_status.id
+  http_method             = aws_api_gateway_method.gpu_status.http_method
+  type                    = "AWS_PROXY"
+  integration_http_method = "POST"
+  uri                     = aws_lambda_function.gpu_controller.invoke_arn
+}
+
+# --- POST /portal/api/gpu/start ---
+resource "aws_api_gateway_method" "gpu_start" {
+  rest_api_id      = var.rest_api_id
+  resource_id      = aws_api_gateway_resource.gpu_start.id
+  http_method      = "POST"
+  authorization    = "NONE"
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "gpu_start" {
+  rest_api_id             = var.rest_api_id
+  resource_id             = aws_api_gateway_resource.gpu_start.id
+  http_method             = aws_api_gateway_method.gpu_start.http_method
+  type                    = "AWS_PROXY"
+  integration_http_method = "POST"
+  uri                     = aws_lambda_function.gpu_controller.invoke_arn
+}
+
+# --- POST /portal/api/gpu/stop ---
+resource "aws_api_gateway_method" "gpu_stop" {
+  rest_api_id      = var.rest_api_id
+  resource_id      = aws_api_gateway_resource.gpu_stop.id
+  http_method      = "POST"
+  authorization    = "NONE"
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "gpu_stop" {
+  rest_api_id             = var.rest_api_id
+  resource_id             = aws_api_gateway_resource.gpu_stop.id
+  http_method             = aws_api_gateway_method.gpu_stop.http_method
+  type                    = "AWS_PROXY"
+  integration_http_method = "POST"
+  uri                     = aws_lambda_function.gpu_controller.invoke_arn
+}
+
+# --- OPTIONS (CORS preflight) for all GPU endpoints ---
+resource "aws_api_gateway_method" "gpu_status_options" {
+  rest_api_id      = var.rest_api_id
+  resource_id      = aws_api_gateway_resource.gpu_status.id
+  http_method      = "OPTIONS"
+  authorization    = "NONE"
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "gpu_status_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.gpu_status.id
+  http_method = aws_api_gateway_method.gpu_status_options.http_method
+  type        = "MOCK"
+  request_templates = { "application/json" = "{\"statusCode\": 200}" }
+}
+
+resource "aws_api_gateway_method_response" "gpu_status_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.gpu_status.id
+  http_method = aws_api_gateway_method.gpu_status_options.http_method
+  status_code = "200"
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = true
+    "method.response.header.Access-Control-Allow-Methods" = true
+    "method.response.header.Access-Control-Allow-Origin"  = true
+  }
+}
+
+resource "aws_api_gateway_integration_response" "gpu_status_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.gpu_status.id
+  http_method = aws_api_gateway_method.gpu_status_options.http_method
+  status_code = "200"
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type'"
+    "method.response.header.Access-Control-Allow-Methods" = "'GET,OPTIONS'"
+    "method.response.header.Access-Control-Allow-Origin"  = "'*'"
+  }
+  depends_on = [aws_api_gateway_integration.gpu_status_options]
+}
+
+resource "aws_api_gateway_method" "gpu_start_options" {
+  rest_api_id      = var.rest_api_id
+  resource_id      = aws_api_gateway_resource.gpu_start.id
+  http_method      = "OPTIONS"
+  authorization    = "NONE"
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "gpu_start_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.gpu_start.id
+  http_method = aws_api_gateway_method.gpu_start_options.http_method
+  type        = "MOCK"
+  request_templates = { "application/json" = "{\"statusCode\": 200}" }
+}
+
+resource "aws_api_gateway_method_response" "gpu_start_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.gpu_start.id
+  http_method = aws_api_gateway_method.gpu_start_options.http_method
+  status_code = "200"
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = true
+    "method.response.header.Access-Control-Allow-Methods" = true
+    "method.response.header.Access-Control-Allow-Origin"  = true
+  }
+}
+
+resource "aws_api_gateway_integration_response" "gpu_start_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.gpu_start.id
+  http_method = aws_api_gateway_method.gpu_start_options.http_method
+  status_code = "200"
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type'"
+    "method.response.header.Access-Control-Allow-Methods" = "'POST,OPTIONS'"
+    "method.response.header.Access-Control-Allow-Origin"  = "'*'"
+  }
+  depends_on = [aws_api_gateway_integration.gpu_start_options]
+}
+
+resource "aws_api_gateway_method" "gpu_stop_options" {
+  rest_api_id      = var.rest_api_id
+  resource_id      = aws_api_gateway_resource.gpu_stop.id
+  http_method      = "OPTIONS"
+  authorization    = "NONE"
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "gpu_stop_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.gpu_stop.id
+  http_method = aws_api_gateway_method.gpu_stop_options.http_method
+  type        = "MOCK"
+  request_templates = { "application/json" = "{\"statusCode\": 200}" }
+}
+
+resource "aws_api_gateway_method_response" "gpu_stop_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.gpu_stop.id
+  http_method = aws_api_gateway_method.gpu_stop_options.http_method
+  status_code = "200"
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = true
+    "method.response.header.Access-Control-Allow-Methods" = true
+    "method.response.header.Access-Control-Allow-Origin"  = true
+  }
+}
+
+resource "aws_api_gateway_integration_response" "gpu_stop_options" {
+  rest_api_id = var.rest_api_id
+  resource_id = aws_api_gateway_resource.gpu_stop.id
+  http_method = aws_api_gateway_method.gpu_stop_options.http_method
+  status_code = "200"
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type'"
+    "method.response.header.Access-Control-Allow-Methods" = "'POST,OPTIONS'"
+    "method.response.header.Access-Control-Allow-Origin"  = "'*'"
+  }
+  depends_on = [aws_api_gateway_integration.gpu_stop_options]
 }

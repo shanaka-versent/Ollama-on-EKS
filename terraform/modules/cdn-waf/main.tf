@@ -39,6 +39,21 @@ resource "aws_cloudfront_function" "auth_redirect" {
       var uri = request.uri;
       var cookies = request.cookies || {};
 
+      // Intercept Open WebUI's built-in /auth redirect — send users to our
+      // custom login page instead. This fires when a stale token cookie
+      // passes the check below but Open WebUI rejects the expired JWT and
+      // redirects to /auth?redirect=/
+      if (uri === '/auth') {
+        return {
+          statusCode: 302,
+          statusDescription: 'Found',
+          headers: {
+            location: { value: '/auth/login.html' },
+            'cache-control': { value: 'no-cache, no-store, must-revalidate' }
+          }
+        };
+      }
+
       // Paths that must NOT be redirected
       if (uri.startsWith('/oauth/') ||
           uri.startsWith('/_app/') ||
@@ -68,6 +83,45 @@ resource "aws_cloudfront_function" "auth_redirect" {
           'cache-control': { value: 'no-cache, no-store, must-revalidate' }
         }
       };
+    }
+  JS
+}
+
+# --- CloudFront Function: Portal Auth + S3 Index Rewrite ---
+# Combines two functions for the portal S3 behavior:
+# 1. Auth check — redirects unauthenticated users (no token cookie) to login
+# 2. Index rewrite — appends index.html to directory paths (S3 OAC doesn't auto-resolve)
+resource "aws_cloudfront_function" "s3_index_rewrite" {
+  count = local.portal_enabled ? 1 : 0
+
+  name    = "${var.project_name}-s3-index-rewrite"
+  runtime = "cloudfront-js-2.0"
+  publish = true
+
+  code = <<-JS
+    function handler(event) {
+      var request = event.request;
+      var uri = request.uri;
+      var cookies = request.cookies || {};
+
+      // Auth check — require token cookie (set by Open WebUI login)
+      if (!cookies['token']) {
+        return {
+          statusCode: 302,
+          statusDescription: 'Found',
+          headers: {
+            location: { value: '/auth/login.html' },
+            'cache-control': { value: 'no-cache, no-store, must-revalidate' }
+          }
+        };
+      }
+
+      // /portal/ → /portal/index.html
+      if (uri.endsWith('/')) {
+        request.uri = uri + 'index.html';
+      }
+
+      return request;
     }
   JS
 }
@@ -378,7 +432,7 @@ resource "aws_cloudfront_distribution" "ollama" {
     }
   }
 
-  # Portal API → API Gateway (Cognito-authenticated Lambda)
+  # Portal API → API Gateway (auth via token cookie in Lambda)
   dynamic "ordered_cache_behavior" {
     for_each = local.portal_enabled ? [1] : []
     content {
@@ -409,6 +463,12 @@ resource "aws_cloudfront_distribution" "ollama" {
 
       viewer_protocol_policy = "https-only"
       compress               = true
+
+      # Rewrite /portal/ → /portal/index.html (S3 OAC doesn't auto-resolve)
+      function_association {
+        event_type   = "viewer-request"
+        function_arn = aws_cloudfront_function.s3_index_rewrite[0].arn
+      }
     }
   }
 

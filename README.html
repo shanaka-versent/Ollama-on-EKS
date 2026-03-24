@@ -416,60 +416,67 @@ Grafana: Admin → AWS Managed Grafana (AMG) URL → IAM Identity Center SSO
 </table>
 <h3 id="default-model-fallback-qwen3527b-dev-phase">Default Model: Fallback (qwen3.5:27b) — DEV Phase</h3>
 <p><strong>Current phase: DEV</strong> — using Tier 1 fallback (<code>qwen3.5:27b</code>) on g5.xlarge (1x A10G, $0.35/hr spot) for infrastructure testing and platform validation.</p>
-<p><strong>PROD upgrade:</strong> When ready for production, switch to Tier 3 flagship. Two changes:</p>
-<ol>
-<li><strong>Terraform:</strong> <code>terraform apply -var-file=environments/prod.tfvars</code></li>
-<li><strong>ArgoCD:</strong> Change <code>path</code> in 4 app files from <code>k8s/overlays/dev/...</code> to <code>k8s/overlays/prod/...</code> (nodepools, ollama, model-loader, open-webui)</li>
-</ol>
-<p>Three tiers available, all pre-downloaded to EBS via snapshot:</p>
+<h3 id="flex-mode-switch-tiers-without-reprovisioning">Flex Mode — Switch Tiers Without Reprovisioning</h3>
+<p>The DEV NodePool ceiling allows <strong>both</strong> g5.xlarge and g5.12xlarge. Karpenter provisions the instance type based on what the Ollama pod <strong>requests</strong> — not the ceiling. <code>switch-model.sh</code> patches the deployment resources and Karpenter auto-swaps nodes:</p>
 <table>
 <thead>
 <tr>
 <th>Tier</th>
 <th>Model</th>
-<th>GPU</th>
+<th>Instance</th>
 <th>Spot Cost</th>
-<th>When to Use</th>
+<th>Resources</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><strong>1 (Current)</strong></td>
+<td><strong>1 (Default)</strong></td>
 <td><strong><code>qwen3.5:27b</code></strong></td>
 <td><strong>g5.xlarge (1x A10G)</strong></td>
 <td><strong>$0.35/hr</strong></td>
-<td><strong>DEV — platform testing, monitoring setup</strong></td>
+<td><strong>1 GPU, 14Gi, 3 CPU</strong></td>
 </tr>
 <tr>
 <td>2 (Code)</td>
 <td><code>qwen3-coder:30b-a3b</code></td>
 <td>g5.xlarge (1x A10G)</td>
 <td>$0.35/hr</td>
-<td>Pure coding tasks, very fast MoE inference</td>
+<td>1 GPU, 14Gi, 3 CPU</td>
 </tr>
 <tr>
 <td>3 (Flagship)</td>
 <td><code>qwen3.5:122b-a10b</code></td>
 <td>g5.12xlarge (4x A10G)</td>
 <td>$1.90/hr</td>
-<td>PROD — maximum quality</td>
+<td>4 GPU, 96Gi, 16 CPU</td>
+</tr>
+<tr>
+<td>Idle (KEDA)</td>
+<td>—</td>
+<td>No GPU node</td>
+<td>$0/hr</td>
+<td>—</td>
 </tr>
 </tbody>
 </table>
-<p>Switch tiers using the <code>/model</code> command in Claude Code, or directly via:</p>
-<pre class="highlight"><code class="language-bash">./switch-model.sh use 3   # flagship (default)
-./switch-model.sh use 1   # fallback
-./switch-model.sh use 2   # code-optimised
+<pre class="highlight"><code class="language-bash">./switch-model.sh use 1       # fallback  → g5.xlarge  (~3 min)
+./switch-model.sh use 2       # coder     → g5.xlarge  (~3 min)
+./switch-model.sh use 3       # flagship  → g5.12xlarge (~5 min)
+./switch-model.sh status      # show current tier, hardware, models
 </code></pre>
 
-<h3 id="environment-configuration">Environment Configuration</h3>
-<p>Environment-specific values (GPU instance sizes, model names, resource limits) are managed via:</p>
+<blockquote>
+<p><strong>How it works:</strong> The script pauses KEDA → patches Ollama deployment GPU/memory/CPU → Karpenter provisions the right node → loads the model → resumes KEDA. Cost stays DEV-level by default; flagship costs more only while actively in use. After 15 min idle, KEDA + Karpenter tear everything down to $0/hr regardless of tier.</p>
+<p><strong>Prereq:</strong> AWS GPU quota (<code>L-3819A6DF</code>) must be ≥ 48 vCPUs for Tier 3. Request via Service Quotas console (1-3 day approval).</p>
+</blockquote>
+<h3 id="single-stack-architecture">Single-Stack Architecture</h3>
+<p>One stack handles all tiers — no separate DEV/PROD overlays needed:</p>
 <ul>
-<li><strong>Terraform:</strong> <code>terraform apply -var-file=environments/dev.tfvars</code> (or <code>prod.tfvars</code>)</li>
-<li><strong>K8s manifests:</strong> Kustomize overlays in <code>k8s/overlays/dev/</code> and <code>k8s/overlays/prod/</code></li>
-<li><strong>ArgoCD:</strong> Application files point to <code>k8s/overlays/{env}/</code> paths</li>
+<li><strong>K8s manifests:</strong> ArgoCD apps point directly to base manifests (<code>k8s/ollama/</code>, <code>k8s/nodepools/</code>, etc.)</li>
+<li><strong>Tier switching:</strong> <code>./switch-model.sh use &lt;tier&gt;</code> patches deployment resources at runtime</li>
+<li><strong>Terraform:</strong> <code>terraform apply -var-file=environments/dev.tfvars</code> for cloud-level config</li>
 </ul>
-<p>To switch from DEV to PROD: update the 4 ArgoCD app paths and run Terraform with the prod tfvars. No file editing or uncommenting required.</p>
+<p><strong>Availability zones:</strong> Defaults to single AZ (<code>ap-southeast-2a</code>) — keeps costs down and EBS PVCs co-located. For multi-AZ HA, uncomment <code>ap-southeast-2b</code> in <code>k8s/nodepools/gpu-nodepool.yaml</code>. Karpenter will provision GPU nodes across both AZs automatically.</p>
 <h3 id="key-design-decisions">Key Design Decisions</h3>
 <table>
 <thead>
@@ -485,7 +492,7 @@ Grafana: Admin → AWS Managed Grafana (AMG) URL → IAM Identity Center SSO
 </tr>
 <tr>
 <td>EKS Auto Mode + Custom NodePools</td>
-<td>Built-in pools disabled (<code>node_pools = []</code>). Two custom Karpenter NodePools: system (t3.xlarge on-demand, <code>WhenEmptyOrUnderutilized</code> 5m) and GPU (g5 spot, <code>WhenEmpty</code> 30m). System on-demand because CoreDNS/Istio/Prometheus cannot tolerate spot interruptions. AWS manages NVIDIA device plugin and drivers</td>
+<td>Built-in pools disabled (<code>node_pools = []</code>). Two custom Karpenter NodePools: system (t3.xlarge on-demand, single AZ <code>ap-southeast-2a</code>, <code>WhenEmptyOrUnderutilized</code> 5m) and GPU (g5 spot, same AZ, <code>WhenEmpty</code> 30m). DEV uses single AZ to keep EBS PVCs co-located and consolidate to 1 system node. System on-demand because CoreDNS/Istio/Prometheus cannot tolerate spot interruptions. AWS manages NVIDIA device plugin and drivers</td>
 </tr>
 <tr>
 <td>KEDA auto-scale-to-zero</td>
@@ -524,8 +531,12 @@ Grafana: Admin → AWS Managed Grafana (AMG) URL → IAM Identity Center SSO
 <td>Automated TLS lifecycle — 90d duration, 30d auto-renewal, no manual cert rotation</td>
 </tr>
 <tr>
-<td>Environment-based configuration (Terraform tfvars + Kustomize overlays)</td>
-<td>DEV and PROD configs (instance types, models, resources) defined separately. No manual file editing or comment-toggling. Switch via <code>terraform apply -var-file=environments/prod.tfvars</code> + ArgoCD path update</td>
+<td>Flex mode (single-stack architecture)</td>
+<td>One stack, all tiers. NodePool ceiling allows both g5.xlarge and g5.12xlarge. <code>switch-model.sh</code> patches deployment resources, Karpenter auto-provisions the right instance. Cost = Tier 1 by default; flagship costs only while active. No reprovisioning needed</td>
+</tr>
+<tr>
+<td>Single AZ default, multi-AZ configurable</td>
+<td>Defaults to <code>ap-southeast-2a</code>. Multi-AZ HA enabled by uncommenting one line in <code>k8s/nodepools/gpu-nodepool.yaml</code> — no other changes needed</td>
 </tr>
 </tbody>
 </table>
@@ -837,17 +848,22 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 
 <hr />
 <h2 id="day-to-day-usage">Day-to-Day Usage</h2>
-<h3 id="model-tier-switching">Model Tier Switching</h3>
-<p>Use the <code>/model</code> command in Claude Code for an interactive picker, or specify directly:</p>
-<pre class="highlight"><code class="language-bash">/model              # interactive — shows tiers and asks which one
+<h3 id="model-tier-switching-flex-mode">Model Tier Switching (Flex Mode)</h3>
+<p>All three tiers are available on the same stack. The script patches deployment resources and Karpenter auto-provisions the right instance:</p>
+<pre class="highlight"><code class="language-bash"># Via Claude Code interactive picker:
+/model              # interactive — shows tiers and asks which one
 /model 3            # switch to flagship immediately
 /model fallback     # switch to Tier 1
-/model coder        # switch to Tier 2
 
-# Or via shell script directly:
-./switch-model.sh use 3
+# Or via shell script (handles everything: KEDA pause, resource patch, node swap, model load):
+./switch-model.sh use 1       # fallback  → g5.xlarge  (~3 min)
+./switch-model.sh use 2       # coder     → g5.xlarge  (~3 min)
+./switch-model.sh use 3       # flagship  → g5.12xlarge (~5 min, needs GPU quota)
+./switch-model.sh status      # current tier, hardware, available models
+./switch-model.sh list        # all tiers with resource requirements
 </code></pre>
 
+<p>The switch process: pause KEDA → patch GPU/memory/CPU → wait for Karpenter node → load model → resume KEDA. After 15 min idle, KEDA + Karpenter tear down the GPU node regardless of tier.</p>
 <h3 id="open-webui-browser-based-chat-interface">Open WebUI (Browser-Based Chat Interface)</h3>
 <p>Open WebUI (v0.8.10) provides a ChatGPT-like interface for Ollama. Deployed on EKS system nodes (no GPU needed), air-gapped via NetworkPolicy. Accessible via CloudFront — no port-forwarding needed.</p>
 <p><strong>Authentication:</strong> All login is handled by a <strong>custom login portal</strong> (auth_proxy Lambda + login.html SPA) backed by <strong>AWS Cognito</strong> (OAuth/OIDC). Users <strong>never</strong> see the Cognito hosted UI. Local login and password management are completely disabled (<code>ENABLE_PASSWORD_AUTH=false</code>). Users authenticate via the custom portal with <strong>mandatory TOTP MFA</strong> (authenticator app). Roles are synced from Cognito groups on every login (<code>ENABLE_OAUTH_ROLE_MANAGEMENT=true</code>) — Cognito is the source of truth, any local role changes are overwritten on next login.</p>
@@ -932,7 +948,7 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 </tr>
 </tbody>
 </table>
-<p>To change the locked model for regular users, update <code>MODEL_FILTER_LIST</code> in <code>k8s/open-webui/deployment.yaml</code> and redeploy. Admins can also switch the cluster-wide default via <code>./switch-model.sh use &lt;tier&gt;</code>.</p>
+<p>To change the locked model for regular users, update <code>MODEL_FILTER_LIST</code> in <code>k8s/open-webui/deployment.yaml</code> and redeploy. Admins can switch between compatible tiers via <code>./switch-model.sh use &lt;tier&gt;</code> (the script validates GPU hardware and blocks incompatible models).</p>
 <h3 id="observability-prometheus-amp-aws-managed-grafana">Observability (Prometheus → AMP → AWS Managed Grafana)</h3>
 <p>Prometheus and DCGM Exporter run in-cluster, remote-writing all metrics to AWS Managed Prometheus (AMP). AWS Managed Grafana (AMG) reads from AMP and CloudWatch natively — no in-cluster Grafana pod.</p>
 <p><strong>Access URL:</strong> AMG workspace URL (from <code>terraform output managed_grafana_url</code>) — authenticated via IAM Identity Center SSO.</p>
@@ -965,6 +981,68 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 <blockquote>
 <p><strong>Note:</strong> EKS Auto Mode runs Karpenter on the control plane — native <code>karpenter_*</code> metrics are unavailable. The Karpenter dashboard uses kube-state-metrics to track GPU node count, Ollama scaling events (KEDA), and GPU node hours.</p>
 </blockquote>
+<p><strong>Scrape Interval Optimisation (AMP Free Tier):</strong></p>
+<p>Scrape intervals are tuned to keep AMP ingestion within the free tier (200M samples/month, ~170M estimated):</p>
+<table>
+<thead>
+<tr>
+<th>Target</th>
+<th>Interval</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Default (Prometheus global)</td>
+<td>15 min</td>
+<td>Balances visibility with AMP cost</td>
+</tr>
+<tr>
+<td>kube-state-metrics</td>
+<td>10 min</td>
+<td>Needed for Karpenter Node Lifecycle / GPU Scaling dashboard</td>
+</tr>
+<tr>
+<td>kubeApiServer, kubelet, coreDns</td>
+<td>1 hr</td>
+<td>Heavyweight ServiceMonitors (~100K+ series each), rarely needed</td>
+</tr>
+<tr>
+<td>kubeEtcd, kubeControllerManager, kubeScheduler, kubeProxy</td>
+<td>Disabled</td>
+<td>Not accessible on EKS managed control plane / Auto Mode</td>
+</tr>
+</tbody>
+</table>
+<p><strong>False-Positive Alert Suppression:</strong></p>
+<p>Built-in kube-prometheus-stack alerts that assume permanent nodes are disabled — GPU nodes are intentionally ephemeral (KEDA scales Ollama to 0 after 15 min idle, Karpenter terminates the empty node after 10 min):</p>
+<table>
+<thead>
+<tr>
+<th>Disabled Alert</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>KubeletDown</code></td>
+<td>Fires when GPU node kubelet disappears (expected on termination)</td>
+</tr>
+<tr>
+<td><code>KubeNodeNotReady</code></td>
+<td>Fires briefly during GPU node termination</td>
+</tr>
+<tr>
+<td><code>KubeNodeUnreachable</code></td>
+<td>Fires after GPU node is terminated</td>
+</tr>
+<tr>
+<td><code>NodeFilesystemAlmostOutOfSpace</code></td>
+<td>Transient on short-lived GPU nodes</td>
+</tr>
+</tbody>
+</table>
+<p>System node health is still covered by custom alerts: <code>OllamaUnavailable</code>, <code>GPUPodPending</code>, and <code>KarpenterProvisioningFailed</code>.</p>
 <p><strong>Alert Rules (8 configured):</strong></p>
 <table>
 <thead>
@@ -1176,12 +1254,12 @@ alert_email = &quot;your-email@example.com&quot;
 <td>~$6</td>
 </tr>
 <tr>
-<td>AWS Managed Grafana + AMP</td>
-<td>~$14</td>
+<td>AWS Managed Grafana (AMP free tier)</td>
+<td>~$9</td>
 </tr>
 <tr>
 <td><strong>Total (DEV)</strong></td>
-<td><strong>~$287/mo</strong></td>
+<td><strong>~$282/mo</strong></td>
 </tr>
 </tbody>
 </table>
@@ -1219,16 +1297,16 @@ alert_email = &quot;your-email@example.com&quot;
 <td>~$6</td>
 </tr>
 <tr>
-<td>AWS Managed Grafana + AMP</td>
-<td>~$14</td>
+<td>AWS Managed Grafana (AMP free tier)</td>
+<td>~$9</td>
 </tr>
 <tr>
 <td><strong>Total (PROD)</strong></td>
-<td><strong>~$544/mo</strong></td>
+<td><strong>~$539/mo</strong></td>
 </tr>
 </tbody>
 </table>
-<p>Down from $4,155/mo (24/7 on-demand + Kong) — 88% reduction. DEV phase runs at ~$225/mo.</p>
+<p>Down from $4,155/mo (24/7 on-demand + Kong) — 88% reduction. AMP ingestion tuned to free tier (~170M/200M samples/month) by using 15m default scrape interval, 10m for kube-state-metrics, and 1h for heavyweight ServiceMonitors.</p>
 <p><strong>Spot instance strategy:</strong> GPU NodePool uses spot preferred with automatic on-demand fallback (both DEV and PROD). Karpenter tries spot first — if unavailable, falls back to on-demand automatically. <code>GPUOnDemandFallback</code> alert fires (warning) when on-demand is used. System NodePool is always on-demand — system components (CoreDNS, Istio, Prometheus, ArgoCD) cannot tolerate spot interruptions. Alerts route via Alertmanager → SNS → email. KEDA handles idle detection and scales Ollama to 0 replicas after 15 min of no activity, then Karpenter terminates the empty GPU node after 10 min.</p>
 <h3 id="response-time-expectations">Response Time Expectations</h3>
 <table>
@@ -1290,6 +1368,22 @@ alert_email = &quot;your-email@example.com&quot;
 </tbody>
 </table>
 <p><strong>Manual scale-down (immediate):</strong> <code>./scripts/scale-down.sh</code> scales to 0 immediately without waiting for the 15-min idle window.</p>
+<h3 id="gpu-startstop-cli">GPU Start/Stop (CLI)</h3>
+<p>GPU is managed via CLI scripts — no web portal needed. When the GPU is running, Open WebUI automatically lists available models (users just refresh the page).</p>
+<pre class="highlight"><code class="language-bash"># Start GPU (pauses KEDA, scales Ollama to 1, waits for node + model load, resumes KEDA)
+./scripts/scale-up.sh
+
+# Stop GPU immediately (scales to 0, unpauses KEDA — GPU node terminates in ~10 min)
+./scripts/scale-down.sh
+
+# Check current status
+kubectl get pods -n ollama
+kubectl get nodes -l workload-type=gpu-inference
+</code></pre>
+
+<blockquote>
+<p><strong>Important:</strong> KEDA must never be left paused — a paused KEDA means the GPU node runs indefinitely at $0.35-$1.90/hr. Both <code>scale-up.sh</code> and <code>scale-down.sh</code> handle KEDA pause/unpause automatically. Verify with: <code>kubectl get scaledobject -n ollama</code> — PAUSED column should show <code>Unknown</code> or <code>false</code> in steady state.</p>
+</blockquote>
 <h3 id="resume-next-session">Resume Next Session</h3>
 <p>The EBS snapshot has your models pre-loaded — no re-download needed. Scale up manually and Karpenter auto-provisions a new GPU node:</p>
 <pre class="highlight"><code class="language-bash">./scripts/scale-up.sh
@@ -1479,6 +1573,10 @@ alert_email = &quot;your-email@example.com&quot;
 <td>Custom login portal (auth_proxy Lambda + login.html SPA) handles all auth flows — users never see Cognito hosted UI. OAuth/OIDC with mandatory TOTP MFA, roles synced from Cognito groups, admin-approved signups, in-app password reset, no local passwords, admin chat access and DB export disabled</td>
 </tr>
 <tr>
+<td><strong>GPU Controller Lambda</strong></td>
+<td>GPU start/stop via K8s API (used by CLI scripts). EKS access scoped to <code>ollama</code> namespace only (<code>AmazonEKSEditPolicy</code>). Bearer token is short-lived (60s STS presigned URL). Stop always unpauses KEDA to prevent runaway GPU cost</td>
+</tr>
+<tr>
 <td><strong>IRSA</strong></td>
 <td>EBS CSI + LB Controller + Bedrock (Stack B) use least-privilege IAM roles via OIDC</td>
 </tr>
@@ -1647,7 +1745,7 @@ aws apigateway update-api-key --api-key $OLD_KEY_ID --patch-operations op=replac
     cdn-waf/                       # CloudFront + WAFv2 (5 rules) + origin lockdown header
     cert-manager/                  # cert-manager Helm release
     cognito/                       # Cognito User Pool for Open WebUI (OAuth, MFA, groups)
-    api-key-portal/                # Self-service API key management + custom login portal (auth_proxy Lambda)
+    api-key-portal/                # Self-service API key management, custom login portal, GPU control (auth_proxy + gpu_controller Lambdas)
     managed-grafana/               # AMG + AMP (all dashboards via IAM Identity Center SSO)
     bedrock-integration/           # Stack B: VPC endpoint + IRSA for Bedrock
 
@@ -1662,20 +1760,6 @@ k8s/
   gateway.yaml                     # Istio Gateway
   httproutes.yaml                  # HTTPRoutes to Ollama + Open WebUI
   monitoring-networkpolicy.yaml    # Monitoring namespace air-gap
-  overlays/
-    dev/                           # DEV environment (Tier 1, g5.xlarge, qwen3.5:27b)
-      kustomization.yaml           # Base + patches for DEV
-      nodepools.yaml               # DEV: xlarge only
-      ollama.yaml                  # DEV: Tier 1 model
-      model-loader.yaml            # DEV: pull qwen3.5:27b
-      open-webui.yaml              # DEV: filter to qwen3.5:27b
-    prod/                          # PROD environment (Tier 3, g5.12xlarge, qwen3.5:122b-a10b)
-      kustomization.yaml           # Base + patches for PROD
-      nodepools.yaml               # PROD: xlarge/2xlarge/12xlarge
-      ollama.yaml                  # PROD: Tier 3 model
-      model-loader.yaml            # PROD: pull qwen3.5:122b-a10b
-      open-webui.yaml              # PROD: filter to qwen3.5:122b-a10b
-
 argocd/apps/                       # Wave-based Application manifests (00-12, incl. 01b-system-nodepool.yaml)
 
 scripts/
@@ -1693,7 +1777,7 @@ scripts/
   terraform-plan.yml               # PR → plan → comment
   terraform-apply.yml              # Merge → apply → verify air-gap
 
-switch-model.sh                    # Model tier switching (repo root)
+switch-model.sh                    # Model tier switching with GPU hardware validation (repo root)
 
 .claude/skills/
   readme-sync/SKILL.md             # Skill: keep README + HTML + architecture diagrams in sync
@@ -1835,7 +1919,7 @@ terraform destroy
 <li><strong>Ollama-EKS-Report.html</strong> — Full visual report with architecture diagrams, cost tables, and implementation details</li>
 <li><strong>RECOMMENDATIONS-Ollama-EKS-Improvements.md</strong> — Detailed recommendations for each improvement area</li>
 <li><strong>CLAUDE.md</strong> — Project context file for Claude Code implementation</li>
-<li><strong>switch-model.sh</strong> — Model tier switching script</li>
+<li><strong>switch-model.sh</strong> — Model tier switching script with GPU hardware validation (blocks Tier 3 on DEV, shows PROD switch instructions)</li>
 </ul>
 <hr />
 <h2 id="more-information">More Information</h2>

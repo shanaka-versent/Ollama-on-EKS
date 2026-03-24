@@ -25,3 +25,8 @@ output "ebs_csi_role_arn" {
   description = "EBS CSI Driver IAM role ARN"
   value       = var.create_ebs_csi_role ? aws_iam_role.ebs_csi[0].arn : null
 }
+
+output "github_actions_role_arn" {
+  description = "GitHub Actions Terraform CI/CD role ARN"
+  value       = var.enable_github_oidc ? aws_iam_role.github_actions_terraform[0].arn : null
+}

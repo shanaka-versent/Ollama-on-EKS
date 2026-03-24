@@ -30,6 +30,18 @@ variable "enable_auto_mode" {
   default     = false
 }
 
+variable "enable_github_oidc" {
+  description = "Create GitHub Actions OIDC provider and Terraform CI/CD role"
+  type        = bool
+  default     = false
+}
+
+variable "github_repo" {
+  description = "GitHub repository in format 'owner/repo' (e.g., 'shanaka-versent/Ollama-on-EKS')"
+  type        = string
+  default     = ""
+}
+
 variable "tags" {
   description = "Tags for resources"
   type        = map(string)

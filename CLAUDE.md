@@ -11,7 +11,7 @@ A fully private, air-gapped LLM inference platform on AWS EKS. Ollama serves Qwe
 ## Architecture (4 Layers)
 
 Layer 1 — VPC (10.0.0.0/16) with private/public subnets + NAT Gateway.
-Layer 2 — EKS Control Plane with Auto Mode enabled. Custom Karpenter NodePools: system pool (t3.xlarge on-demand, x86 only — fits all system workloads + Open WebUI on one node) + GPU pool (g5 spot, on-demand fallback). Built-in pools disabled (`node_pools = []`). EBS CSI Driver + AWS LB Controller managed by Auto Mode.
+Layer 2 — EKS Control Plane with Auto Mode enabled. Custom Karpenter NodePools: system pool (t3.xlarge on-demand, x86 only, single AZ `ap-southeast-2a` — fits all system workloads + Open WebUI on one node) + GPU pool (g5 spot, on-demand fallback, flex ceiling allows g5.xlarge and g5.12xlarge, same AZ). Built-in pools disabled (`node_pools = []`). EBS CSI Driver + AWS LB Controller managed by Auto Mode. Single AZ keeps all EBS PVCs co-located; multi-AZ configurable via one-line uncomment in NodePool.
 Layer 3 — ArgoCD with wave orchestration (waves -2 to 7). Wave -2: Gateway API CRDs → Wave -1: Istio Base → Wave 0: Istiod + Istio CNI + ztunnel (ambient mesh) → Wave 1: Namespaces + NodePools → Wave 2: Storage + KEDA → Wave 3-4: Ollama + Model Loader + KEDA ScaledObject → Wave 5-6: Gateway + Routes → Wave 7: Open WebUI. NVIDIA device plugin is managed by EKS Auto Mode (NOT deployed via ArgoCD — the ArgoCD app file `05-nvidia-device-plugin.yaml` is intentionally emptied).
 Layer 4 — CloudFront (+ WAF + Shield Standard) → API Gateway (REST API, native API key auth) → VPC Link → Internal NLB → Istio Gateway (mTLS) → Ollama Pod.
 
@@ -80,7 +80,7 @@ Grafana is **AWS Managed Grafana (AMG)** — accessed via IAM Identity Center SS
 - SES email identity must be verified for access-granted notifications to work. If SES is in sandbox mode, recipient emails must also be verified
 - Password reset is handled entirely by the custom login portal — user clicks "Forgot password?" on the login page, receives a code via email, then enters the code + new password in the portal. No Cognito hosted UI involved
 - `WEBUI_BANNERS` env var is stored in the `webui-oauth-cognito` K8s secret (not hardcoded in deployment YAML) with banner links to `/auth/login.html` for password reset and `/portal/` for API key generation
-- Auth proxy Lambda (`auth_proxy.py`) handles 6 endpoints: login, mfa, change-password, setup-mfa, forgot-password, confirm-reset. Login uses a two-phase approach: Phase 1 tries Cognito `InitiateAuth` API directly to detect `NEW_PASSWORD_REQUIRED` and `MFA_SETUP` challenges (first-time users); Phase 2 falls back to Cognito hosted UI scraping for the full OAuth token exchange (returning users with MFA). Forgot password uses Cognito APIs directly (`ForgotPassword`, `ConfirmForgotPassword`). First-time setup uses `RespondToAuthChallenge`, `AssociateSoftwareToken`, `VerifySoftwareToken`
+- Auth proxy Lambda (`auth_proxy.py`) handles 6 endpoints: login, mfa, change-password, setup-mfa, forgot-password, confirm-reset. Login uses a two-phase approach: Phase 1 tries Cognito `InitiateAuth` API directly to detect `NEW_PASSWORD_REQUIRED` and `MFA_SETUP` challenges (first-time users); Phase 2 falls back to Cognito hosted UI scraping for the full OAuth token exchange (returning users with MFA). Forgot password uses Cognito APIs directly (`ForgotPassword`, `ConfirmForgotPassword`). First-time MFA setup uses `AssociateSoftwareToken` → `VerifySoftwareToken` (best-effort `RespondToAuthChallenge(MFA_SETUP)` — non-fatal if it fails, since `VerifySoftwareToken` SUCCESS means the device is registered). Login portal uses a light theme
 - Auth proxy Lambda requires IAM permissions for `cognito-idp:InitiateAuth`, `cognito-idp:RespondToAuthChallenge`, `cognito-idp:ForgotPassword`, `cognito-idp:ConfirmForgotPassword`, `cognito-idp:AssociateSoftwareToken`, `cognito-idp:VerifySoftwareToken`
 - Cognito `webui` app client has `ALLOW_USER_PASSWORD_AUTH` enabled (required for `InitiateAuth` API used by first-time setup flow)
 - CloudFront Function (`auth_redirect`) runs on `viewer-request` event — checks for `token` cookie, redirects unauthenticated users to `/auth/login.html` (custom login page). Excludes: `/oauth/*`, `/_app/*`, `/static/*`, `/api/*`, `/v1/*`, `/portal/*`, `/auth/*`, favicons
@@ -90,14 +90,16 @@ Grafana is **AWS Managed Grafana (AMG)** — accessed via IAM Identity Center SS
 
 **Current phase: DEV** — using Tier 1 fallback (`qwen3.5:27b`) on g5.xlarge (1x A10G, $0.35/hr spot) for infrastructure testing and platform validation. NodePool is restricted to g5.xlarge only — no g5.12xlarge can be provisioned.
 
-**PROD upgrade:** When ready for production, switch to Tier 3 flagship. Two changes:
+**Flex Mode (default):** The DEV NodePool ceiling is raised to ALLOW g5.12xlarge (4x A10G) but defaults to g5.xlarge (1x A10G). `switch-model.sh` patches the Ollama deployment resources — Karpenter auto-provisions the right instance type. Cost stays DEV-level by default; flagship costs more only while actively in use. KEDA + Karpenter handle teardown to $0/hr when idle.
 
-1. **Terraform:** Deploy with `terraform apply -var-file=environments/prod.tfvars` (instead of `environments/dev.tfvars`)
-2. **ArgoCD apps:** Change `path` in 4 ArgoCD Application files from `k8s/overlays/dev/...` to `k8s/overlays/prod/...`:
-   - `argocd/apps/01b-system-nodepool.yaml` (NodePools)
-   - `argocd/apps/08-ollama.yaml` (Ollama deployment)
-   - `argocd/apps/09-model-loader.yaml` (Model loader)
-   - `argocd/apps/12-open-webui.yaml` (Open WebUI)
+How it works:
+1. `./switch-model.sh use 3` → pauses KEDA → patches deployment to 4 GPU/96Gi → Karpenter provisions g5.12xlarge → loads model → resumes KEDA
+2. `./switch-model.sh use 1` → pauses KEDA → patches deployment to 1 GPU/14Gi → Karpenter provisions g5.xlarge → loads model → resumes KEDA
+3. 15 min idle → KEDA scales to 0 → Karpenter terminates GPU node → $0/hr
+
+ArgoCD Ollama app has `ignoreDifferences` on `/spec/template/spec/containers/0/resources` (in addition to `/spec/replicas`) so `selfHeal` doesn't revert the kubectl patch from `switch-model.sh`.
+
+No separate PROD overlay needed — the same stack handles all tiers via `switch-model.sh`.
 
 **Spot instance strategy:** Spot preferred with on-demand fallback (both DEV and PROD). Karpenter tries spot first — if spot is unavailable (quota pending or no capacity), falls back to on-demand automatically.
 - `GPUOnDemandFallback` alert fires (warning) when on-demand is used — so you know you're paying full price.
@@ -113,14 +115,15 @@ Three tiers available, all pre-downloaded to EBS via snapshot:
 | 2 (Code) | `qwen3-coder:30b-a3b` | g5.xlarge (1x A10G) | $0.35/hr | Pure coding tasks, very fast MoE inference |
 | 3 (Flagship) | `qwen3.5:122b-a10b` | g5.12xlarge (4x A10G) | $1.90/hr | PROD — maximum quality |
 
-Switch with: `./switch-model.sh use 3` (flagship) or `./switch-model.sh use 1` (fallback).
+Switch with: `./switch-model.sh use 3` (flagship, ~5 min) or `./switch-model.sh use 1` (fallback, ~3 min). The script validates NodePool GPU limits, patches deployment resources, pauses KEDA during the switch, and resumes it after. Run `./switch-model.sh status` to see current tier, hardware, and available tiers.
 
 ## Key Design Decisions
 
 - CloudFront + WAF + API Gateway replaces Kong Cloud Gateway — 99% cost reduction ($756/mo → $6/mo), adds DDoS protection, eliminates Transit Gateway dependency
-- EKS Auto Mode with custom NodePools — Auto Mode manages Karpenter, NVIDIA plugin, EBS CSI, LB controller. Built-in pools disabled (`node_pools = []`). Custom system pool (t3.xlarge on-demand, x86 only) and GPU pool (g5 spot with on-demand fallback) give full control over instance types and cost
+- EKS Auto Mode with custom NodePools — Auto Mode manages Karpenter, NVIDIA plugin, EBS CSI, LB controller. Built-in pools disabled (`node_pools = []`). Custom system pool (t3.xlarge on-demand, x86 only, single AZ) and GPU pool (g5 spot with on-demand fallback, flex ceiling allows g5.xlarge + g5.12xlarge, same AZ) give full control over instance types and cost. Single AZ (`ap-southeast-2a`) keeps all EBS PVCs co-located; multi-AZ configurable via one-line uncomment
 - System nodes on-demand only — CoreDNS, Istio, Prometheus, ArgoCD cannot tolerate spot interruptions (full cluster outage). GPU nodes use spot (inference tolerates 2-3 min interruptions). `GPUOnDemandFallback` alert fires if GPU falls back to on-demand
-- KEDA auto-scale-to-zero — KEDA **only targets the Ollama deployment** (GPU workload). After 15 min of no inference requests, KEDA scales Ollama to 0 replicas. Karpenter then terminates the empty GPU node after 10 min (`consolidateAfter: 10m`). Total idle-to-zero: ~25 min. Scale-from-zero is manual via `scripts/scale-up.sh`. **Open WebUI stays at 1 replica on system nodes (never scaled to zero)** — it runs on t3.xlarge which is always-on. System nodes use 5-min consolidation (`WhenEmptyOrUnderutilized`). ArgoCD Ollama app uses `ignoreDifferences` on `/spec/replicas` so `selfHeal` doesn't fight KEDA. KEDA ArgoCD app uses `ServerSideApply=true` to install all CRDs including `scaledjobs.keda.sh`
+- KEDA auto-scale-to-zero — KEDA **only targets the Ollama deployment** (GPU workload). After 15 min of no inference requests, KEDA scales Ollama to 0 replicas. Karpenter then terminates the empty GPU node after 10 min (`consolidateAfter: 10m`). Total idle-to-zero: ~25 min. Scale-from-zero is manual via `scripts/scale-up.sh`. **Open WebUI stays at 1 replica on system nodes (never scaled to zero)** — it runs on t3.xlarge which is always-on. System nodes use 5-min consolidation (`WhenEmptyOrUnderutilized`). ArgoCD Ollama app uses `ignoreDifferences` on `/spec/replicas` and `/spec/template/spec/containers/0/resources` so `selfHeal` doesn't fight KEDA or `switch-model.sh`. KEDA ArgoCD app uses `ServerSideApply=true` to install all CRDs including `scaledjobs.keda.sh`
+- Flex mode — DEV NodePool ceiling allows both g5.xlarge and g5.12xlarge. `switch-model.sh` patches Ollama deployment resources via `kubectl patch` and Karpenter auto-provisions the right instance. Default state is Tier 1 (g5.xlarge, DEV cost). Tier 3 flagship costs $1.90/hr spot only while in use. KEDA + Karpenter tear down to $0/hr after 25 min idle regardless of tier
 - EKS Auto Mode NodeClass requires explicit `role` field and subnet/SG IDs (tag-based discovery not supported)
 - EBS snapshots for model weights — pre-loaded models on disk, no internet needed for model loading (air-gap compliant), cold start ~3 min instead of 15-25 min
 - High-throughput gp3 — 400 MB/s + 6000 IOPS for fast model loading from snapshot
@@ -129,7 +132,7 @@ Switch with: `./switch-model.sh use 3` (flagship) or `./switch-model.sh use 1` (
 - Dual-mode pipeline — two separate stacks (deploy one or the other), both maintaining data sovereignty (see below)
 - Gateway API pattern with CloudFront VPC Origins — the Istio Gateway creates an internal NLB, and CloudFront connects privately via VPC Origins. This is the core reason for the Gateway API pattern: one internal NLB serves all traffic (Ollama API, Open WebUI) with path-based HTTPRoutes, and CloudFront accesses it without exposing any load balancer to the internet
 - Cognito authentication for Open WebUI — Cognito User Pool with TOTP MFA, OAuth/OIDC, and admin-approved signups. All user management via Cognito Console. Grafana auth is via AMG SSO (IAM Identity Center)
-- Environment-based configuration — Terraform uses per-environment tfvars (`terraform/environments/dev.tfvars`, `prod.tfvars`). K8s manifests use Kustomize overlays (`k8s/overlays/dev/`, `prod/`). ArgoCD apps point to the active overlay. Zero `# PROD: uncomment` comments — switch environments by changing the overlay path, not editing files.
+- Single-stack flex architecture — One set of K8s manifests, no overlays. `switch-model.sh` patches deployment resources at runtime. ArgoCD apps point directly to base manifests (`k8s/ollama/`, `k8s/nodepools/`, etc.). ArgoCD `ignoreDifferences` on container resources prevents selfHeal from reverting patches. Terraform tfvars in `terraform/environments/` for cloud-level config.
 
 ## Dual-Mode Pipeline — Two Separate Stacks
 
@@ -161,9 +164,7 @@ Terraform environments: `terraform/environments/` — per-environment tfvars (de
 
 K8s manifests: `k8s/ollama/` — deployment.yaml (pinned to v0.18.2), service.yaml (ClusterIP :11434), networkpolicy.yaml (air-gap enforced). Plus: `k8s/model-loader/`, `k8s/gateway.yaml`, `k8s/httproutes.yaml`, `k8s/monitoring-networkpolicy.yaml` (IMPLEMENTED), `k8s/nodepools/` (IMPLEMENTED — system NodePool `t3.xlarge on-demand` + GPU NodePool `g5 spot` + NodeClasses for both, all `karpenter.sh/v1` + `eks.amazonaws.com/v1` APIs), `k8s/keda/` (IMPLEMENTED — KEDA ScaledObject for auto-scale-to-zero after 15 min idle), `k8s/open-webui/` (IMPLEMENTED — Cognito auth, model locked to admins), `k8s/cert-manager/`, `k8s/namespaces.yaml`.
 
-K8s overlays: `k8s/overlays/` — Kustomize overlays per environment (dev/, prod/) with patches for GPU resources, model names, and NodePool limits.
-
-ArgoCD: `argocd/apps/` — wave-based Application manifests (files 00-12 + 01b, 02b, 04b; waves -2 to 7). Wave -2: Gateway API CRDs, Wave -1: Istio Base, Wave 0: Istiod + CNI + ztunnel, Wave 1: Namespaces + NodePools, Wave 2: Storage + KEDA, Wave 3: Ollama, Wave 4: Model Loader + KEDA ScaledObject, Wave 5: Gateway, Wave 6: HTTPRoutes, Wave 7: Open WebUI. File `05-nvidia-device-plugin.yaml` is intentionally emptied (comments only) — EKS Auto Mode manages NVIDIA plugin.
+ArgoCD: `argocd/apps/` — wave-based Application manifests (files 00-12 + 01b, 02b, 04b; waves -2 to 7). Wave -2: Gateway API CRDs, Wave -1: Istio Base, Wave 0: Istiod + CNI + ztunnel, Wave 1: Namespaces + NodePools, Wave 2: Storage + KEDA, Wave 3: Ollama, Wave 4: Model Loader + KEDA ScaledObject, Wave 5: Gateway, Wave 6: HTTPRoutes, Wave 7: Open WebUI. File `05-nvidia-device-plugin.yaml` is intentionally emptied (comments only) — EKS Auto Mode manages NVIDIA plugin. ArgoCD apps point directly to base manifests (no overlays) — `switch-model.sh` handles runtime tier switching via kubectl patch.
 
 Scripts: `scripts/01-setup.sh`, `scripts/04-post-setup.sh`, `scripts/06-setup-github-sync.sh`, `scripts/create-model-snapshot.sh` (IMPLEMENTED), `scripts/generate-readme-html.py` (IMPLEMENTED), `scripts/deploy-stack-a.sh` (Stack A deployment), `scripts/scale-up.sh` / `scripts/scale-down.sh` (UPDATED — Karpenter-native, pauses/unpauses KEDA, no managed node group ops), `scripts/setup-amg.sh` (IMPLEMENTED — AMG data source + dashboard setup, run once after first deploy), `scripts/test-ollama-stack.sh` (end-to-end stack test), `scripts/verify-airgap.sh` (air-gap compliance check). Removed: `03-setup-cloud-gateway.sh` (Kong), `05-generate-certs.sh` (replaced by cert-manager).
 
@@ -264,7 +265,7 @@ Token generation: flagship produces 30-50 tok/s. A 500-token response takes ~10-
 | System nodes (1x t3.xlarge on-demand, always-on) | ~$122 |
 | EKS control plane | $73 |
 | CloudFront + WAF + API Gateway | ~$6 |
-| AWS Managed Grafana + AMP | ~$9-14 |
+| AWS Managed Grafana (AMP free tier) | ~$9 |
 | **Total (idle)** | **~$214/mo** |
 
 ### DEV Phase (current — Tier 1 fallback, g5.2xlarge spot)
@@ -277,7 +278,7 @@ Token generation: flagship produces 30-50 tok/s. A 500-token response takes ~10-
 | EBS storage (200GB gp3) | ~$14 |
 | EKS control plane | $73 |
 | CloudFront + WAF + API Gateway | ~$6 |
-| AWS Managed Grafana + AMP | ~$9-14 |
+| AWS Managed Grafana (AMP free tier) | ~$9 |
 | **Total (DEV)** | **~$288/mo** |
 
 ### PROD Phase (Tier 3 flagship, g5.12xlarge spot)
@@ -290,7 +291,7 @@ Token generation: flagship produces 30-50 tok/s. A 500-token response takes ~10-
 | EBS storage (200GB gp3) | ~$14 |
 | EKS control plane | $73 |
 | CloudFront + WAF + API Gateway | ~$6 |
-| AWS Managed Grafana + AMP | ~$9-14 |
+| AWS Managed Grafana (AMP free tier) | ~$9 |
 | **Total (PROD)** | **~$548/mo** |
 
 Down from $4,155/mo (24/7 on-demand + Kong) — 90%+ reduction.
@@ -306,7 +307,8 @@ Down from $4,155/mo (24/7 on-demand + Kong) — 90%+ reduction.
 - Region — `ap-southeast-2` (Sydney) throughout. All resources in this region
 - Cluster name — `eks-ollama-dev`
 - Naming convention — resources prefixed with `ollama-eks-` or `ollama-` for easy identification
-- Environment switching — never edit base manifests to change environment. Use `terraform apply -var-file=environments/{env}.tfvars` for Terraform and update ArgoCD app paths to `k8s/overlays/{env}/` for K8s resources
+- Model tier switching — use `./switch-model.sh use <tier>` to switch between Tier 1/2/3. The script patches deployment resources via kubectl, Karpenter auto-provisions the right instance. No file editing needed
+- **CRITICAL: Never leave KEDA paused** — KEDA controls GPU auto-scale-to-zero. If KEDA is paused, the GPU node runs indefinitely at $0.35-$1.90/hr. If you must pause KEDA (e.g., during `switch-model.sh` or manual scaling), ALWAYS unpause it before finishing. The GPU controller Lambda handles this automatically (pauses on start, unpauses on stop). Verify with: `kubectl get scaledobject -n ollama` — PAUSED column should show `Unknown` or `false`, never `true` in steady state
 
 ### Provisioning Order (must be followed for all changes)
 
@@ -339,13 +341,13 @@ This is not optional. Documentation drift causes confusion in consulting engagem
 ### Model Access Control
 
 - Open WebUI model selector is locked for regular users (`MODEL_FILTER_ENABLED: true`)
-- Only the default model is visible to non-admin users (DEV: `qwen3.5:27b`, PROD: `qwen3.5:122b-a10b`)
+- Only the default model is visible to non-admin users (`qwen3.5:27b` on fresh deploy)
 - Admins (first user + promoted users) can see and switch all tiers
 - Cluster-wide model switching is done via `./switch-model.sh use <tier>` by users with kubectl access
-- When changing the default model, update the Kustomize overlay patch in `k8s/overlays/{env}/open-webui/deployment-patch.yaml`
+- To change the default model shown to users, update `DEFAULT_MODELS` and `MODEL_FILTER_LIST` in `k8s/open-webui/deployment.yaml`
 
 ## Companion Documents
 
 - `Ollama-EKS-Report.html` — Full visual report with 18+ sections, Mermaid diagrams, cost tables (open in browser)
 - `RECOMMENDATIONS-Ollama-EKS-Improvements.md` — Detailed recommendations with code snippets for each improvement
-- `switch-model.sh` — Model tier switching script (Tier 3 = default)
+- `switch-model.sh` — Flex mode model tier switching script (patches deployment resources, Karpenter auto-provisions the right GPU instance)
