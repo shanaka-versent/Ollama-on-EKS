@@ -554,14 +554,6 @@ resource "kubernetes_secret" "webui_oauth" {
         content     = "<div style='display:flex;align-items:center;gap:12px;padding:4px 0'><span style='font-size:14px'>Need to reset your password?</span><a href='/auth/login.html' style='display:inline-block;background:#fff;color:#1e40af;font-weight:600;padding:6px 16px;border-radius:6px;text-decoration:none;font-size:13px;box-shadow:0 1px 3px rgba(0,0,0,0.2);transition:all 0.2s'>Reset Password</a></div>"
         dismissible = true
         timestamp   = 1774051200
-      },
-      {
-        id          = "gpu-control"
-        type        = "info"
-        title       = ""
-        content     = "<div style='display:flex;align-items:center;gap:12px;padding:4px 0'><span style='font-size:14px'>GPU offline? Start it from the control panel.</span><a href='/portal/gpu.html' style='display:inline-block;background:#22c55e;color:#fff;font-weight:600;padding:6px 16px;border-radius:6px;text-decoration:none;font-size:13px;box-shadow:0 1px 3px rgba(0,0,0,0.2);transition:all 0.2s'>GPU Control</a></div>"
-        dismissible = true
-        timestamp   = 1774051200
       }
     ])
   }

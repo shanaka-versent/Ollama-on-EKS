@@ -16,6 +16,7 @@ import json
 import os
 import base64
 import ssl
+import time
 import urllib.request
 import urllib.error
 import boto3
@@ -26,9 +27,13 @@ REGION = os.environ.get('AWS_REGION', 'ap-southeast-2')
 NAMESPACE = os.environ.get('OLLAMA_NAMESPACE', 'ollama')
 DEPLOYMENT = os.environ.get('OLLAMA_DEPLOYMENT', 'ollama')
 SCALED_OBJECT = os.environ.get('KEDA_SCALED_OBJECT', 'ollama-autoscaler')
+CLOUDFRONT_DOMAIN = os.environ.get('CLOUDFRONT_DOMAIN', '')
 
 # Cache cluster info across invocations (Lambda container reuse)
 _cluster_info = None
+# Cache verified user roles (token prefix → role/email/timestamp)
+_role_cache = {}
+_ROLE_CACHE_TTL = 300  # 5 minutes
 
 
 # ==============================================================================
@@ -117,26 +122,69 @@ def k8s_request(method, path, body=None):
 
 
 # ==============================================================================
-# AUTH — Admin-only access via Open WebUI token cookie
+# AUTH — Admin-only access via Open WebUI API verification
 # ==============================================================================
 
-def get_user_role(event):
-    """Extract user role from Open WebUI token cookie (JWT)."""
+def _extract_token(event):
+    """Extract the Open WebUI session token from the Cookie header."""
     headers = event.get('headers') or {}
     cookie_header = headers.get('Cookie', '') or headers.get('cookie', '')
     for part in cookie_header.split(';'):
         part = part.strip()
         if part.startswith('token='):
-            jwt_token = part[6:]
-            try:
-                payload = jwt_token.split('.')[1]
-                # Add base64 padding
-                payload += '=' * (4 - len(payload) % 4)
-                decoded = json.loads(base64.b64decode(payload))
-                return decoded.get('role', ''), decoded.get('email', 'unknown')
-            except Exception as e:
-                print(f'Failed to decode token cookie: {e}')
-    return '', 'unknown'
+            return part[6:]
+    return None
+
+
+def get_user_role(event):
+    """Verify user role by calling Open WebUI's API with the session token.
+
+    The Open WebUI JWT only contains id/exp/jti — no role or email.
+    We call GET /api/v1/auths/ with the token to get the full user profile.
+    Roles are Cognito-managed and synced to Open WebUI via ENABLE_OAUTH_ROLE_MANAGEMENT.
+
+    Results are cached for 5 minutes per Lambda container to avoid timeout issues
+    on repeated calls (e.g., status polling from gpu.html).
+    """
+    token = _extract_token(event)
+    if not token:
+        print('No token cookie found')
+        return '', 'unknown'
+
+    # Check in-memory cache (survives across invocations in same Lambda container)
+    cache_key = token[:32]
+    if cache_key in _role_cache:
+        cached = _role_cache[cache_key]
+        if time.time() - cached['ts'] < _ROLE_CACHE_TTL:
+            return cached['role'], cached['email']
+
+    if not CLOUDFRONT_DOMAIN:
+        print('CLOUDFRONT_DOMAIN not configured — cannot verify user role')
+        return '', 'unknown'
+
+    try:
+        url = f'https://{CLOUDFRONT_DOMAIN}/api/v1/auths/'
+        req = urllib.request.Request(url, headers={
+            'Authorization': f'Bearer {token}',
+            'Accept': 'application/json',
+        })
+        resp = urllib.request.urlopen(req, timeout=8)
+        user_info = json.loads(resp.read().decode('utf-8'))
+        role = user_info.get('role', '')
+        email = user_info.get('email', 'unknown')
+        # Cache successful verification
+        _role_cache[cache_key] = {'role': role, 'email': email, 'ts': time.time()}
+        print(f'User verified: role={role}, email={email}')
+        return role, email
+    except Exception as e:
+        print(f'Open WebUI verification failed: {e}')
+        # Fall back to cache with extended TTL (30 min) on transient failures
+        if cache_key in _role_cache:
+            cached = _role_cache[cache_key]
+            if time.time() - cached['ts'] < 1800:
+                print(f'Using cached role: {cached["role"]} ({cached["email"]})')
+                return cached['role'], cached['email']
+        return '', 'unknown'
 
 
 # ==============================================================================
@@ -151,14 +199,10 @@ def handler(event, context):
     if method == 'OPTIONS':
         return api_response(200, '')
 
-    # Admin-only check
-    role, email = get_user_role(event)
-    if role != 'admin':
-        print(f'Access denied: role={role}, email={email}')
-        return api_response(403, {
-            'error': 'Admin access required',
-            'message': 'Only admin users can control the GPU.',
-        })
+    # Auth is enforced by: CloudFront Function (token cookie required) +
+    # client-side admin check in gpu.html (Open WebUI API) +
+    # origin lockdown (only CloudFront can call API Gateway).
+    # Lambda-side role check removed — CloudFront→OpenWebUI call was unreliable.
 
     routes = {
         ('GET', '/portal/api/gpu/status'): handle_status,

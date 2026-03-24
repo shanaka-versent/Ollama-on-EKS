@@ -1271,10 +1271,11 @@ resource "aws_lambda_function" "gpu_controller" {
 
   environment {
     variables = {
-      EKS_CLUSTER_NAME  = var.eks_cluster_name
-      OLLAMA_NAMESPACE  = "ollama"
-      OLLAMA_DEPLOYMENT = "ollama"
+      EKS_CLUSTER_NAME   = var.eks_cluster_name
+      OLLAMA_NAMESPACE   = "ollama"
+      OLLAMA_DEPLOYMENT  = "ollama"
       KEDA_SCALED_OBJECT = "ollama-autoscaler"
+      CLOUDFRONT_DOMAIN  = var.cloudfront_domain
     }
   }
 

@@ -125,21 +125,37 @@
     const API_BASE = '/portal/api/gpu';
     let pollTimer = null;
 
+    // Check admin role via Open WebUI API (same-origin, reliable)
+    async function verifyAdmin() {
+      try {
+        // Open WebUI stores token in localStorage; fallback to cookie
+        var token = localStorage.getItem('token');
+        if (!token) token = (document.cookie.match(/token=([^;]+)/) || [])[1];
+        if (!token) { showLockout('No session found. Please log in first.'); return false; }
+        const resp = await fetch('/api/v1/auths/', {
+          headers: { 'Authorization': 'Bearer ' + token }
+        });
+        if (!resp.ok) { showLockout('Session expired. Please log in again.'); return false; }
+        const user = await resp.json();
+        if (user.role !== 'admin') { showLockout('Admin access required.'); return false; }
+        return true;
+      } catch (e) { showLockout('Could not verify access: ' + e.message); return false; }
+    }
+
+    function showLockout(reason) {
+      document.querySelector('.card').innerHTML =
+        '<div style="text-align:center;padding:32px 16px">' +
+        '<div style="font-size:40px;margin-bottom:12px">&#128274;</div>' +
+        '<p style="font-size:16px;font-weight:600;margin-bottom:8px">Access Denied</p>' +
+        '<p style="font-size:13px;color:#71717a">' + (reason || 'Only admin users can control the GPU.') + '</p>' +
+        '<a href="/auth/login.html" style="display:inline-block;margin-top:16px;color:#3b82f6;font-size:13px">Go to Login</a>' +
+        '</div>';
+    }
+
     async function apiCall(endpoint, method = 'GET') {
       try {
         const resp = await fetch(`${API_BASE}/${endpoint}`, { method });
-        const data = await resp.json();
-        if (resp.status === 403) {
-          // Admin-only — show access denied
-          document.querySelector('.card').innerHTML =
-            '<div style="text-align:center;padding:32px 16px">' +
-            '<div style="font-size:40px;margin-bottom:12px">🔒</div>' +
-            '<p style="font-size:16px;font-weight:600;margin-bottom:8px">Admin Access Required</p>' +
-            '<p style="font-size:13px;color:#71717a">Only admin users can control the GPU.<br>Contact your administrator for access.</p>' +
-            '</div>';
-          return { _blocked: true };
-        }
-        return data;
+        return await resp.json();
       } catch (e) {
         return { error: e.message };
       }
@@ -217,8 +233,10 @@
       el.textContent = text;
     }
 
-    // Initial status check
-    checkStatus();
+    // Verify admin role first, then load GPU status
+    (async () => {
+      if (await verifyAdmin()) checkStatus();
+    })();
   </script>
 </body>
 </html>
