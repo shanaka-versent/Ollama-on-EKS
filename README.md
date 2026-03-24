@@ -74,6 +74,7 @@ flowchart TB
 API:     Client → CloudFront (WAF) → API Gateway (x-api-key) → VPC Link → Internal NLB → Istio → Ollama
 Web UI:  Client → CloudFront (WAF) → VPC Origin (private) → Internal NLB → Istio → Open WebUI
 Login:   Client → CloudFront → /auth/login.html (S3) → Custom Portal → Cognito API → OAuth → Open WebUI
+GPU Ctl: Client → CloudFront → /portal/api/gpu/* → API Gateway → GPU Controller Lambda → K8s API (EKS)
 Grafana: Admin → AWS Managed Grafana (AMG) URL → IAM Identity Center SSO
 ```
 
@@ -97,6 +98,7 @@ CloudFront connects to the internal NLB via **VPC Origins** — private connecti
 | Ollama server | Your EKS GPU node | Model server — runs GPU inference |
 | EBS gp3 (200GB) | Your AWS account | Pre-loaded models via EBS snapshot, 6000 IOPS, 400 MB/s |
 | Custom Login Portal | S3 + Lambda + API GW | Handles all auth flows (login, signup, MFA, password reset) — no Cognito hosted UI |
+| GPU Control Portal | S3 + Lambda + API GW | Self-service GPU start/stop/status — no kubectl access needed |
 | Cognito User Pool | Your AWS account | OAuth/OIDC provider with TOTP MFA, group-based roles, admin-approved signups |
 
 ### Default Model: Fallback (qwen3.5:27b) — DEV Phase
@@ -663,6 +665,20 @@ KEDA **only targets the Ollama deployment** (GPU workload) — Open WebUI stays 
 
 **Manual scale-down (immediate):** `./scripts/scale-down.sh` scales to 0 immediately without waiting for the 15-min idle window.
 
+### Self-Service GPU Control
+
+A web-based GPU control panel lets users start/stop the GPU node without kubectl access. Accessible from the banner in Open WebUI or directly at `/portal/gpu.html`.
+
+| Endpoint | Method | What It Does |
+|----------|--------|-------------|
+| `/portal/api/gpu/status` | GET | Returns GPU status (running/stopped/starting), replica count, KEDA paused state |
+| `/portal/api/gpu/start` | POST | Pauses KEDA + scales Ollama to 1 replica (~3 min cold start) |
+| `/portal/api/gpu/stop` | POST | Scales Ollama to 0 + unpauses KEDA (GPU node terminates in ~10 min) |
+
+**How it works:** A GPU controller Lambda authenticates to the EKS cluster via STS presigned URL (bearer token), then patches the Ollama deployment and KEDA ScaledObject via the K8s API. The Lambda has an EKS access entry with `AmazonEKSEditPolicy` scoped to the `ollama` namespace.
+
+> **Important:** The stop endpoint always unpauses KEDA after scaling to 0. KEDA must never be left paused — a paused KEDA means the GPU node runs indefinitely at $0.35-$1.90/hr.
+
 ### Resume Next Session
 
 The EBS snapshot has your models pre-loaded — no re-download needed. Scale up manually and Karpenter auto-provisions a new GPU node:
@@ -752,6 +768,7 @@ flowchart LR
 | **Node Isolation** | System NodePool (t3.xlarge on-demand, all non-GPU workloads), GPU NodePool (g5 spot, `workload-type: gpu-inference` nodeSelector + `nvidia.com/gpu` taint) |
 | **EBS Snapshot** | Pre-loaded models — no internet needed for model loading |
 | **Cognito + Custom Portal** | Custom login portal (auth_proxy Lambda + login.html SPA) handles all auth flows — users never see Cognito hosted UI. OAuth/OIDC with mandatory TOTP MFA, roles synced from Cognito groups, admin-approved signups, in-app password reset, no local passwords, admin chat access and DB export disabled |
+| **GPU Controller Lambda** | Self-service GPU start/stop via K8s API. EKS access scoped to `ollama` namespace only (`AmazonEKSEditPolicy`). Bearer token is short-lived (60s STS presigned URL). Stop always unpauses KEDA to prevent runaway GPU cost |
 | **IRSA** | EBS CSI + LB Controller + Bedrock (Stack B) use least-privilege IAM roles via OIDC |
 | **cert-manager** | Automated TLS certificate lifecycle (90d duration, 30d auto-renewal) |
 
@@ -861,7 +878,7 @@ terraform/
     cdn-waf/                       # CloudFront + WAFv2 (5 rules) + origin lockdown header
     cert-manager/                  # cert-manager Helm release
     cognito/                       # Cognito User Pool for Open WebUI (OAuth, MFA, groups)
-    api-key-portal/                # Self-service API key management + custom login portal (auth_proxy Lambda)
+    api-key-portal/                # Self-service API key management, custom login portal, GPU control (auth_proxy + gpu_controller Lambdas)
     managed-grafana/               # AMG + AMP (all dashboards via IAM Identity Center SSO)
     bedrock-integration/           # Stack B: VPC endpoint + IRSA for Bedrock
 
