@@ -75,15 +75,11 @@ resource "aws_s3_object" "index_html" {
   bucket       = aws_s3_bucket.portal.id
   key          = "portal/index.html"
   content      = templatefile("${path.module}/static/index.html", {
-    cognito_domain    = var.cognito_domain
-    client_id         = aws_cognito_user_pool_client.portal.id
     cloudfront_domain = var.cloudfront_domain
     api_base_url      = "https://${var.cloudfront_domain}"
   })
   content_type = "text/html"
   etag         = md5(templatefile("${path.module}/static/index.html", {
-    cognito_domain    = var.cognito_domain
-    client_id         = aws_cognito_user_pool_client.portal.id
     cloudfront_domain = var.cloudfront_domain
     api_base_url      = "https://${var.cloudfront_domain}"
   }))
@@ -205,39 +201,6 @@ resource "aws_dynamodb_table" "api_keys" {
   }
 
   tags = var.tags
-}
-
-# ==============================================================================
-# COGNITO APP CLIENT — Portal SPA (public client, no secret)
-# ==============================================================================
-
-resource "aws_cognito_user_pool_client" "portal" {
-  name         = "${var.project_name}-portal-client"
-  user_pool_id = var.cognito_user_pool_id
-
-  allowed_oauth_flows                  = ["code"]
-  allowed_oauth_flows_user_pool_client = true
-  allowed_oauth_scopes                 = ["openid", "email", "profile"]
-  supported_identity_providers         = ["COGNITO"]
-  generate_secret                      = false # SPA client — no secret
-
-  callback_urls = ["https://${var.cloudfront_domain}/portal/"]
-  logout_urls   = ["https://${var.cloudfront_domain}/portal/"]
-
-  access_token_validity  = 1
-  id_token_validity      = 1
-  refresh_token_validity = 30
-
-  token_validity_units {
-    access_token  = "hours"
-    id_token      = "hours"
-    refresh_token = "days"
-  }
-
-  explicit_auth_flows = [
-    "ALLOW_REFRESH_TOKEN_AUTH",
-    "ALLOW_USER_SRP_AUTH",
-  ]
 }
 
 # ==============================================================================
@@ -454,15 +417,6 @@ resource "aws_lambda_permission" "eventbridge_expiry" {
 # API GATEWAY — Portal API Resources (on existing REST API)
 # ==============================================================================
 
-# Cognito authorizer — validates JWT from the ollama-webui user pool
-resource "aws_api_gateway_authorizer" "cognito" {
-  name            = "${var.project_name}-cognito"
-  rest_api_id     = var.rest_api_id
-  type            = "COGNITO_USER_POOLS"
-  provider_arns   = ["arn:aws:cognito-idp:${var.region}:${data.aws_caller_identity.current.account_id}:userpool/${var.cognito_user_pool_id}"]
-  identity_source = "method.request.header.Authorization"
-}
-
 # /portal
 resource "aws_api_gateway_resource" "portal" {
   rest_api_id = var.rest_api_id
@@ -492,12 +446,13 @@ resource "aws_api_gateway_resource" "portal_key_by_id" {
 }
 
 # --- GET /portal/api/keys (list user's keys) ---
+# Auth: User identity read from Open WebUI token cookie by the Lambda.
+# CloudFront auth redirect + origin lockdown ensure only authenticated users reach here.
 resource "aws_api_gateway_method" "list_keys" {
   rest_api_id      = var.rest_api_id
   resource_id      = aws_api_gateway_resource.portal_keys.id
   http_method      = "GET"
-  authorization    = "COGNITO_USER_POOLS"
-  authorizer_id    = aws_api_gateway_authorizer.cognito.id
+  authorization    = "NONE"
   api_key_required = false
 }
 
@@ -515,8 +470,7 @@ resource "aws_api_gateway_method" "create_key" {
   rest_api_id      = var.rest_api_id
   resource_id      = aws_api_gateway_resource.portal_keys.id
   http_method      = "POST"
-  authorization    = "COGNITO_USER_POOLS"
-  authorizer_id    = aws_api_gateway_authorizer.cognito.id
+  authorization    = "NONE"
   api_key_required = false
 }
 
@@ -534,8 +488,7 @@ resource "aws_api_gateway_method" "update_key" {
   rest_api_id      = var.rest_api_id
   resource_id      = aws_api_gateway_resource.portal_key_by_id.id
   http_method      = "PATCH"
-  authorization    = "COGNITO_USER_POOLS"
-  authorizer_id    = aws_api_gateway_authorizer.cognito.id
+  authorization    = "NONE"
   api_key_required = false
 }
 
@@ -553,8 +506,7 @@ resource "aws_api_gateway_method" "delete_key" {
   rest_api_id      = var.rest_api_id
   resource_id      = aws_api_gateway_resource.portal_key_by_id.id
   http_method      = "DELETE"
-  authorization    = "COGNITO_USER_POOLS"
-  authorizer_id    = aws_api_gateway_authorizer.cognito.id
+  authorization    = "NONE"
   api_key_required = false
 }
 
@@ -1237,7 +1189,6 @@ resource "aws_api_gateway_deployment" "portal" {
       aws_api_gateway_method.auth_setup_mfa,
       aws_api_gateway_method.auth_forgot_password,
       aws_api_gateway_method.auth_confirm_reset,
-      aws_api_gateway_authorizer.cognito,
     ]))
   }
 

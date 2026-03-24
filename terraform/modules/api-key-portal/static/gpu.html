@@ -128,7 +128,18 @@
     async function apiCall(endpoint, method = 'GET') {
       try {
         const resp = await fetch(`${API_BASE}/${endpoint}`, { method });
-        return await resp.json();
+        const data = await resp.json();
+        if (resp.status === 403) {
+          // Admin-only — show access denied
+          document.querySelector('.card').innerHTML =
+            '<div style="text-align:center;padding:32px 16px">' +
+            '<div style="font-size:40px;margin-bottom:12px">🔒</div>' +
+            '<p style="font-size:16px;font-weight:600;margin-bottom:8px">Admin Access Required</p>' +
+            '<p style="font-size:13px;color:#71717a">Only admin users can control the GPU.<br>Contact your administrator for access.</p>' +
+            '</div>';
+          return { _blocked: true };
+        }
+        return data;
       } catch (e) {
         return { error: e.message };
       }
@@ -165,6 +176,7 @@
 
     async function checkStatus() {
       const data = await apiCall('status');
+      if (data._blocked) return;
       if (data.error) {
         showMessage('error', 'Failed to get status: ' + data.error);
         return;

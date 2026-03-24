@@ -56,21 +56,12 @@
   </style>
 </head>
 <body>
-  <!-- Login Section -->
-  <div id="login-section" class="container" style="display:none;">
-    <h1>Ollama API Keys</h1>
-    <p>Manage your API keys for the Ollama LLM API</p>
-    <button class="btn-primary" onclick="login()" style="padding: 0.75rem 2rem; font-size: 1rem;">Sign in with Cognito</button>
-  </div>
-
-  <!-- Main App -->
-  <div id="app" class="container" style="display:none;">
+  <!-- Main App (CloudFront auth redirect ensures user is logged in) -->
+  <div id="app" class="container">
     <header>
       <h1>Ollama API Keys</h1>
       <div class="user-info">
-        <span id="user-email"></span>
         <a href="/">Back to Chat</a>
-        <button class="btn-outline btn-sm" onclick="logout()">Sign out</button>
       </div>
     </header>
 
@@ -165,95 +156,18 @@ export OPENAI_BASE_URL=https://${cloudfront_domain}/v1</code></pre>
 
 <script>
 // Config injected by Terraform templatefile
-const COGNITO_DOMAIN = '${cognito_domain}';
-const CLIENT_ID = '${client_id}';
-const REDIRECT_URI = 'https://${cloudfront_domain}/portal/';
 const API_BASE = '${api_base_url}';
 
-let idToken = null;
-let userEmail = '';
-
-// --- Auth ---
-function login() {
-  const url = COGNITO_DOMAIN + '/oauth2/authorize?response_type=code&client_id=' + CLIENT_ID +
-    '&redirect_uri=' + encodeURIComponent(REDIRECT_URI) + '&scope=openid+email+profile';
-  window.location.href = url;
-}
-
-function logout() {
-  sessionStorage.removeItem('id_token');
-  sessionStorage.removeItem('access_token');
-  const url = COGNITO_DOMAIN + '/logout?client_id=' + CLIENT_ID +
-    '&logout_uri=' + encodeURIComponent(REDIRECT_URI);
-  window.location.href = url;
-}
-
-async function exchangeCode(code) {
-  const resp = await fetch(COGNITO_DOMAIN + '/oauth2/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: 'grant_type=authorization_code&client_id=' + CLIENT_ID +
-      '&redirect_uri=' + encodeURIComponent(REDIRECT_URI) + '&code=' + code,
-  });
-  if (!resp.ok) throw new Error('Token exchange failed');
-  const data = await resp.json();
-  sessionStorage.setItem('id_token', data.id_token);
-  sessionStorage.setItem('access_token', data.access_token);
-  return data.id_token;
-}
-
-function parseJwt(token) {
-  try {
-    const base64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
-    return JSON.parse(atob(base64));
-  } catch { return {}; }
-}
-
-async function initAuth() {
-  const params = new URLSearchParams(window.location.search);
-  const code = params.get('code');
-
-  if (code) {
-    try {
-      idToken = await exchangeCode(code);
-      window.history.replaceState({}, '', '/portal/');
-    } catch (e) {
-      console.error('Auth failed:', e);
-      showLogin();
-      return;
-    }
-  } else {
-    idToken = sessionStorage.getItem('id_token');
-  }
-
-  if (!idToken) { showLogin(); return; }
-
-  const claims = parseJwt(idToken);
-  const exp = claims.exp * 1000;
-  if (Date.now() > exp) {
-    sessionStorage.removeItem('id_token');
-    showLogin();
-    return;
-  }
-
-  userEmail = claims.email || 'User';
-  document.getElementById('user-email').textContent = userEmail;
-  document.getElementById('login-section').style.display = 'none';
-  document.getElementById('app').style.display = 'block';
-  loadKeys();
-}
-
-function showLogin() {
-  document.getElementById('login-section').style.display = 'block';
-  document.getElementById('app').style.display = 'none';
-}
-
-// --- API Calls ---
+// --- API Calls (token cookie sent automatically by browser) ---
 async function apiFetch(path, opts = {}) {
   opts.headers = opts.headers || {};
-  opts.headers['Authorization'] = 'Bearer ' + idToken;
   opts.headers['Content-Type'] = 'application/json';
   const resp = await fetch(API_BASE + '/portal/api' + path, opts);
+  if (resp.status === 401) {
+    // Session expired — redirect to login
+    window.location.href = '/auth/login.html';
+    return;
+  }
   const data = await resp.json();
   if (!resp.ok) throw new Error(data.error || 'Request failed');
   return data;
@@ -378,8 +292,8 @@ function confirmRevoke(keyId) {
 
 function closeModal(id) { document.getElementById(id).classList.remove('active'); }
 
-// Init
-initAuth();
+// Init — load keys immediately (CloudFront auth ensures user is logged in)
+loadKeys();
 </script>
 </body>
 </html>

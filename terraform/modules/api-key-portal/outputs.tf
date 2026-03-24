@@ -21,11 +21,6 @@ output "dynamo_table_name" {
   value       = aws_dynamodb_table.api_keys.name
 }
 
-output "portal_client_id" {
-  description = "Cognito app client ID for the portal SPA"
-  value       = aws_cognito_user_pool_client.portal.id
-}
-
 output "lambda_manager_invoke_arn" {
   description = "Lambda invoke ARN for the key management function"
   value       = aws_lambda_function.key_manager.invoke_arn

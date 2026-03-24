@@ -117,16 +117,48 @@ def k8s_request(method, path, body=None):
 
 
 # ==============================================================================
+# AUTH — Admin-only access via Open WebUI token cookie
+# ==============================================================================
+
+def get_user_role(event):
+    """Extract user role from Open WebUI token cookie (JWT)."""
+    headers = event.get('headers') or {}
+    cookie_header = headers.get('Cookie', '') or headers.get('cookie', '')
+    for part in cookie_header.split(';'):
+        part = part.strip()
+        if part.startswith('token='):
+            jwt_token = part[6:]
+            try:
+                payload = jwt_token.split('.')[1]
+                # Add base64 padding
+                payload += '=' * (4 - len(payload) % 4)
+                decoded = json.loads(base64.b64decode(payload))
+                return decoded.get('role', ''), decoded.get('email', 'unknown')
+            except Exception as e:
+                print(f'Failed to decode token cookie: {e}')
+    return '', 'unknown'
+
+
+# ==============================================================================
 # HANDLER
 # ==============================================================================
 
 def handler(event, context):
-    """Route requests to appropriate handlers."""
+    """Route requests to appropriate handlers. Admin-only access."""
     path = event.get('path', '')
     method = event.get('httpMethod', '')
 
     if method == 'OPTIONS':
         return api_response(200, '')
+
+    # Admin-only check
+    role, email = get_user_role(event)
+    if role != 'admin':
+        print(f'Access denied: role={role}, email={email}')
+        return api_response(403, {
+            'error': 'Admin access required',
+            'message': 'Only admin users can control the GPU.',
+        })
 
     routes = {
         ('GET', '/portal/api/gpu/status'): handle_status,

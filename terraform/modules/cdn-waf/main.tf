@@ -72,9 +72,10 @@ resource "aws_cloudfront_function" "auth_redirect" {
   JS
 }
 
-# --- CloudFront Function: S3 Index Rewrite ---
-# S3 with OAC doesn't auto-resolve directory requests (e.g. /portal/) to
-# index.html. This function appends index.html to bare directory paths.
+# --- CloudFront Function: Portal Auth + S3 Index Rewrite ---
+# Combines two functions for the portal S3 behavior:
+# 1. Auth check — redirects unauthenticated users (no token cookie) to login
+# 2. Index rewrite — appends index.html to directory paths (S3 OAC doesn't auto-resolve)
 resource "aws_cloudfront_function" "s3_index_rewrite" {
   count = local.portal_enabled ? 1 : 0
 
@@ -86,6 +87,19 @@ resource "aws_cloudfront_function" "s3_index_rewrite" {
     function handler(event) {
       var request = event.request;
       var uri = request.uri;
+      var cookies = request.cookies || {};
+
+      // Auth check — require token cookie (set by Open WebUI login)
+      if (!cookies['token']) {
+        return {
+          statusCode: 302,
+          statusDescription: 'Found',
+          headers: {
+            location: { value: '/auth/login.html' },
+            'cache-control': { value: 'no-cache, no-store, must-revalidate' }
+          }
+        };
+      }
 
       // /portal/ → /portal/index.html
       if (uri.endsWith('/')) {
@@ -403,7 +417,7 @@ resource "aws_cloudfront_distribution" "ollama" {
     }
   }
 
-  # Portal API → API Gateway (Cognito-authenticated Lambda)
+  # Portal API → API Gateway (auth via token cookie in Lambda)
   dynamic "ordered_cache_behavior" {
     for_each = local.portal_enabled ? [1] : []
     content {
