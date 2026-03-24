@@ -1,15 +1,26 @@
 # ──────────────────────────────────────────────────────────────────────
-# Disable built-in alerts incompatible with ephemeral GPU nodes
+# Disable built-in alerts incompatible with EKS + ephemeral GPU nodes
 # ──────────────────────────────────────────────────────────────────────
-# GPU nodes are intentionally ephemeral: KEDA scales Ollama to 0 after
-# 15 min idle, Karpenter terminates the empty GPU node after 10 min.
-# Built-in alerts that assume permanent nodes fire false positives
-# every time the GPU node is terminated. Disable them here.
-# System node health is still covered by our custom OllamaUnavailable,
-# GPUPodPending, and KarpenterProvisioningFailed alerts.
+# Two categories of false positives:
+#
+# 1. EKS managed control plane — API server, etcd, scheduler, and
+#    controller manager are AWS-managed. Their metrics endpoints are
+#    proxied and intermittently unreachable for scraping, triggering
+#    *Down alerts even though the control plane is healthy.
+#
+# 2. Ephemeral GPU nodes — KEDA scales Ollama to 0 after 15 min idle,
+#    Karpenter terminates the GPU node after 10 min. Built-in alerts
+#    that assume permanent nodes fire every time the GPU node is removed.
+#
+# System/app health is covered by custom alerts: OllamaUnavailable,
+# GPUPodPending, KarpenterProvisioningFailed, GPUOnDemandFallback.
 defaultRules:
   disabled:
-    KubeletDown: true              # Fires when GPU node kubelet disappears (expected)
+    # --- EKS managed control plane (metrics scraping unreliable) ---
+    KubeAPIDown: true              # API server metrics endpoint flaky on EKS
+    KubeAPITerminatedRequests: true # Control plane managed by AWS
+    # --- Ephemeral GPU nodes (terminated by design) ---
+    KubeletDown: true              # Fires when GPU node kubelet disappears
     KubeNodeNotReady: true         # Fires briefly during GPU node termination
     KubeNodeUnreachable: true      # Fires after GPU node is terminated
     NodeFilesystemAlmostOutOfSpace: true  # Transient on short-lived GPU nodes

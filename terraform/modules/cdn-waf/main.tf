@@ -39,6 +39,21 @@ resource "aws_cloudfront_function" "auth_redirect" {
       var uri = request.uri;
       var cookies = request.cookies || {};
 
+      // Intercept Open WebUI's built-in /auth redirect — send users to our
+      // custom login page instead. This fires when a stale token cookie
+      // passes the check below but Open WebUI rejects the expired JWT and
+      // redirects to /auth?redirect=/
+      if (uri === '/auth') {
+        return {
+          statusCode: 302,
+          statusDescription: 'Found',
+          headers: {
+            location: { value: '/auth/login.html' },
+            'cache-control': { value: 'no-cache, no-store, must-revalidate' }
+          }
+        };
+      }
+
       // Paths that must NOT be redirected
       if (uri.startsWith('/oauth/') ||
           uri.startsWith('/_app/') ||

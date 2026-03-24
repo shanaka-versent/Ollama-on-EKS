@@ -54,8 +54,9 @@
       "pluginVersion": "9.5.0",
       "targets": [
         {
-          "expr": "count(kube_node_status_capacity{resource=\"nvidia_com_gpu\"} > 0) or vector(0)",
+          "expr": "max_over_time((count(kube_node_status_capacity{resource=\"nvidia_com_gpu\"} > 0) or vector(0))[15m:1m])",
           "format": "time_series",
+          "instant": true,
           "intervalFactor": 2,
           "refId": "A"
         }
@@ -97,8 +98,9 @@
       "pluginVersion": "9.5.0",
       "targets": [
         {
-          "expr": "kube_deployment_spec_replicas{namespace=\"ollama\", deployment=\"ollama\"}",
+          "expr": "max(max_over_time(kube_deployment_spec_replicas{namespace=\"ollama\", deployment=\"ollama\"}[15m]))",
           "format": "time_series",
+          "instant": true,
           "intervalFactor": 2,
           "refId": "A"
         }
@@ -140,8 +142,9 @@
       "pluginVersion": "9.5.0",
       "targets": [
         {
-          "expr": "count(kube_pod_status_phase{namespace=\"ollama\", phase=\"Pending\"} == 1) or vector(0)",
+          "expr": "max(max_over_time((count(kube_pod_status_phase{namespace=\"ollama\", phase=\"Pending\"} == 1) or vector(0))[15m:1m]))",
           "format": "time_series",
+          "instant": true,
           "intervalFactor": 2,
           "refId": "A"
         }
@@ -182,8 +185,9 @@
       "pluginVersion": "9.5.0",
       "targets": [
         {
-          "expr": "count(kube_node_info) or vector(0)",
+          "expr": "max_over_time((count(kube_node_info) or vector(0))[15m:1m])",
           "format": "time_series",
+          "instant": true,
           "intervalFactor": 2,
           "refId": "A"
         }
@@ -251,14 +255,14 @@
       "pluginVersion": "9.5.0",
       "targets": [
         {
-          "expr": "count(kube_node_status_capacity{resource=\"nvidia_com_gpu\"} > 0) or vector(0)",
+          "expr": "max_over_time((count(kube_node_status_capacity{resource=\"nvidia_com_gpu\"} > 0) or vector(0))[15m:1m])",
           "format": "time_series",
           "intervalFactor": 2,
           "legendFormat": "GPU Nodes",
           "refId": "A"
         },
         {
-          "expr": "count(kube_node_info unless on(node) (kube_node_status_capacity{resource=\"nvidia_com_gpu\"} > 0)) or vector(0)",
+          "expr": "max_over_time((count(kube_node_info unless on(node) (kube_node_status_capacity{resource=\"nvidia_com_gpu\"} > 0)) or vector(0))[15m:1m])",
           "format": "time_series",
           "intervalFactor": 2,
           "legendFormat": "System Nodes",
@@ -380,8 +384,9 @@
       "pluginVersion": "9.5.0",
       "targets": [
         {
-          "expr": "sum_over_time((count(kube_node_status_capacity{resource=\"nvidia_com_gpu\"} > 0) or vector(0))[24h:5m]) * 5 / 60",
+          "expr": "sum_over_time((max_over_time((count(kube_node_status_capacity{resource=\"nvidia_com_gpu\"} > 0) or vector(0))[15m:1m]))[24h:5m]) * 5 / 60",
           "format": "time_series",
+          "instant": true,
           "intervalFactor": 2,
           "refId": "A"
         }
