@@ -554,6 +554,14 @@ resource "kubernetes_secret" "webui_oauth" {
         content     = "<div style='display:flex;align-items:center;gap:12px;padding:4px 0'><span style='font-size:14px'>Need to reset your password?</span><a href='/auth/login.html' style='display:inline-block;background:#fff;color:#1e40af;font-weight:600;padding:6px 16px;border-radius:6px;text-decoration:none;font-size:13px;box-shadow:0 1px 3px rgba(0,0,0,0.2);transition:all 0.2s'>Reset Password</a></div>"
         dismissible = true
         timestamp   = 1774051200
+      },
+      {
+        id          = "gpu-control"
+        type        = "info"
+        title       = ""
+        content     = "<div style='display:flex;align-items:center;gap:12px;padding:4px 0'><span style='font-size:14px'>GPU offline? Start it from the control panel.</span><a href='/portal/gpu.html' style='display:inline-block;background:#22c55e;color:#fff;font-weight:600;padding:6px 16px;border-radius:6px;text-decoration:none;font-size:13px;box-shadow:0 1px 3px rgba(0,0,0,0.2);transition:all 0.2s'>GPU Control</a></div>"
+        dismissible = true
+        timestamp   = 1774051200
       }
     ])
   }
@@ -582,12 +590,34 @@ module "api_key_portal" {
   rest_api_root_resource_id = module.api_gateway.root_resource_id
   rest_api_execution_arn    = module.api_gateway.api_execution_arn
   usage_plan_id             = module.api_gateway.usage_plan_id
+  eks_cluster_name          = module.eks.cluster_name
   tags                      = var.tags
 
   # Note: depends_on removed — variable references create implicit dependencies.
   # Explicit depends_on defers ALL data sources in the module to apply time,
   # which causes aws_caller_identity to be (known after apply) and forces
   # S3 bucket replacement on every plan.
+}
+
+# EKS access entry for GPU controller Lambda — allows it to patch
+# deployments and ScaledObjects in the ollama namespace
+resource "aws_eks_access_entry" "gpu_controller" {
+  cluster_name  = module.eks.cluster_name
+  principal_arn = module.api_key_portal.gpu_controller_role_arn
+  type          = "STANDARD"
+}
+
+resource "aws_eks_access_policy_association" "gpu_controller" {
+  cluster_name  = module.eks.cluster_name
+  principal_arn = module.api_key_portal.gpu_controller_role_arn
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy"
+
+  access_scope {
+    type       = "namespace"
+    namespaces = ["ollama"]
+  }
+
+  depends_on = [aws_eks_access_entry.gpu_controller]
 }
 
 # ==============================================================================

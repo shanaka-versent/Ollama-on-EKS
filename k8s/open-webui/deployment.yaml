@@ -58,6 +58,10 @@ spec:
             # Connect to Ollama via ClusterIP service
             - name: OLLAMA_BASE_URL
               value: "http://ollama.ollama.svc.cluster.local:11434"
+            # Short timeout so WebUI loads even when Ollama is scaled to 0
+            # Without this, WebUI hangs on splash screen waiting for Ollama
+            - name: AIOHTTP_CLIENT_TIMEOUT
+              value: "5"
             # Disable external connections (air-gap compliant)
             - name: ENABLE_RAG_WEB_SEARCH
               value: "false"

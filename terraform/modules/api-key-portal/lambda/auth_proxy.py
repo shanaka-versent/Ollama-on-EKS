@@ -285,11 +285,12 @@ def _initiate_first_time_setup(email, password):
 # ==============================================================================
 
 def handle_mfa(event):
-    """Handle MFA verification with TOTP code via Cognito API.
+    """Handle MFA verification with TOTP code.
 
-    After successful MFA, completes the Open WebUI OAuth flow by driving
-    the full hosted UI login server-side (credentials + MFA are already
-    verified, so this is just to get the OAuth session token).
+    IMPORTANT: The TOTP code must NOT be consumed via Cognito API before the
+    hosted UI flow, because Cognito enforces single-use per TOTP code. We send
+    the code directly to the hosted UI OAuth flow to get the session token.
+    If the hosted UI fails, we fall back to API verification + re-login prompt.
     """
     try:
         body = parse_body(event)
@@ -314,8 +315,23 @@ def handle_mfa(event):
         print(f'State decode error: {e}')
         return api_response(400, {'error': 'Session expired. Please sign in again.'})
 
+    # Strategy: Send TOTP directly to hosted UI OAuth flow (don't consume via API first).
+    # This preserves the TOTP code for the hosted UI's own MFA verification step.
+    if password:
+        try:
+            result = _complete_oauth_with_tokens(email, password, totp_code=totp_code)
+            # Check if OAuth flow succeeded (status 200 with 'success' status)
+            if result.get('statusCode') == 200:
+                result_body = json.loads(result.get('body', '{}'))
+                if result_body.get('status') == 'success':
+                    return result
+            print(f'Hosted UI OAuth flow failed (status={result.get("statusCode")}), trying API fallback')
+        except Exception as oauth_err:
+            print(f'Hosted UI OAuth flow error: {oauth_err}')
+
+    # Fallback: Verify via Cognito API (TOTP may now be consumed by hosted UI attempt,
+    # so this might fail with CodeMismatchException — that's expected).
     try:
-        # Verify TOTP via Cognito API
         challenge_responses = {
             'USERNAME': email,
             'SOFTWARE_TOKEN_MFA_CODE': totp_code,
@@ -331,25 +347,20 @@ def handle_mfa(event):
             'ChallengeResponses': challenge_responses,
         })
 
-        if not result.get('AuthenticationResult'):
-            print(f'MFA: unexpected result after challenge: {result.get("ChallengeName", "none")}')
-            return api_response(401, {'error': 'MFA verification failed. Please try again.'})
+        if result.get('AuthenticationResult'):
+            # MFA verified via API but OAuth flow failed — user must re-login
+            # to get the session token (their MFA is now verified for this window)
+            return api_response(200, {
+                'status': 'setup_complete',
+                'message': 'Verification complete! Signing you in...',
+            })
 
-        # MFA verified — now complete the OAuth flow to get Open WebUI session.
-        # The same TOTP code can be reused within the 30-second window because
-        # the Cognito API and hosted UI are independent auth sessions.
-        if password:
-            return _complete_oauth_with_tokens(email, password, totp_code=totp_code)
-
-        # No password in state (e.g., from change-password flow) — tell user to sign in
-        return api_response(200, {
-            'status': 'setup_complete',
-            'message': 'Verification complete! Please sign in.',
-        })
+        print(f'MFA API: unexpected result: {result.get("ChallengeName", "none")}')
+        return api_response(401, {'error': 'MFA verification failed. Please try again.'})
 
     except Exception as e:
         error_msg = str(e)
-        print(f'MFA error: {error_msg}')
+        print(f'MFA API fallback error: {error_msg}')
         if 'CodeMismatchException' in error_msg:
             return api_response(401, {'error': 'Invalid code. Please check your authenticator app and try again.'})
         if 'NotAuthorizedException' in error_msg or 'ExpiredCodeException' in error_msg:
@@ -768,12 +779,19 @@ def _complete_oauth_with_tokens(email, password, totp_code=None):
         mfa_csrf = extract_csrf(resp['body']) or _extract_csrf_alternate(resp['body'])
         mfa_action = _extract_form_action(resp['body'], redirect_url)
 
+        # Log MFA page details for debugging
+        mfa_html = resp['body']
+        input_fields = re.findall(r'<input[^>]*name=["\']([^"\']+)["\']', mfa_html)
+        form_actions = re.findall(r'<form[^>]*action=["\']([^"\']+)["\']', mfa_html)
+        print(f'OAuth flow step 5: MFA page input fields={input_fields}, form_actions={form_actions}, csrf={bool(mfa_csrf)}, action={mfa_action}')
+
         if not mfa_csrf:
-            print(f'OAuth flow step 5: MFA CSRF failed. Preview: {resp["body"][:500]}')
+            print(f'OAuth flow step 5: MFA CSRF failed. Preview: {mfa_html[:1000]}')
             return api_response(500, {'error': 'Failed to load MFA form'})
 
         # Step 6: POST TOTP code — try multiple field names
-        for field_name in ['softwareTokenMfaCode', 'code', 'mfaCode']:
+        # authentication_code = Cognito hosted UI (confirmed via form inspection)
+        for field_name in ['authentication_code', 'cognitoResponse', 'softwareTokenMfaCode', 'code']:
             form_data = urllib.parse.urlencode({
                 '_csrf': mfa_csrf,
                 field_name: totp_code,
@@ -820,7 +838,7 @@ def _extract_form_action(html, default_url):
         return default_url
     match = re.search(r'<form[^>]*action=["\']([^"\']+)["\']', html)
     if match:
-        action = match.group(1)
+        action = match.group(1).replace('&amp;', '&')
         if action.startswith('http'):
             return action
         return resolve_url(default_url, action)

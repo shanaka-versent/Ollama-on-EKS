@@ -75,6 +75,11 @@ variable "cognito_client_secret" {
   sensitive   = true
 }
 
+variable "eks_cluster_name" {
+  description = "EKS cluster name (for GPU controller Lambda)"
+  type        = string
+}
+
 variable "tags" {
   description = "Tags for all resources"
   type        = map(string)

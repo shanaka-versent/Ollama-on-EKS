@@ -45,3 +45,13 @@ output "login_oac_id" {
   description = "CloudFront Origin Access Control ID for login SPA S3 origin"
   value       = aws_cloudfront_origin_access_control.login.id
 }
+
+output "gpu_controller_role_arn" {
+  description = "IAM role ARN for the GPU controller Lambda (needs EKS access entry)"
+  value       = aws_iam_role.gpu_controller.arn
+}
+
+output "gpu_control_url" {
+  description = "URL for GPU control page"
+  value       = "https://${var.cloudfront_domain}/portal/gpu.html"
+}

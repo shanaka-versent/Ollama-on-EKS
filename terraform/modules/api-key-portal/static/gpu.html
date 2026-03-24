@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GPU Control — Ollama</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+      background: #f4f4f5; color: #27272a; min-height: 100vh;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .container { width: 100%; max-width: 420px; padding: 24px; }
+    .logo { text-align: center; margin-bottom: 28px; }
+    .logo svg { width: 44px; height: 44px; margin-bottom: 10px; }
+    .logo h1 { font-size: 22px; font-weight: 700; color: #18181b; }
+    .logo p { font-size: 13px; color: #71717a; margin-top: 4px; }
+    .card {
+      background: #ffffff; border-radius: 14px; padding: 28px;
+      border: 1px solid #e4e4e7; box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+    .status-badge {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 8px 16px; border-radius: 20px; font-size: 14px;
+      font-weight: 600; margin-bottom: 20px;
+    }
+    .status-badge .dot {
+      width: 10px; height: 10px; border-radius: 50%;
+    }
+    .status-running { background: #dcfce7; color: #166534; }
+    .status-running .dot { background: #22c55e; }
+    .status-stopped { background: #fef2f2; color: #991b1b; }
+    .status-stopped .dot { background: #ef4444; }
+    .status-starting { background: #fef9c3; color: #854d0e; }
+    .status-starting .dot { background: #eab308; animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .info-row {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 10px 0; border-bottom: 1px solid #f4f4f5;
+      font-size: 13px;
+    }
+    .info-row:last-child { border-bottom: none; }
+    .info-label { color: #71717a; }
+    .info-value { font-weight: 500; color: #27272a; }
+    .actions { margin-top: 20px; display: flex; gap: 10px; }
+    .btn {
+      flex: 1; padding: 10px; border: none; border-radius: 8px;
+      font-size: 14px; font-weight: 600; cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-start { background: #22c55e; color: #fff; }
+    .btn-start:hover:not(:disabled) { background: #16a34a; }
+    .btn-stop { background: #ef4444; color: #fff; }
+    .btn-stop:hover:not(:disabled) { background: #dc2626; }
+    .btn-refresh { background: #f4f4f5; color: #52525b; }
+    .btn-refresh:hover:not(:disabled) { background: #e4e4e7; }
+    .message {
+      margin-top: 16px; padding: 12px; border-radius: 8px;
+      font-size: 13px; text-align: center; display: none;
+    }
+    .message.info { display: block; background: #eff6ff; color: #1e40af; }
+    .message.error { display: block; background: #fef2f2; color: #991b1b; }
+    .message.success { display: block; background: #dcfce7; color: #166534; }
+    .back-link {
+      display: block; text-align: center; margin-top: 16px;
+      font-size: 13px; color: #71717a; text-decoration: none;
+    }
+    .back-link:hover { color: #3b82f6; }
+    .cost-note {
+      margin-top: 16px; padding: 10px; background: #fefce8;
+      border-radius: 8px; font-size: 12px; color: #854d0e;
+      text-align: center; line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="logo">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="4" y="4" width="16" height="16" rx="2"/>
+        <rect x="9" y="9" width="6" height="6"/>
+        <path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3"/>
+      </svg>
+      <h1>GPU Control</h1>
+      <p>Manage Ollama inference GPU</p>
+    </div>
+    <div class="card">
+      <div style="text-align: center;">
+        <div id="statusBadge" class="status-badge status-stopped">
+          <span class="dot"></span>
+          <span id="statusText">Checking...</span>
+        </div>
+      </div>
+      <div id="infoPanel">
+        <div class="info-row">
+          <span class="info-label">Replicas</span>
+          <span class="info-value" id="replicas">—</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">KEDA Auto-Scale</span>
+          <span class="info-value" id="kedaStatus">—</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Est. Cost</span>
+          <span class="info-value" id="costEstimate">—</span>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn btn-start" id="btnStart" onclick="startGPU()" disabled>Start GPU</button>
+        <button class="btn btn-stop" id="btnStop" onclick="stopGPU()" disabled>Stop GPU</button>
+        <button class="btn btn-refresh" id="btnRefresh" onclick="checkStatus()">&#8635;</button>
+      </div>
+      <div id="message" class="message"></div>
+      <div class="cost-note">
+        GPU spot cost: ~$0.35/hr (Tier 1/2) or ~$1.90/hr (Tier 3).<br>
+        Auto-shutdown after 15 min idle via KEDA.
+      </div>
+    </div>
+    <a href="/" class="back-link">&larr; Back to Open WebUI</a>
+  </div>
+
+  <script>
+    const API_BASE = '/portal/api/gpu';
+    let pollTimer = null;
+
+    async function apiCall(endpoint, method = 'GET') {
+      try {
+        const resp = await fetch(`${API_BASE}/${endpoint}`, { method });
+        return await resp.json();
+      } catch (e) {
+        return { error: e.message };
+      }
+    }
+
+    function updateUI(data) {
+      const badge = document.getElementById('statusBadge');
+      const text = document.getElementById('statusText');
+      const btnStart = document.getElementById('btnStart');
+      const btnStop = document.getElementById('btnStop');
+      const replicas = document.getElementById('replicas');
+      const kedaStatus = document.getElementById('kedaStatus');
+      const costEstimate = document.getElementById('costEstimate');
+
+      badge.className = 'status-badge status-' + data.status;
+
+      const labels = { running: 'Running', stopped: 'Stopped', starting: 'Starting...' };
+      text.textContent = labels[data.status] || data.status;
+
+      replicas.textContent = `${data.ready_replicas || 0} / ${data.replicas || 0}`;
+      kedaStatus.textContent = data.keda_paused ? 'Paused' : 'Active';
+      costEstimate.textContent = data.status === 'stopped' ? '$0/hr' : '~$0.35/hr (spot)';
+
+      btnStart.disabled = data.status !== 'stopped';
+      btnStop.disabled = data.status === 'stopped';
+
+      // Auto-poll while starting
+      if (data.status === 'starting') {
+        if (!pollTimer) pollTimer = setInterval(checkStatus, 5000);
+      } else {
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      }
+    }
+
+    async function checkStatus() {
+      const data = await apiCall('status');
+      if (data.error) {
+        showMessage('error', 'Failed to get status: ' + data.error);
+        return;
+      }
+      updateUI(data);
+    }
+
+    async function startGPU() {
+      document.getElementById('btnStart').disabled = true;
+      showMessage('info', 'Starting GPU... Cold start takes ~3 minutes.');
+      const data = await apiCall('start', 'POST');
+      if (data.error) {
+        showMessage('error', data.error);
+        checkStatus();
+        return;
+      }
+      showMessage('success', data.message);
+      // Start polling
+      pollTimer = setInterval(checkStatus, 5000);
+      checkStatus();
+    }
+
+    async function stopGPU() {
+      document.getElementById('btnStop').disabled = true;
+      const data = await apiCall('stop', 'POST');
+      if (data.error) {
+        showMessage('error', data.error);
+        checkStatus();
+        return;
+      }
+      showMessage('success', data.message);
+      checkStatus();
+    }
+
+    function showMessage(type, text) {
+      const el = document.getElementById('message');
+      el.className = 'message ' + type;
+      el.textContent = text;
+    }
+
+    // Initial status check
+    checkStatus();
+  </script>
+</body>
+</html>

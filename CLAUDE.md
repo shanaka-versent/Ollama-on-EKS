@@ -308,6 +308,7 @@ Down from $4,155/mo (24/7 on-demand + Kong) — 90%+ reduction.
 - Cluster name — `eks-ollama-dev`
 - Naming convention — resources prefixed with `ollama-eks-` or `ollama-` for easy identification
 - Model tier switching — use `./switch-model.sh use <tier>` to switch between Tier 1/2/3. The script patches deployment resources via kubectl, Karpenter auto-provisions the right instance. No file editing needed
+- **CRITICAL: Never leave KEDA paused** — KEDA controls GPU auto-scale-to-zero. If KEDA is paused, the GPU node runs indefinitely at $0.35-$1.90/hr. If you must pause KEDA (e.g., during `switch-model.sh` or manual scaling), ALWAYS unpause it before finishing. The GPU controller Lambda handles this automatically (pauses on start, unpauses on stop). Verify with: `kubectl get scaledobject -n ollama` — PAUSED column should show `Unknown` or `false`, never `true` in steady state
 
 ### Provisioning Order (must be followed for all changes)
 
