@@ -929,6 +929,7 @@ scripts/
   01-setup.sh                      # Post-terraform cluster setup
   04-post-setup.sh                 # NLB discovery + endpoint verification
   scale-up.sh / scale-down.sh      # GPU node scaling helpers
+  delete-stack.sh                  # Complete stack teardown (ordered destroy + orphan cleanup)
   setup-amg.sh                     # AMG data source + dashboard setup (run once after first deploy)
   test-ollama-stack.sh             # Integration tests
 
@@ -982,12 +983,26 @@ kubectl exec -n ollama deploy/ollama -- curl -s --max-time 5 https://google.com
 
 ## Tear Down
 
+Use the teardown script for a clean, complete destruction of the entire stack:
+
 ```bash
-cd terraform
-terraform destroy
+./scripts/delete-stack.sh
 ```
 
-> **Note:** EBS snapshots are retained by default. Delete manually if not needed: `aws ec2 delete-snapshot --snapshot-id snap-xxx`
+The script handles everything in the correct order:
+
+| Phase | What It Does |
+|-------|-------------|
+| 1. Scale down | Releases GPU nodes immediately (avoids billing during destroy) |
+| 2. K8s cleanup | Deletes Gateway/NLBs/ArgoCD apps before EKS is destroyed |
+| 3. Terraform destroy | Destroys all Terraform-managed resources (with retry on session expiry) |
+| 4. Orphan cleanup | Removes any orphaned NLBs, ENIs, security groups, target groups |
+| 5. Non-TF cleanup | Prompts to delete EBS snapshots, orphaned volumes, and state backend |
+| 6. Verification | Confirms all resources are gone — flags anything that remains |
+
+Options: `--force` (skip all prompts), `--skip-terraform` (orphan cleanup only).
+
+> **Why not just `terraform destroy`?** ArgoCD deploys K8s resources that trigger AWS controllers to create NLBs and EBS volumes — these are not in Terraform state. The script deletes ArgoCD apps first so the controllers clean up before EKS is destroyed. Terraform also has a destroy-time provisioner as a safety net, but the script provides more thorough cleanup and verification.
 
 ---
 

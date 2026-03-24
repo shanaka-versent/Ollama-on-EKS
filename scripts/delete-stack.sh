@@ -25,7 +25,8 @@
 #   3. Clean up K8s resources that create AWS resources (Gateway, NLBs, ArgoCD)
 #   4. Terraform destroy (with retry logic for session expiry)
 #   5. Clean up orphaned AWS resources (ENIs, security groups, NLBs)
-#   6. Verify clean teardown
+#   6. Clean up resources not in Terraform state (EBS snapshots, volumes, state backend)
+#   7. Verify clean teardown
 
 set -euo pipefail
 
@@ -811,10 +812,182 @@ for sg in data:
 }
 
 # ==============================================================================
-# Phase 5: Verify Clean Teardown
+# Phase 5: Clean Up Resources Not in Terraform State
+# ==============================================================================
+cleanup_non_terraform_resources() {
+    step "Phase 5: Cleaning up resources not in Terraform state"
+
+    ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || echo "")
+    if [ -z "$ACCOUNT_ID" ]; then
+        warn "Cannot get AWS account ID — skipping non-Terraform cleanup"
+        return
+    fi
+
+    # 5a: EBS snapshots created by create-model-snapshot.sh
+    log "Checking for Ollama model EBS snapshots..."
+    SNAPSHOTS=$(aws ec2 describe-snapshots \
+        --owner-ids self \
+        --region "$REGION" \
+        --query 'Snapshots[?contains(Description,`Ollama`) || contains(Description,`ollama`)].{Id:SnapshotId,Desc:Description,Size:VolumeSize}' \
+        --output json 2>/dev/null || echo "[]")
+
+    SNAP_COUNT=$(echo "$SNAPSHOTS" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
+
+    if [ "$SNAP_COUNT" -gt 0 ]; then
+        log "Found ${SNAP_COUNT} Ollama EBS snapshot(s):"
+        echo "$SNAPSHOTS" | python3 -c "
+import sys, json
+for s in json.load(sys.stdin):
+    print(f\"  {s['Id']} ({s['Size']}GB) — {s['Desc'][:80]}\")
+" 2>/dev/null | tee -a "$LOG_FILE"
+
+        echo ""
+        if [ "$FORCE" = "true" ]; then
+            DELETE_SNAPS="y"
+        else
+            read -r -p "  Delete these snapshots? [y/N] " DELETE_SNAPS
+        fi
+
+        if [ "$(echo "$DELETE_SNAPS" | tr '[:upper:]' '[:lower:]')" = "y" ]; then
+            echo "$SNAPSHOTS" | python3 -c "
+import sys, json
+for s in json.load(sys.stdin):
+    print(s['Id'])
+" 2>/dev/null | while read -r snap_id; do
+                log "  Deleting snapshot: ${snap_id}"
+                aws ec2 delete-snapshot --region "$REGION" --snapshot-id "$snap_id" >> "$LOG_FILE" 2>&1 || true
+            done
+            log "EBS snapshots deleted"
+        else
+            warn "Skipped — snapshots will remain (cost: ~\$0.05/GB/month)"
+        fi
+    else
+        log "No Ollama EBS snapshots found"
+    fi
+
+    # 5b: Orphaned EBS volumes (from Retain reclaim policy)
+    log "Checking for orphaned EBS volumes..."
+    ORPHANED_VOLS=$(aws ec2 describe-volumes \
+        --region "$REGION" \
+        --filters "Name=status,Values=available" \
+        --query 'Volumes[].{Id:VolumeId,Size:Size,Tags:Tags}' \
+        --output json 2>/dev/null || echo "[]")
+
+    VOL_COUNT=$(echo "$ORPHANED_VOLS" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+# Filter for volumes likely from our cluster (tagged or 200GB model volumes)
+relevant = []
+for v in data:
+    tags = {t['Key']: t['Value'] for t in (v.get('Tags') or [])}
+    if any(k for k in tags if 'kubernetes' in k or 'ollama' in k or 'ebs.csi' in k):
+        relevant.append(v)
+    elif v['Size'] == 200:  # Likely the model PVC
+        relevant.append(v)
+print(len(relevant))
+" 2>/dev/null || echo "0")
+
+    if [ "$VOL_COUNT" -gt 0 ]; then
+        log "Found ${VOL_COUNT} orphaned EBS volume(s):"
+        echo "$ORPHANED_VOLS" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+for v in data:
+    tags = {t['Key']: t['Value'] for t in (v.get('Tags') or [])}
+    if any(k for k in tags if 'kubernetes' in k or 'ollama' in k or 'ebs.csi' in k) or v['Size'] == 200:
+        name = tags.get('Name', tags.get('kubernetes.io/created-for/pvc/name', 'unnamed'))
+        print(f\"  {v['Id']} ({v['Size']}GB) — {name}\")
+" 2>/dev/null | tee -a "$LOG_FILE"
+
+        echo ""
+        if [ "$FORCE" = "true" ]; then
+            DELETE_VOLS="y"
+        else
+            read -r -p "  Delete these volumes? [y/N] " DELETE_VOLS
+        fi
+
+        if [ "$(echo "$DELETE_VOLS" | tr '[:upper:]' '[:lower:]')" = "y" ]; then
+            echo "$ORPHANED_VOLS" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+for v in data:
+    tags = {t['Key']: t['Value'] for t in (v.get('Tags') or [])}
+    if any(k for k in tags if 'kubernetes' in k or 'ollama' in k or 'ebs.csi' in k) or v['Size'] == 200:
+        print(v['Id'])
+" 2>/dev/null | while read -r vol_id; do
+                log "  Deleting volume: ${vol_id}"
+                aws ec2 delete-volume --region "$REGION" --volume-id "$vol_id" >> "$LOG_FILE" 2>&1 || true
+            done
+            log "Orphaned EBS volumes deleted"
+        else
+            warn "Skipped — volumes will remain (cost: ~\$0.10/GB/month)"
+        fi
+    else
+        log "No orphaned EBS volumes found"
+    fi
+
+    # 5c: Terraform state backend (S3 + DynamoDB)
+    STATE_BUCKET="ollama-eks-tfstate-${ACCOUNT_ID}"
+    LOCK_TABLE="ollama-eks-tfstate-lock"
+
+    BUCKET_EXISTS=$(aws s3api head-bucket --bucket "$STATE_BUCKET" 2>/dev/null && echo "yes" || echo "no")
+    TABLE_EXISTS=$(aws dynamodb describe-table --table-name "$LOCK_TABLE" --region "$REGION" 2>/dev/null && echo "yes" || echo "no")
+
+    if [ "$BUCKET_EXISTS" = "yes" ] || [ "$TABLE_EXISTS" = "yes" ]; then
+        log "Terraform state backend still exists:"
+        [ "$BUCKET_EXISTS" = "yes" ] && log "  S3 bucket:      s3://${STATE_BUCKET}"
+        [ "$TABLE_EXISTS" = "yes" ] && log "  DynamoDB table:  ${LOCK_TABLE}"
+        echo ""
+
+        if [ "$FORCE" = "true" ]; then
+            DELETE_STATE="y"
+        else
+            read -r -p "  Delete state backend? (Only if fully decommissioning) [y/N] " DELETE_STATE
+        fi
+
+        if [ "$(echo "$DELETE_STATE" | tr '[:upper:]' '[:lower:]')" = "y" ]; then
+            if [ "$BUCKET_EXISTS" = "yes" ]; then
+                log "  Emptying and deleting S3 bucket: ${STATE_BUCKET}"
+                aws s3 rm "s3://${STATE_BUCKET}" --recursive --region "$REGION" >> "$LOG_FILE" 2>&1 || true
+                # Delete all object versions (versioned bucket)
+                aws s3api list-object-versions --bucket "$STATE_BUCKET" --region "$REGION" \
+                    --query '{Objects: [Versions,DeleteMarkers][].{Key:Key,VersionId:VersionId}}' \
+                    --output json 2>/dev/null | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+objects = data.get('Objects', [])
+if objects:
+    # Batch delete in groups of 1000
+    for i in range(0, len(objects), 1000):
+        batch = objects[i:i+1000]
+        delete_payload = json.dumps({'Objects': batch, 'Quiet': True})
+        print(delete_payload)
+" 2>/dev/null | while read -r payload; do
+                    echo "$payload" | aws s3api delete-objects --bucket "$STATE_BUCKET" --region "$REGION" \
+                        --delete file:///dev/stdin >> "$LOG_FILE" 2>&1 || true
+                done
+                aws s3api delete-bucket --bucket "$STATE_BUCKET" --region "$REGION" >> "$LOG_FILE" 2>&1 || true
+                log "  S3 bucket deleted"
+            fi
+
+            if [ "$TABLE_EXISTS" = "yes" ]; then
+                log "  Deleting DynamoDB table: ${LOCK_TABLE}"
+                aws dynamodb delete-table --table-name "$LOCK_TABLE" --region "$REGION" >> "$LOG_FILE" 2>&1 || true
+                log "  DynamoDB table deleted"
+            fi
+        else
+            log "  Skipped — state backend preserved for potential re-deployment"
+        fi
+    else
+        log "No state backend found (already deleted or never created)"
+    fi
+}
+
+# ==============================================================================
+# Phase 6: Verify Clean Teardown
 # ==============================================================================
 verify_teardown() {
-    step "Phase 5: Verifying clean teardown"
+    step "Phase 6: Verifying clean teardown"
 
     local issues=0
 
@@ -891,6 +1064,36 @@ except:
         log "No project-related CloudFront distributions remaining"
     else
         warn "Possible orphaned CloudFront distributions: ${REMAINING_CF}"
+        issues=$((issues + 1))
+    fi
+
+    # Check for remaining EBS snapshots
+    log "Checking for remaining EBS snapshots..."
+    REMAINING_SNAPS=$(aws ec2 describe-snapshots \
+        --owner-ids self \
+        --region "$REGION" \
+        --query 'Snapshots[?contains(Description,`Ollama`) || contains(Description,`ollama`)].SnapshotId' \
+        --output text 2>/dev/null || echo "")
+    if [ -z "$REMAINING_SNAPS" ] || [ "$REMAINING_SNAPS" = "None" ]; then
+        log "No Ollama EBS snapshots remaining"
+    else
+        SNAP_COUNT=$(echo "$REMAINING_SNAPS" | wc -w | tr -d ' ')
+        warn "${SNAP_COUNT} Ollama EBS snapshot(s) still exist (cost: ~\$0.05/GB/month)"
+        issues=$((issues + 1))
+    fi
+
+    # Check for orphaned EBS volumes
+    log "Checking for orphaned EBS volumes..."
+    REMAINING_VOLS=$(aws ec2 describe-volumes \
+        --region "$REGION" \
+        --filters "Name=status,Values=available" \
+        --query 'Volumes[].VolumeId' \
+        --output text 2>/dev/null || echo "")
+    if [ -z "$REMAINING_VOLS" ] || [ "$REMAINING_VOLS" = "None" ]; then
+        log "No orphaned EBS volumes remaining"
+    else
+        VOL_COUNT=$(echo "$REMAINING_VOLS" | wc -w | tr -d ' ')
+        warn "${VOL_COUNT} orphaned EBS volume(s) still exist (cost: ~\$0.10/GB/month)"
         issues=$((issues + 1))
     fi
 
@@ -972,4 +1175,5 @@ scale_down_workloads
 cleanup_k8s_resources
 terraform_destroy
 cleanup_orphaned_resources
+cleanup_non_terraform_resources
 verify_teardown
