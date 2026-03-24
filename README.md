@@ -74,7 +74,6 @@ flowchart TB
 API:     Client → CloudFront (WAF) → API Gateway (x-api-key) → VPC Link → Internal NLB → Istio → Ollama
 Web UI:  Client → CloudFront (WAF) → VPC Origin (private) → Internal NLB → Istio → Open WebUI
 Login:   Client → CloudFront → /auth/login.html (S3) → Custom Portal → Cognito API → OAuth → Open WebUI
-GPU Ctl: Client → CloudFront → /portal/api/gpu/* → API Gateway → GPU Controller Lambda → K8s API (EKS)
 Grafana: Admin → AWS Managed Grafana (AMG) URL → IAM Identity Center SSO
 ```
 
@@ -98,7 +97,6 @@ CloudFront connects to the internal NLB via **VPC Origins** — private connecti
 | Ollama server | Your EKS GPU node | Model server — runs GPU inference |
 | EBS gp3 (200GB) | Your AWS account | Pre-loaded models via EBS snapshot, 6000 IOPS, 400 MB/s |
 | Custom Login Portal | S3 + Lambda + API GW | Handles all auth flows (login, signup, MFA, password reset) — no Cognito hosted UI |
-| GPU Control Portal | S3 + Lambda + API GW | Self-service GPU start/stop/status — no kubectl access needed |
 | Cognito User Pool | Your AWS account | OAuth/OIDC provider with TOTP MFA, group-based roles, admin-approved signups |
 
 ### Default Model: Fallback (qwen3.5:27b) — DEV Phase
@@ -528,6 +526,30 @@ Prometheus and DCGM Exporter run in-cluster, remote-writing all metrics to AWS M
 
 > **Note:** EKS Auto Mode runs Karpenter on the control plane — native `karpenter_*` metrics are unavailable. The Karpenter dashboard uses kube-state-metrics to track GPU node count, Ollama scaling events (KEDA), and GPU node hours.
 
+**Scrape Interval Optimisation (AMP Free Tier):**
+
+Scrape intervals are tuned to keep AMP ingestion within the free tier (200M samples/month, ~170M estimated):
+
+| Target | Interval | Rationale |
+|--------|----------|-----------|
+| Default (Prometheus global) | 15 min | Balances visibility with AMP cost |
+| kube-state-metrics | 10 min | Needed for Karpenter Node Lifecycle / GPU Scaling dashboard |
+| kubeApiServer, kubelet, coreDns | 1 hr | Heavyweight ServiceMonitors (~100K+ series each), rarely needed |
+| kubeEtcd, kubeControllerManager, kubeScheduler, kubeProxy | Disabled | Not accessible on EKS managed control plane / Auto Mode |
+
+**False-Positive Alert Suppression:**
+
+Built-in kube-prometheus-stack alerts that assume permanent nodes are disabled — GPU nodes are intentionally ephemeral (KEDA scales Ollama to 0 after 15 min idle, Karpenter terminates the empty node after 10 min):
+
+| Disabled Alert | Why |
+|----------------|-----|
+| `KubeletDown` | Fires when GPU node kubelet disappears (expected on termination) |
+| `KubeNodeNotReady` | Fires briefly during GPU node termination |
+| `KubeNodeUnreachable` | Fires after GPU node is terminated |
+| `NodeFilesystemAlmostOutOfSpace` | Transient on short-lived GPU nodes |
+
+System node health is still covered by custom alerts: `OllamaUnavailable`, `GPUPodPending`, and `KarpenterProvisioningFailed`.
+
 **Alert Rules (8 configured):**
 
 | Alert | Threshold | Notification |
@@ -620,8 +642,8 @@ Dashboard variables let you adjust the GPU spot rate (DEV: $0.35/hr for g5.xlarg
 | EKS control plane | $73 |
 | EBS snapshot storage + gp3 throughput | ~$14 |
 | CloudFront + WAF + API Gateway | ~$6 |
-| AWS Managed Grafana + AMP | ~$14 |
-| **Total (DEV)** | **~$287/mo** |
+| AWS Managed Grafana (AMP free tier) | ~$9 |
+| **Total (DEV)** | **~$282/mo** |
 
 **PROD Phase (Tier 3 flagship, g5.12xlarge spot):**
 
@@ -633,10 +655,10 @@ Dashboard variables let you adjust the GPU spot rate (DEV: $0.35/hr for g5.xlarg
 | EKS control plane | $73 |
 | EBS snapshot storage + gp3 throughput | ~$14 |
 | CloudFront + WAF + API Gateway | ~$6 |
-| AWS Managed Grafana + AMP | ~$14 |
-| **Total (PROD)** | **~$544/mo** |
+| AWS Managed Grafana (AMP free tier) | ~$9 |
+| **Total (PROD)** | **~$539/mo** |
 
-Down from $4,155/mo (24/7 on-demand + Kong) — 88% reduction. DEV phase runs at ~$225/mo.
+Down from $4,155/mo (24/7 on-demand + Kong) — 88% reduction. AMP ingestion tuned to free tier (~170M/200M samples/month) by using 15m default scrape interval, 10m for kube-state-metrics, and 1h for heavyweight ServiceMonitors.
 
 **Spot instance strategy:** GPU NodePool uses spot preferred with automatic on-demand fallback (both DEV and PROD). Karpenter tries spot first — if unavailable, falls back to on-demand automatically. `GPUOnDemandFallback` alert fires (warning) when on-demand is used. System NodePool is always on-demand — system components (CoreDNS, Istio, Prometheus, ArgoCD) cannot tolerate spot interruptions. Alerts route via Alertmanager → SNS → email. KEDA handles idle detection and scales Ollama to 0 replicas after 15 min of no activity, then Karpenter terminates the empty GPU node after 10 min.
 
@@ -665,19 +687,23 @@ KEDA **only targets the Ollama deployment** (GPU workload) — Open WebUI stays 
 
 **Manual scale-down (immediate):** `./scripts/scale-down.sh` scales to 0 immediately without waiting for the 15-min idle window.
 
-### Self-Service GPU Control
+### GPU Start/Stop (CLI)
 
-A web-based GPU control panel lets users start/stop the GPU node without kubectl access. Accessible from the banner in Open WebUI or directly at `/portal/gpu.html`.
+GPU is managed via CLI scripts — no web portal needed. When the GPU is running, Open WebUI automatically lists available models (users just refresh the page).
 
-| Endpoint | Method | What It Does |
-|----------|--------|-------------|
-| `/portal/api/gpu/status` | GET | Returns GPU status (running/stopped/starting), replica count, KEDA paused state |
-| `/portal/api/gpu/start` | POST | Pauses KEDA + scales Ollama to 1 replica (~3 min cold start) |
-| `/portal/api/gpu/stop` | POST | Scales Ollama to 0 + unpauses KEDA (GPU node terminates in ~10 min) |
+```bash
+# Start GPU (pauses KEDA, scales Ollama to 1, waits for node + model load, resumes KEDA)
+./scripts/scale-up.sh
 
-**How it works:** A GPU controller Lambda authenticates to the EKS cluster via STS presigned URL (bearer token), then patches the Ollama deployment and KEDA ScaledObject via the K8s API. The Lambda has an EKS access entry with `AmazonEKSEditPolicy` scoped to the `ollama` namespace.
+# Stop GPU immediately (scales to 0, unpauses KEDA — GPU node terminates in ~10 min)
+./scripts/scale-down.sh
 
-> **Important:** The stop endpoint always unpauses KEDA after scaling to 0. KEDA must never be left paused — a paused KEDA means the GPU node runs indefinitely at $0.35-$1.90/hr.
+# Check current status
+kubectl get pods -n ollama
+kubectl get nodes -l workload-type=gpu-inference
+```
+
+> **Important:** KEDA must never be left paused — a paused KEDA means the GPU node runs indefinitely at $0.35-$1.90/hr. Both `scale-up.sh` and `scale-down.sh` handle KEDA pause/unpause automatically. Verify with: `kubectl get scaledobject -n ollama` — PAUSED column should show `Unknown` or `false` in steady state.
 
 ### Resume Next Session
 
@@ -768,7 +794,7 @@ flowchart LR
 | **Node Isolation** | System NodePool (t3.xlarge on-demand, all non-GPU workloads), GPU NodePool (g5 spot, `workload-type: gpu-inference` nodeSelector + `nvidia.com/gpu` taint) |
 | **EBS Snapshot** | Pre-loaded models — no internet needed for model loading |
 | **Cognito + Custom Portal** | Custom login portal (auth_proxy Lambda + login.html SPA) handles all auth flows — users never see Cognito hosted UI. OAuth/OIDC with mandatory TOTP MFA, roles synced from Cognito groups, admin-approved signups, in-app password reset, no local passwords, admin chat access and DB export disabled |
-| **GPU Controller Lambda** | Self-service GPU start/stop via K8s API. EKS access scoped to `ollama` namespace only (`AmazonEKSEditPolicy`). Bearer token is short-lived (60s STS presigned URL). Stop always unpauses KEDA to prevent runaway GPU cost |
+| **GPU Controller Lambda** | GPU start/stop via K8s API (used by CLI scripts). EKS access scoped to `ollama` namespace only (`AmazonEKSEditPolicy`). Bearer token is short-lived (60s STS presigned URL). Stop always unpauses KEDA to prevent runaway GPU cost |
 | **IRSA** | EBS CSI + LB Controller + Bedrock (Stack B) use least-privilege IAM roles via OIDC |
 | **cert-manager** | Automated TLS certificate lifecycle (90d duration, 30d auto-renewal) |
 

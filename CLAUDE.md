@@ -265,7 +265,7 @@ Token generation: flagship produces 30-50 tok/s. A 500-token response takes ~10-
 | System nodes (1x t3.xlarge on-demand, always-on) | ~$122 |
 | EKS control plane | $73 |
 | CloudFront + WAF + API Gateway | ~$6 |
-| AWS Managed Grafana + AMP | ~$9-14 |
+| AWS Managed Grafana (AMP free tier) | ~$9 |
 | **Total (idle)** | **~$214/mo** |
 
 ### DEV Phase (current — Tier 1 fallback, g5.2xlarge spot)
@@ -278,7 +278,7 @@ Token generation: flagship produces 30-50 tok/s. A 500-token response takes ~10-
 | EBS storage (200GB gp3) | ~$14 |
 | EKS control plane | $73 |
 | CloudFront + WAF + API Gateway | ~$6 |
-| AWS Managed Grafana + AMP | ~$9-14 |
+| AWS Managed Grafana (AMP free tier) | ~$9 |
 | **Total (DEV)** | **~$288/mo** |
 
 ### PROD Phase (Tier 3 flagship, g5.12xlarge spot)
@@ -291,7 +291,7 @@ Token generation: flagship produces 30-50 tok/s. A 500-token response takes ~10-
 | EBS storage (200GB gp3) | ~$14 |
 | EKS control plane | $73 |
 | CloudFront + WAF + API Gateway | ~$6 |
-| AWS Managed Grafana + AMP | ~$9-14 |
+| AWS Managed Grafana (AMP free tier) | ~$9 |
 | **Total (PROD)** | **~$548/mo** |
 
 Down from $4,155/mo (24/7 on-demand + Kong) — 90%+ reduction.

@@ -327,7 +327,6 @@
 <pre class="highlight"><code>API:     Client → CloudFront (WAF) → API Gateway (x-api-key) → VPC Link → Internal NLB → Istio → Ollama
 Web UI:  Client → CloudFront (WAF) → VPC Origin (private) → Internal NLB → Istio → Open WebUI
 Login:   Client → CloudFront → /auth/login.html (S3) → Custom Portal → Cognito API → OAuth → Open WebUI
-GPU Ctl: Client → CloudFront → /portal/api/gpu/* → API Gateway → GPU Controller Lambda → K8s API (EKS)
 Grafana: Admin → AWS Managed Grafana (AMG) URL → IAM Identity Center SSO
 </code></pre>
 
@@ -407,11 +406,6 @@ Grafana: Admin → AWS Managed Grafana (AMG) URL → IAM Identity Center SSO
 <td>Custom Login Portal</td>
 <td>S3 + Lambda + API GW</td>
 <td>Handles all auth flows (login, signup, MFA, password reset) — no Cognito hosted UI</td>
-</tr>
-<tr>
-<td>GPU Control Portal</td>
-<td>S3 + Lambda + API GW</td>
-<td>Self-service GPU start/stop/status — no kubectl access needed</td>
 </tr>
 <tr>
 <td>Cognito User Pool</td>
@@ -987,6 +981,68 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 <blockquote>
 <p><strong>Note:</strong> EKS Auto Mode runs Karpenter on the control plane — native <code>karpenter_*</code> metrics are unavailable. The Karpenter dashboard uses kube-state-metrics to track GPU node count, Ollama scaling events (KEDA), and GPU node hours.</p>
 </blockquote>
+<p><strong>Scrape Interval Optimisation (AMP Free Tier):</strong></p>
+<p>Scrape intervals are tuned to keep AMP ingestion within the free tier (200M samples/month, ~170M estimated):</p>
+<table>
+<thead>
+<tr>
+<th>Target</th>
+<th>Interval</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Default (Prometheus global)</td>
+<td>15 min</td>
+<td>Balances visibility with AMP cost</td>
+</tr>
+<tr>
+<td>kube-state-metrics</td>
+<td>10 min</td>
+<td>Needed for Karpenter Node Lifecycle / GPU Scaling dashboard</td>
+</tr>
+<tr>
+<td>kubeApiServer, kubelet, coreDns</td>
+<td>1 hr</td>
+<td>Heavyweight ServiceMonitors (~100K+ series each), rarely needed</td>
+</tr>
+<tr>
+<td>kubeEtcd, kubeControllerManager, kubeScheduler, kubeProxy</td>
+<td>Disabled</td>
+<td>Not accessible on EKS managed control plane / Auto Mode</td>
+</tr>
+</tbody>
+</table>
+<p><strong>False-Positive Alert Suppression:</strong></p>
+<p>Built-in kube-prometheus-stack alerts that assume permanent nodes are disabled — GPU nodes are intentionally ephemeral (KEDA scales Ollama to 0 after 15 min idle, Karpenter terminates the empty node after 10 min):</p>
+<table>
+<thead>
+<tr>
+<th>Disabled Alert</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>KubeletDown</code></td>
+<td>Fires when GPU node kubelet disappears (expected on termination)</td>
+</tr>
+<tr>
+<td><code>KubeNodeNotReady</code></td>
+<td>Fires briefly during GPU node termination</td>
+</tr>
+<tr>
+<td><code>KubeNodeUnreachable</code></td>
+<td>Fires after GPU node is terminated</td>
+</tr>
+<tr>
+<td><code>NodeFilesystemAlmostOutOfSpace</code></td>
+<td>Transient on short-lived GPU nodes</td>
+</tr>
+</tbody>
+</table>
+<p>System node health is still covered by custom alerts: <code>OllamaUnavailable</code>, <code>GPUPodPending</code>, and <code>KarpenterProvisioningFailed</code>.</p>
 <p><strong>Alert Rules (8 configured):</strong></p>
 <table>
 <thead>
@@ -1198,12 +1254,12 @@ alert_email = &quot;your-email@example.com&quot;
 <td>~$6</td>
 </tr>
 <tr>
-<td>AWS Managed Grafana + AMP</td>
-<td>~$14</td>
+<td>AWS Managed Grafana (AMP free tier)</td>
+<td>~$9</td>
 </tr>
 <tr>
 <td><strong>Total (DEV)</strong></td>
-<td><strong>~$287/mo</strong></td>
+<td><strong>~$282/mo</strong></td>
 </tr>
 </tbody>
 </table>
@@ -1241,16 +1297,16 @@ alert_email = &quot;your-email@example.com&quot;
 <td>~$6</td>
 </tr>
 <tr>
-<td>AWS Managed Grafana + AMP</td>
-<td>~$14</td>
+<td>AWS Managed Grafana (AMP free tier)</td>
+<td>~$9</td>
 </tr>
 <tr>
 <td><strong>Total (PROD)</strong></td>
-<td><strong>~$544/mo</strong></td>
+<td><strong>~$539/mo</strong></td>
 </tr>
 </tbody>
 </table>
-<p>Down from $4,155/mo (24/7 on-demand + Kong) — 88% reduction. DEV phase runs at ~$225/mo.</p>
+<p>Down from $4,155/mo (24/7 on-demand + Kong) — 88% reduction. AMP ingestion tuned to free tier (~170M/200M samples/month) by using 15m default scrape interval, 10m for kube-state-metrics, and 1h for heavyweight ServiceMonitors.</p>
 <p><strong>Spot instance strategy:</strong> GPU NodePool uses spot preferred with automatic on-demand fallback (both DEV and PROD). Karpenter tries spot first — if unavailable, falls back to on-demand automatically. <code>GPUOnDemandFallback</code> alert fires (warning) when on-demand is used. System NodePool is always on-demand — system components (CoreDNS, Istio, Prometheus, ArgoCD) cannot tolerate spot interruptions. Alerts route via Alertmanager → SNS → email. KEDA handles idle detection and scales Ollama to 0 replicas after 15 min of no activity, then Karpenter terminates the empty GPU node after 10 min.</p>
 <h3 id="response-time-expectations">Response Time Expectations</h3>
 <table>
@@ -1312,37 +1368,21 @@ alert_email = &quot;your-email@example.com&quot;
 </tbody>
 </table>
 <p><strong>Manual scale-down (immediate):</strong> <code>./scripts/scale-down.sh</code> scales to 0 immediately without waiting for the 15-min idle window.</p>
-<h3 id="self-service-gpu-control">Self-Service GPU Control</h3>
-<p>A web-based GPU control panel lets users start/stop the GPU node without kubectl access. Accessible from the banner in Open WebUI or directly at <code>/portal/gpu.html</code>.</p>
-<table>
-<thead>
-<tr>
-<th>Endpoint</th>
-<th>Method</th>
-<th>What It Does</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>/portal/api/gpu/status</code></td>
-<td>GET</td>
-<td>Returns GPU status (running/stopped/starting), replica count, KEDA paused state</td>
-</tr>
-<tr>
-<td><code>/portal/api/gpu/start</code></td>
-<td>POST</td>
-<td>Pauses KEDA + scales Ollama to 1 replica (~3 min cold start)</td>
-</tr>
-<tr>
-<td><code>/portal/api/gpu/stop</code></td>
-<td>POST</td>
-<td>Scales Ollama to 0 + unpauses KEDA (GPU node terminates in ~10 min)</td>
-</tr>
-</tbody>
-</table>
-<p><strong>How it works:</strong> A GPU controller Lambda authenticates to the EKS cluster via STS presigned URL (bearer token), then patches the Ollama deployment and KEDA ScaledObject via the K8s API. The Lambda has an EKS access entry with <code>AmazonEKSEditPolicy</code> scoped to the <code>ollama</code> namespace.</p>
+<h3 id="gpu-startstop-cli">GPU Start/Stop (CLI)</h3>
+<p>GPU is managed via CLI scripts — no web portal needed. When the GPU is running, Open WebUI automatically lists available models (users just refresh the page).</p>
+<pre class="highlight"><code class="language-bash"># Start GPU (pauses KEDA, scales Ollama to 1, waits for node + model load, resumes KEDA)
+./scripts/scale-up.sh
+
+# Stop GPU immediately (scales to 0, unpauses KEDA — GPU node terminates in ~10 min)
+./scripts/scale-down.sh
+
+# Check current status
+kubectl get pods -n ollama
+kubectl get nodes -l workload-type=gpu-inference
+</code></pre>
+
 <blockquote>
-<p><strong>Important:</strong> The stop endpoint always unpauses KEDA after scaling to 0. KEDA must never be left paused — a paused KEDA means the GPU node runs indefinitely at $0.35-$1.90/hr.</p>
+<p><strong>Important:</strong> KEDA must never be left paused — a paused KEDA means the GPU node runs indefinitely at $0.35-$1.90/hr. Both <code>scale-up.sh</code> and <code>scale-down.sh</code> handle KEDA pause/unpause automatically. Verify with: <code>kubectl get scaledobject -n ollama</code> — PAUSED column should show <code>Unknown</code> or <code>false</code> in steady state.</p>
 </blockquote>
 <h3 id="resume-next-session">Resume Next Session</h3>
 <p>The EBS snapshot has your models pre-loaded — no re-download needed. Scale up manually and Karpenter auto-provisions a new GPU node:</p>
@@ -1534,7 +1574,7 @@ alert_email = &quot;your-email@example.com&quot;
 </tr>
 <tr>
 <td><strong>GPU Controller Lambda</strong></td>
-<td>Self-service GPU start/stop via K8s API. EKS access scoped to <code>ollama</code> namespace only (<code>AmazonEKSEditPolicy</code>). Bearer token is short-lived (60s STS presigned URL). Stop always unpauses KEDA to prevent runaway GPU cost</td>
+<td>GPU start/stop via K8s API (used by CLI scripts). EKS access scoped to <code>ollama</code> namespace only (<code>AmazonEKSEditPolicy</code>). Bearer token is short-lived (60s STS presigned URL). Stop always unpauses KEDA to prevent runaway GPU cost</td>
 </tr>
 <tr>
 <td><strong>IRSA</strong></td>
