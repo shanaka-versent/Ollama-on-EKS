@@ -512,6 +512,86 @@ setup_cluster() {
 }
 
 # ==============================================================================
+# Phase 3b: NLB Discovery + Final Terraform Apply
+# ==============================================================================
+# After ArgoCD deploys the Istio Gateway (Wave 5), an internal NLB is created
+# by the AWS Load Balancer Controller. This step discovers the NLB, updates
+# terraform.tfvars, and runs a final terraform apply to wire:
+#   - API Gateway VPC Link → NLB
+#   - CloudFront VPC Origin → NLB
+# This is the final apply — after this, the full traffic path works:
+#   Client → CloudFront → API Gateway → VPC Link → NLB → Istio → Ollama
+wire_nlb_to_terraform() {
+    step "Phase 3b: Discovering NLB and wiring API Gateway + CloudFront"
+
+    # Wait for Istio Gateway service to get an external-ip (NLB DNS)
+    log "Waiting for Istio Gateway NLB to be provisioned..."
+    local max_wait=300
+    local interval=15
+    local waited=0
+    local nlb_dns=""
+
+    while [[ $waited -lt $max_wait ]]; do
+        nlb_dns=$(kubectl get svc -n istio-ingress ollama-gateway-istio \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+
+        if [[ -n "$nlb_dns" ]]; then
+            log "NLB DNS: ${nlb_dns}"
+            break
+        fi
+
+        echo -e "  ${DIM}[${waited}s] Waiting for NLB to be provisioned...${NC}"
+        sleep "$interval"
+        waited=$((waited + interval))
+    done
+
+    if [[ -z "$nlb_dns" ]]; then
+        warn "NLB not provisioned after ${max_wait}s — API Gateway wiring skipped."
+        warn "Run manually: check 'kubectl get svc -n istio-ingress' then update terraform.tfvars"
+        return
+    fi
+
+    # Discover NLB ARN via AWS CLI
+    local region
+    region=$(grep '^region' "$TERRAFORM_DIR/terraform.tfvars" | sed 's/.*= *"//;s/".*//')
+
+    local nlb_arn
+    nlb_arn=$(aws elbv2 describe-load-balancers --region "$region" \
+        --query "LoadBalancers[?DNSName=='${nlb_dns}'].LoadBalancerArn" \
+        --output text 2>/dev/null || echo "")
+
+    if [[ -z "$nlb_arn" ]]; then
+        warn "Could not find NLB ARN for DNS: ${nlb_dns}"
+        warn "Update terraform.tfvars manually with nlb_arn and nlb_dns_name"
+        return
+    fi
+
+    log "NLB ARN: ${nlb_arn}"
+
+    # Update terraform.tfvars with NLB values
+    cd "$TERRAFORM_DIR"
+    sed -i.bak "s|^nlb_arn .*=.*|nlb_arn      = \"${nlb_arn}\"|" terraform.tfvars
+    sed -i.bak "s|^nlb_dns_name .*=.*|nlb_dns_name = \"${nlb_dns}\"|" terraform.tfvars
+    rm -f terraform.tfvars.bak
+
+    log "terraform.tfvars updated with NLB values"
+
+    # Final terraform apply — creates API Gateway VPC Link + CloudFront VPC Origin
+    log "Running final Terraform apply (API Gateway VPC Link + CloudFront VPC Origin)..."
+    log "Note: CloudFront VPC Origin creation takes ~7 minutes"
+    terraform apply -auto-approve 2>&1 | tail -5
+
+    if [[ $? -eq 0 ]]; then
+        log "API Gateway and CloudFront VPC Origin wired successfully"
+    else
+        warn "Terraform apply had errors — check output above"
+        warn "You may need to re-authenticate (aws sso login) and re-run: cd terraform && terraform apply -auto-approve"
+    fi
+
+    cd "$REPO_DIR"
+}
+
+# ==============================================================================
 # Phase 4: Verification
 # ==============================================================================
 verify_deployment() {
@@ -593,4 +673,5 @@ if [[ "$SKIP_INFRA" == "false" ]]; then
 fi
 
 setup_cluster
+wire_nlb_to_terraform
 verify_deployment
