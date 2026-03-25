@@ -11,7 +11,7 @@
       background: #f4f4f5; color: #27272a; min-height: 100vh;
       display: flex; align-items: center; justify-content: center;
     }
-    .container { width: 100%; max-width: 420px; padding: 24px; }
+    .container { width: 100%; max-width: 465px; padding: 24px; }
     .logo { text-align: center; margin-bottom: 28px; }
     .logo svg { width: 44px; height: 44px; margin-bottom: 10px; }
     .logo h1 { font-size: 22px; font-weight: 700; color: #18181b; }
@@ -352,6 +352,17 @@
     var setupSession = null;
     var forgotEmail = '';
 
+    // Extract returnTo from URL query params (e.g., ?returnTo=/portal/)
+    function getReturnTo() {
+      var params = new URLSearchParams(window.location.search);
+      var returnTo = params.get('returnTo');
+      // Validate: must start with / and not contain protocol (prevent open redirect)
+      if (returnTo && returnTo.charAt(0) === '/' && returnTo.indexOf('://') === -1) {
+        return returnTo;
+      }
+      return '/';
+    }
+
     function showPanel(panel) {
       document.querySelectorAll('.panel').forEach(function(p) { p.classList.remove('active'); });
       document.getElementById(panel + '-panel').classList.add('active');
@@ -438,7 +449,8 @@
         }
 
         if (data.status === 'success') {
-          window.location.href = '/';
+          if (data.id_token) localStorage.setItem('cognito_id_token', data.id_token);
+          window.location.href = getReturnTo();
           return;
         }
 
@@ -482,7 +494,8 @@
         var data = await res.json();
 
         if (data.status === 'success') {
-          window.location.href = '/';
+          if (data.id_token) localStorage.setItem('cognito_id_token', data.id_token);
+          window.location.href = getReturnTo();
           return;
         }
 

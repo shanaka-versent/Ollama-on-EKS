@@ -52,7 +52,7 @@ variable "enable_nat_gateway" {
 variable "kubernetes_version" {
   description = "Kubernetes version"
   type        = string
-  default     = "1.31"
+  default     = "1.34"
 }
 
 variable "enable_logging" {

@@ -18,7 +18,7 @@ az_count           = 2
 enable_nat_gateway = true
 
 # EKS
-kubernetes_version = "1.31"
+kubernetes_version = "1.34"
 enable_logging     = false
 
 # Ollama — Tier 1 Fallback (DEV)
@@ -40,8 +40,8 @@ auto_pull_model          = true
 enable_bedrock = false
 
 # NLB (created by Istio Gateway via ArgoCD — set after first deploy)
-nlb_arn      = "arn:aws:elasticloadbalancing:ap-southeast-2:183758910727:loadbalancer/net/k8s-istioing-ollamaga-68f1e1f734/55bbda1564c811bf"
-nlb_dns_name = "k8s-istioing-ollamaga-68f1e1f734-55bbda1564c811bf.elb.ap-southeast-2.amazonaws.com"
+nlb_arn      = ""
+nlb_dns_name = ""
 
 # CloudFront + WAF + API Gateway
 api_key_required       = true
@@ -52,7 +52,7 @@ waf_geo_countries      = ["AU", "US"]
 waf_enable_bot_control = false
 
 # CloudFront domain (set after first apply — used by Cognito callback URLs)
-cloudfront_domain = "dt9vb3dm9lagy.cloudfront.net"
+cloudfront_domain = "d1eg49k9r220u8.cloudfront.net"
 
 # Cognito Authentication (Open WebUI)
 cognito_admin_email        = "shanaka.jayasundera@versent.com.au"

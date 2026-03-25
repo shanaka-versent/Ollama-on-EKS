@@ -158,15 +158,27 @@ export OPENAI_BASE_URL=https://${cloudfront_domain}/v1</code></pre>
 // Config injected by Terraform templatefile
 const API_BASE = '${api_base_url}';
 
-// --- API Calls (token cookie sent automatically by browser) ---
+// --- API Calls (Cognito id_token sent in Authorization header for API GW Cognito Authorizer) ---
 async function apiFetch(path, opts = {}) {
   opts.headers = opts.headers || {};
   opts.headers['Content-Type'] = 'application/json';
+  // Cognito id_token from localStorage (set during login)
+  var idToken = localStorage.getItem('cognito_id_token');
+  // Fallback: check cookie (auth_proxy also sets cognito_id_token cookie)
+  if (!idToken) idToken = (document.cookie.match(/cognito_id_token=([^;]+)/) || [])[1];
+  if (idToken) {
+    opts.headers['Authorization'] = idToken;
+  } else {
+    // No Cognito token — redirect to login
+    window.location.href = '/auth/login.html?returnTo=/portal/';
+    throw new Error('Not authenticated');
+  }
   const resp = await fetch(API_BASE + '/portal/api' + path, opts);
   if (resp.status === 401) {
-    // Session expired — redirect to login
-    window.location.href = '/auth/login.html';
-    return;
+    // Token expired or invalid — clear and redirect
+    localStorage.removeItem('cognito_id_token');
+    window.location.href = '/auth/login.html?returnTo=/portal/';
+    throw new Error('Session expired');
   }
   const data = await resp.json();
   if (!resp.ok) throw new Error(data.error || 'Request failed');

@@ -231,7 +231,7 @@ deploy_infrastructure() {
         exit 0
     fi
 
-    # Terraform apply
+    # Terraform apply (Phase 1 — creates all infrastructure)
     echo ""
     log "Applying Terraform plan..."
     terraform apply tfplan
@@ -239,19 +239,49 @@ deploy_infrastructure() {
     # Clean up plan file
     rm -f tfplan
 
-    log "Terraform apply complete"
+    log "Phase 1 apply complete"
+
+    # Phase 2 — re-apply with CloudFront domain for Cognito callbacks and portal CORS
+    # CloudFront domain is only known after first apply (circular dependency with portal S3 origins).
+    # Second apply updates: Cognito callback URLs, portal CORS headers, portal Lambda env vars.
+    echo ""
+    CLOUDFRONT_DOMAIN=$(terraform output -raw cloudfront_domain 2>/dev/null || echo "")
+    if [[ -n "$CLOUDFRONT_DOMAIN" ]]; then
+        log "CloudFront domain: ${CLOUDFRONT_DOMAIN}"
+        log "Updating terraform.tfvars with CloudFront domain for Cognito/portal wiring..."
+        sed -i.bak "s|^cloudfront_domain = .*|cloudfront_domain = \"${CLOUDFRONT_DOMAIN}\"|" terraform.tfvars
+        rm -f terraform.tfvars.bak
+
+        log "Running Phase 2 apply (Cognito callbacks + portal CORS)..."
+        terraform apply -auto-approve 2>&1 | tail -3
+        log "Phase 2 apply complete"
+    else
+        warn "Could not get CloudFront domain — Cognito callbacks will need manual wiring"
+    fi
+
+    log "Terraform deployment complete"
     cd "$REPO_DIR"
 }
 
 # ==============================================================================
-# Phase 3: Cluster Setup
+# Phase 2b: Bootstrap Custom NodePools
 # ==============================================================================
-setup_cluster() {
-    step "Phase 3: Configuring cluster access"
+# EKS Auto Mode uses node_pools=[] (no built-in pools) to avoid c6g.large
+# Graviton instances. Custom NodePool/NodeClass files are applied via kubectl
+# IMMEDIATELY after EKS creation — before ArgoCD starts. This ensures the
+# cluster only ever runs t3.xlarge (system) and g5 (GPU) nodes.
+#
+# Steps:
+#   1. Configure kubectl
+#   2. Patch NodeClass files with subnet/SG/role IDs from Terraform outputs
+#   3. kubectl apply NodePool + NodeClass files directly
+#   4. Wait for at least one system node (t3.xlarge) to be Ready
+#   5. Commit + push changes to main branch for ArgoCD to sync
+bootstrap_custom_nodepools() {
+    step "Phase 2b: Bootstrapping custom NodePools (t3.xlarge system, g5 GPU)"
 
+    # --- Step 1: Configure kubectl ---
     cd "$TERRAFORM_DIR"
-
-    # Configure kubectl
     EKS_CLUSTER_NAME=$(terraform output -raw eks_cluster_name 2>/dev/null)
     AWS_REGION=$(terraform output -raw region 2>/dev/null)
 
@@ -259,12 +289,165 @@ setup_cluster() {
     aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER_NAME"
     log "kubectl configured"
 
+    # --- Step 2: Patch NodeClass files with Terraform outputs ---
+    local subnet_ids sg_id role_name
+    subnet_ids=$(terraform output -json private_subnet_ids 2>/dev/null)
+    sg_id=$(terraform output -raw cluster_security_group_id 2>/dev/null)
+    role_name=$(terraform output -raw node_role_name 2>/dev/null)
+
+    if [[ -z "$subnet_ids" || -z "$sg_id" || -z "$role_name" ]]; then
+        warn "Could not read Terraform outputs for NodeClass patching."
+        warn "You may need to manually update k8s/nodepools/ files with correct subnet/SG/role IDs."
+        cd "$REPO_DIR"
+        return
+    fi
+
+    log "Subnet IDs: ${subnet_ids}"
+    log "Security Group: ${sg_id}"
+    log "Node Role: ${role_name}"
+
+    # Convert JSON array to YAML subnet entries
+    local subnet_yaml
+    subnet_yaml=$(echo "$subnet_ids" | python3 -c "
+import sys, json
+ids = json.load(sys.stdin)
+for sid in ids:
+    print(f'    - id: {sid}')
+")
+
+    cd "$REPO_DIR"
+
+    # Patch both NodeClass files
+    for ncfile in k8s/nodepools/gpu-nodeclass.yaml k8s/nodepools/system-nodeclass.yaml; do
+        if [[ ! -f "$ncfile" ]]; then
+            warn "NodeClass file not found: $ncfile"
+            continue
+        fi
+
+        log "Patching ${ncfile}..."
+
+        # Replace role
+        sed -i.bak "s/^  role: .*/  role: ${role_name}/" "$ncfile"
+
+        # Replace subnetSelectorTerms block
+        python3 -c "
+import re, sys
+
+with open('${ncfile}', 'r') as f:
+    content = f.read()
+
+# Replace subnet block
+subnet_block = '''  subnetSelectorTerms:
+${subnet_yaml}'''
+content = re.sub(
+    r'  subnetSelectorTerms:\n(    - id: [^\n]+\n)+',
+    subnet_block + '\n',
+    content
+)
+
+# Replace security group
+content = re.sub(
+    r'(  securityGroupSelectorTerms:\n    - id: )[^\n]+',
+    r'\g<1>${sg_id}',
+    content
+)
+
+with open('${ncfile}', 'w') as f:
+    f.write(content)
+"
+        rm -f "${ncfile}.bak"
+    done
+
+    log "NodeClass files patched with new VPC IDs"
+
+    # --- Step 3: kubectl apply NodePool + NodeClass directly ---
+    echo ""
+    log "Applying custom NodePool/NodeClass to cluster (before ArgoCD)..."
+
+    # Apply NodeClasses first (NodePools reference them)
+    kubectl apply -f k8s/nodepools/system-nodeclass.yaml
+    kubectl apply -f k8s/nodepools/gpu-nodeclass.yaml
+    # Apply NodePools
+    kubectl apply -f k8s/nodepools/system-nodepool.yaml
+    kubectl apply -f k8s/nodepools/gpu-nodepool.yaml
+
+    log "Custom NodePools applied — Karpenter will provision t3.xlarge nodes"
+
+    # --- Step 4: Wait for at least one system node (t3.xlarge) ---
+    echo ""
+    log "Waiting for system node (t3.xlarge) to be Ready..."
+    local max_wait=300
+    local interval=15
+    local waited=0
+
+    while [[ $waited -lt $max_wait ]]; do
+        local system_nodes
+        system_nodes=$(kubectl get nodes -l workload-type=system --no-headers 2>/dev/null | grep -c "Ready" || true)
+        system_nodes="${system_nodes:-0}"
+
+        if [[ "$system_nodes" -ge 1 ]]; then
+            log "System node ready (t3.xlarge)"
+            kubectl get nodes -o wide 2>/dev/null | head -5
+            break
+        fi
+
+        echo -e "  ${DIM}[${waited}s] Waiting for t3.xlarge system node...${NC}"
+        sleep "$interval"
+        waited=$((waited + interval))
+    done
+
+    if [[ "$waited" -ge "$max_wait" ]]; then
+        warn "System node not ready after ${max_wait}s — check NodePool/NodeClass status:"
+        warn "  kubectl get nodepools,nodeclasses"
+        warn "  kubectl describe nodeclass system-x86"
+    fi
+
+    # --- Step 5: Commit + push to main for ArgoCD ---
+    if git diff --quiet k8s/nodepools/ 2>/dev/null; then
+        log "NodeClass files unchanged — no commit needed"
+    else
+        log "Committing NodeClass updates..."
+        git add k8s/nodepools/gpu-nodeclass.yaml k8s/nodepools/system-nodeclass.yaml
+
+        local current_branch
+        current_branch=$(git rev-parse --abbrev-ref HEAD)
+
+        git commit -m "fix: update NodeClass subnet/SG/role IDs from Terraform outputs"
+
+        if [[ "$current_branch" == "main" ]]; then
+            git push
+            log "Pushed NodeClass updates to main — ArgoCD will sync automatically"
+        else
+            # Push to current branch AND to main so ArgoCD picks up the changes
+            git push
+            log "Pushed to ${current_branch}"
+
+            # Cherry-pick to main for ArgoCD
+            local commit_hash
+            commit_hash=$(git rev-parse HEAD)
+            git stash --include-untracked 2>/dev/null || true
+            git checkout main
+            git pull --rebase origin main 2>/dev/null || true
+            git cherry-pick "$commit_hash" --no-edit
+            git push origin main
+            git checkout "$current_branch"
+            git stash pop 2>/dev/null || true
+            log "Cherry-picked NodeClass fix to main — ArgoCD will sync automatically"
+        fi
+    fi
+}
+
+# ==============================================================================
+# Phase 3: Cluster Setup (ArgoCD sync)
+# ==============================================================================
+setup_cluster() {
+    step "Phase 3: Waiting for ArgoCD to sync workloads"
+
     cd "$REPO_DIR"
 
     # Wait for ArgoCD to sync
-    echo ""
-    log "Waiting for ArgoCD to sync workloads (this may take 10-15 minutes)..."
     log "ArgoCD deploys in wave order: Istio → Namespaces → Storage → Ollama → Gateway"
+    log "System nodes (t3.xlarge) are already running — ArgoCD will schedule immediately"
 
     local max_wait=900
     local interval=20
@@ -395,6 +578,7 @@ check_prerequisites
 if [[ "$SKIP_INFRA" == "false" ]]; then
     setup_backend
     deploy_infrastructure
+    bootstrap_custom_nodepools
 fi
 
 setup_cluster

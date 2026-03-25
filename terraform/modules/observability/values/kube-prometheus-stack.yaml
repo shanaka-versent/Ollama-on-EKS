@@ -47,11 +47,11 @@ prometheus:
 
     resources:
       requests:
+        cpu: "250m"
+        memory: "512Mi"
+      limits:
         cpu: "500m"
         memory: "1Gi"
-      limits:
-        cpu: "1"
-        memory: "2Gi"
 
     # Scrape interval — 15m reduces AMP ingestion cost (~60x vs 15s)
     scrapeInterval: "15m"
@@ -74,6 +74,12 @@ prometheus:
           maxSamplesPerSend: 1000
           maxShards: 200
           capacity: 2500
+        # Drop high-cardinality metrics to stay within AMP free tier (10M samples/mo)
+        # Single keep rule — only forward metrics used by dashboards + alerts
+        writeRelabelConfigs:
+          - sourceLabels: [__name__]
+            regex: "DCGM_FI_DEV_.*|ollama_.*|karpenter_.*|up|kube_node_status_capacity|kube_node_labels|kube_node_info|kube_deployment_spec_replicas|kube_deployment_status_replicas.*|kube_pod_status_phase|kube_pod_container_resource_requests|kube_pod_container_status_restarts_total|kube_pod_container_resource_limits|node_cpu_seconds_total|node_memory_MemTotal_bytes|node_memory_MemAvailable_bytes|node_filesystem_avail_bytes|node_filesystem_size_bytes"
+            action: keep
 %{ endif }
 
 %{ if amp_remote_write_role_arn != "" }

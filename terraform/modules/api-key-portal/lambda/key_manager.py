@@ -34,34 +34,60 @@ DEFAULT_EXPIRY_DAYS = int(os.environ.get("KEY_EXPIRY_DAYS", "90"))
 VALID_EXPIRY_OPTIONS = [0, 7, 30, 90]
 
 
+def _decode_jwt_payload(jwt_token):
+    """Decode the payload from a JWT token string. Returns (user_id, email) or None."""
+    try:
+        payload = jwt_token.split(".")[1]
+        # Add base64 padding
+        payload += "=" * (4 - len(payload) % 4)
+        # JWT uses base64url encoding (- and _ instead of + and /)
+        decoded = json.loads(base64.urlsafe_b64decode(payload))
+        user_id = decoded.get("id", decoded.get("sub", ""))
+        user_email = decoded.get("email", "unknown")
+        if user_id:
+            logger.info("JWT decoded: user_id=%s, email=%s", user_id, user_email)
+            return user_id, user_email
+        logger.warning("JWT decoded but no 'id' or 'sub' field found: %s", list(decoded.keys()))
+    except Exception as e:
+        logger.warning("Failed to decode JWT: %s", e)
+    return None
+
+
 def _get_user_from_event(event):
-    """Get user identity from token cookie or Cognito authorizer claims."""
-    # Try Cognito authorizer claims first (backwards compatibility)
+    """Get user identity from Cognito Authorizer claims.
+
+    API Gateway Cognito Authorizer validates the id_token and passes claims
+    in event.requestContext.authorizer.claims. The 'sub' field is the stable
+    Cognito user ID; 'email' comes from the token claims.
+    """
+    # Primary: Cognito Authorizer claims
     try:
         claims = event["requestContext"]["authorizer"]["claims"]
-        return claims.get("sub", ""), claims.get("email", "unknown")
+        user_id = claims.get("sub", "")
+        email = claims.get("email", "unknown")
+        if user_id:
+            logger.info("User from Cognito authorizer: user_id=%s, email=%s", user_id, email)
+            return user_id, email
     except (KeyError, TypeError):
         pass
 
-    # Read Open WebUI token from Cookie header
+    # Fallback: decode token directly (for local testing)
     headers = event.get("headers") or {}
+    auth_header = headers.get("Authorization", "") or headers.get("authorization", "")
+    if auth_header.startswith("Bearer "):
+        result = _decode_jwt_payload(auth_header[7:])
+        if result:
+            return result
+
     cookie_header = headers.get("Cookie", "") or headers.get("cookie", "")
     for part in cookie_header.split(";"):
         part = part.strip()
         if part.startswith("token="):
-            jwt_token = part[6:]
-            try:
-                payload = jwt_token.split(".")[1]
-                # Add base64 padding
-                payload += "=" * (4 - len(payload) % 4)
-                decoded = json.loads(base64.b64decode(payload))
-                user_id = decoded.get("id", decoded.get("sub", ""))
-                user_email = decoded.get("email", "unknown")
-                if user_id:
-                    return user_id, user_email
-            except Exception as e:
-                logger.warning("Failed to decode token cookie: %s", e)
+            result = _decode_jwt_payload(part[6:])
+            if result:
+                return result
 
+    logger.warning("No valid user identity found")
     return "", "unknown"
 
 

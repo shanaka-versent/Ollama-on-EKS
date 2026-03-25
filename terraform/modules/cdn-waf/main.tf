@@ -87,10 +87,11 @@ resource "aws_cloudfront_function" "auth_redirect" {
   JS
 }
 
-# --- CloudFront Function: Portal Auth + S3 Index Rewrite ---
-# Combines two functions for the portal S3 behavior:
-# 1. Auth check — redirects unauthenticated users (no token cookie) to login
-# 2. Index rewrite — appends index.html to directory paths (S3 OAC doesn't auto-resolve)
+# --- CloudFront Function: S3 Index Rewrite ---
+# Appends index.html to directory paths (S3 OAC doesn't auto-resolve default documents).
+# Auth is handled by the portal JS (reads token from localStorage, sends Authorization
+# header to the Lambda). No CloudFront-level auth check needed here — the main
+# auth_redirect function already excludes /portal/ paths.
 resource "aws_cloudfront_function" "s3_index_rewrite" {
   count = local.portal_enabled ? 1 : 0
 
@@ -102,19 +103,6 @@ resource "aws_cloudfront_function" "s3_index_rewrite" {
     function handler(event) {
       var request = event.request;
       var uri = request.uri;
-      var cookies = request.cookies || {};
-
-      // Auth check — require token cookie (set by Open WebUI login)
-      if (!cookies['token']) {
-        return {
-          statusCode: 302,
-          statusDescription: 'Found',
-          headers: {
-            location: { value: '/auth/login.html' },
-            'cache-control': { value: 'no-cache, no-store, must-revalidate' }
-          }
-        };
-      }
 
       // /portal/ → /portal/index.html
       if (uri.endsWith('/')) {

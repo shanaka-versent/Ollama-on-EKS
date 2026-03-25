@@ -43,3 +43,11 @@ output "root_resource_id" {
   description = "REST API root resource ID (for adding portal resources)"
   value       = aws_api_gateway_rest_api.ollama.root_resource_id
 }
+
+output "deployment_trigger_hash" {
+  description = "Hash that changes when API Gateway routes change, used by portal module to trigger redeployment"
+  value = sha1(jsonencode([
+    aws_api_gateway_method.chat_completions,
+    aws_api_gateway_method.api_tags,
+  ]))
+}

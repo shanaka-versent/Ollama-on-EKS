@@ -236,6 +236,12 @@ resource "aws_api_gateway_stage" "prod" {
     })
   }
 
+  # Portal module manages the stage deployment_id via null_resource provisioner.
+  # Prevent Terraform from reverting the portal's stage update on every apply.
+  lifecycle {
+    ignore_changes = [deployment_id]
+  }
+
   tags = var.tags
 }
 
