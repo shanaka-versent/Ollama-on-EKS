@@ -6,14 +6,14 @@
 # This script steps through each intermediate version automatically.
 #
 # Usage: ./scripts/upgrade-eks-version.sh [TARGET_VERSION] [TFVARS_FILE]
-#   e.g.: ./scripts/upgrade-eks-version.sh 1.34 environments/dev.tfvars
+#   e.g.: ./scripts/upgrade-eks-version.sh 1.34
 #
-# Default: upgrades to 1.34 using environments/dev.tfvars
+# Default: upgrades to 1.34 using terraform.tfvars
 
 set -euo pipefail
 
 TARGET_VERSION="${1:-1.34}"
-TFVARS_FILE="${2:-environments/dev.tfvars}"
+TFVARS_FILE="${2:-terraform.tfvars}"
 CLUSTER_NAME="${3:-eks-ollama-dev}"
 REGION="ap-southeast-2"
 TF_DIR="$(cd "$(dirname "$0")/../terraform" && pwd)"
@@ -66,7 +66,7 @@ for ((v = current_minor + 1; v <= target_minor; v++)); do
   sed -i.bak "s/kubernetes_version = \"1\.[0-9]*\"/kubernetes_version = \"$step_version\"/" "$TFVARS_FILE"
 
   echo "Running terraform apply for K8s $step_version..."
-  terraform apply -var-file="$TFVARS_FILE" -auto-approve \
+  terraform apply -auto-approve \
     -target=module.eks 2>&1 | tail -5
 
   echo ""

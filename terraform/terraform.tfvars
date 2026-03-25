@@ -52,8 +52,8 @@ auto_pull_model          = true
 enable_bedrock = false
 
 # NLB (created by Istio Gateway via ArgoCD — set after first deploy)
-nlb_arn      = ""
-nlb_dns_name = ""
+nlb_arn      = "arn:aws:elasticloadbalancing:ap-southeast-2:183758910727:loadbalancer/net/k8s-istioing-ollamaga-ef079990b5/43efeee80c644bf1"
+nlb_dns_name = "k8s-istioing-ollamaga-ef079990b5-43efeee80c644bf1.elb.ap-southeast-2.amazonaws.com"
 
 # CloudFront + WAF + API Gateway
 # Client → CloudFront (WAF) → API Gateway → VPC Link → NLB → Istio → Ollama
