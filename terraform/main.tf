@@ -573,6 +573,7 @@ module "api_key_portal" {
   project_name              = var.project_name
   region                    = var.region
   cognito_user_pool_id      = module.cognito.user_pool_id
+  cognito_user_pool_arn     = module.cognito.user_pool_arn
   cognito_domain            = module.cognito.cognito_domain
   cloudfront_domain         = var.cloudfront_domain
   signup_client_id          = module.cognito.signup_client_id
@@ -582,6 +583,7 @@ module "api_key_portal" {
   rest_api_root_resource_id = module.api_gateway.root_resource_id
   rest_api_execution_arn    = module.api_gateway.api_execution_arn
   usage_plan_id             = module.api_gateway.usage_plan_id
+  api_deployment_trigger    = module.api_gateway.deployment_trigger_hash
   eks_cluster_name          = module.eks.cluster_name
   tags                      = var.tags
 

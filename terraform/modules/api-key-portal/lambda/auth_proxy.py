@@ -57,6 +57,7 @@ CLOUDFRONT_DOMAIN = os.environ['CLOUDFRONT_DOMAIN']
 USER_POOL_ID = os.environ.get('USER_POOL_ID', '')
 CLIENT_ID = os.environ.get('COGNITO_CLIENT_ID', '')
 CLIENT_SECRET = os.environ.get('COGNITO_CLIENT_SECRET', '')
+COGNITO_DOMAIN = os.environ.get('COGNITO_DOMAIN', '')
 REGION = os.environ.get('AWS_REGION', 'ap-southeast-2')
 BASE_URL = f'https://{CLOUDFRONT_DOMAIN}'
 COGNITO_ENDPOINT = f'https://cognito-idp.{REGION}.amazonaws.com/'
@@ -348,12 +349,23 @@ def handle_mfa(event):
         })
 
         if result.get('AuthenticationResult'):
-            # MFA verified via API but OAuth flow failed — user must re-login
-            # to get the session token (their MFA is now verified for this window)
-            return api_response(200, {
-                'status': 'setup_complete',
-                'message': 'Verification complete! Signing you in...',
-            })
+            # MFA verified via API — extract id_token for portal access.
+            # OAuth flow failed so we don't have the Open WebUI session token,
+            # but the Cognito id_token lets the user access the API key portal.
+            auth_result = result['AuthenticationResult']
+            id_token = auth_result.get('IdToken', '')
+            response_body = {'status': 'success'}
+            if id_token:
+                response_body['id_token'] = id_token
+                print('handle_mfa: API fallback succeeded, obtained id_token')
+            else:
+                print('handle_mfa: API fallback succeeded but no IdToken in result')
+            cookies = []
+            if id_token:
+                cookies.append(
+                    f'cognito_id_token={id_token}; Path=/; Secure; SameSite=Lax; Max-Age=3600'
+                )
+            return api_response(200, response_body, set_cookie=cookies if cookies else None)
 
         print(f'MFA API: unexpected result: {result.get("ChallengeName", "none")}')
         return api_response(401, {'error': 'MFA verification failed. Please try again.'})
@@ -761,7 +773,16 @@ def _complete_oauth_with_tokens(email, password, totp_code=None):
         if '/oauth/oidc/callback' in redirect_url:
             token_cookie = complete_callback(redirect_url, owui_session)
             if token_cookie:
-                return api_response(200, {'status': 'success'}, set_cookie=token_cookie)
+                id_token = _get_cognito_id_token(email, password)
+                response_body = {'status': 'success'}
+                if id_token:
+                    response_body['id_token'] = id_token
+                cookies = [token_cookie]
+                if id_token:
+                    cookies.append(
+                        f'cognito_id_token={id_token}; Path=/; Secure; SameSite=Lax; Max-Age=3600'
+                    )
+                return api_response(200, response_body, set_cookie=cookies)
             return api_response(500, {'error': 'Failed to complete authentication'})
 
         # Step 5: MFA page
@@ -808,7 +829,16 @@ def _complete_oauth_with_tokens(email, password, totp_code=None):
                     token_cookie = complete_callback(callback_url, owui_session)
                     if token_cookie:
                         print(f'OAuth flow: MFA succeeded with field={field_name}')
-                        return api_response(200, {'status': 'success'}, set_cookie=token_cookie)
+                        id_token = _get_cognito_id_token(email, password, totp_code)
+                        response_body = {'status': 'success'}
+                        if id_token:
+                            response_body['id_token'] = id_token
+                        cookies = [token_cookie]
+                        if id_token:
+                            cookies.append(
+                                f'cognito_id_token={id_token}; Path=/; Secure; SameSite=Lax; Max-Age=3600'
+                            )
+                        return api_response(200, response_body, set_cookie=cookies)
                     return api_response(500, {'error': 'Failed to complete authentication'})
 
                 # Not a callback redirect — try next field name
@@ -843,6 +873,77 @@ def _extract_form_action(html, default_url):
             return action
         return resolve_url(default_url, action)
     return default_url
+
+
+# ==============================================================================
+# COGNITO TOKEN EXCHANGE (InitiateAuth for id_token)
+# ==============================================================================
+
+def _get_cognito_id_token(email, password, totp_code=None):
+    """Obtain Cognito id_token via InitiateAuth (USER_PASSWORD_AUTH).
+
+    Calls Cognito API directly to get proper tokens. If MFA is required,
+    responds to the SOFTWARE_TOKEN_MFA challenge with the TOTP code.
+    TOTP codes are valid for a 30-second window — reuse within that window
+    works across separate Cognito sessions.
+
+    Returns the id_token string, or None on failure (non-fatal).
+    """
+    try:
+        auth_params = {
+            'USERNAME': email,
+            'PASSWORD': password,
+        }
+        secret_hash = compute_secret_hash(email)
+        if secret_hash:
+            auth_params['SECRET_HASH'] = secret_hash
+
+        result = cognito_api('InitiateAuth', {
+            'AuthFlow': 'USER_PASSWORD_AUTH',
+            'ClientId': CLIENT_ID,
+            'AuthParameters': auth_params,
+        })
+
+        # No MFA — tokens returned directly
+        auth_result = result.get('AuthenticationResult')
+        if auth_result:
+            id_token = auth_result.get('IdToken')
+            if id_token:
+                print('_get_cognito_id_token: obtained id_token (no MFA)')
+                return id_token
+
+        # MFA challenge — respond with TOTP code
+        challenge = result.get('ChallengeName')
+        session = result.get('Session')
+
+        if challenge == 'SOFTWARE_TOKEN_MFA' and totp_code and session:
+            challenge_responses = {
+                'USERNAME': email,
+                'SOFTWARE_TOKEN_MFA_CODE': totp_code,
+            }
+            if secret_hash:
+                challenge_responses['SECRET_HASH'] = secret_hash
+
+            mfa_result = cognito_api('RespondToAuthChallenge', {
+                'ClientId': CLIENT_ID,
+                'ChallengeName': 'SOFTWARE_TOKEN_MFA',
+                'Session': session,
+                'ChallengeResponses': challenge_responses,
+            })
+
+            auth_result = mfa_result.get('AuthenticationResult')
+            if auth_result:
+                id_token = auth_result.get('IdToken')
+                if id_token:
+                    print('_get_cognito_id_token: obtained id_token (after MFA)')
+                    return id_token
+
+        print(f'_get_cognito_id_token: no id_token (challenge={challenge})')
+        return None
+
+    except Exception as e:
+        print(f'_get_cognito_id_token: error (non-fatal): {e}')
+        return None
 
 
 # ==============================================================================
@@ -1005,7 +1106,11 @@ def extract_error_message(html):
 # ==============================================================================
 
 def api_response(status_code, body, set_cookie=None):
-    """Return API Gateway Lambda proxy response."""
+    """Return API Gateway Lambda proxy response.
+
+    set_cookie can be a single cookie string or a list of cookie strings.
+    When multiple cookies are provided, multiValueHeaders is used for Set-Cookie.
+    """
     headers = {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': f'https://{CLOUDFRONT_DOMAIN}',
@@ -1013,11 +1118,21 @@ def api_response(status_code, body, set_cookie=None):
         'Access-Control-Allow-Methods': 'POST,OPTIONS',
     }
 
-    if set_cookie:
-        headers['Set-Cookie'] = set_cookie
-
-    return {
+    response = {
         'statusCode': status_code,
         'headers': headers,
         'body': json.dumps(body) if isinstance(body, dict) else body,
     }
+
+    if set_cookie:
+        if isinstance(set_cookie, list) and len(set_cookie) > 1:
+            # Multiple cookies — use multiValueHeaders for Set-Cookie
+            response['multiValueHeaders'] = {
+                'Set-Cookie': set_cookie,
+            }
+        elif isinstance(set_cookie, list):
+            headers['Set-Cookie'] = set_cookie[0]
+        else:
+            headers['Set-Cookie'] = set_cookie
+
+    return response

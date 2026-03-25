@@ -154,7 +154,16 @@
 
     async function apiCall(endpoint, method = 'GET') {
       try {
-        const resp = await fetch(`${API_BASE}/${endpoint}`, { method });
+        var idToken = localStorage.getItem('cognito_id_token');
+        if (!idToken) idToken = (document.cookie.match(/cognito_id_token=([^;]+)/) || [])[1];
+        var headers = {};
+        if (idToken) headers['Authorization'] = idToken;
+        const resp = await fetch(`${API_BASE}/${endpoint}`, { method, headers });
+        if (resp.status === 401) {
+          localStorage.removeItem('cognito_id_token');
+          showLockout('Session expired. Please log in again.');
+          return { error: 'Unauthorized' };
+        }
         return await resp.json();
       } catch (e) {
         return { error: e.message };

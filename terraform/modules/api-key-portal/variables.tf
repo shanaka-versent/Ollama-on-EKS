@@ -16,6 +16,11 @@ variable "cognito_user_pool_id" {
   type        = string
 }
 
+variable "cognito_user_pool_arn" {
+  description = "Cognito User Pool ARN (for API Gateway Cognito authorizer)"
+  type        = string
+}
+
 variable "cognito_domain" {
   description = "Cognito hosted UI domain URL"
   type        = string
@@ -78,6 +83,12 @@ variable "cognito_client_secret" {
 variable "eks_cluster_name" {
   description = "EKS cluster name (for GPU controller Lambda)"
   type        = string
+}
+
+variable "api_deployment_trigger" {
+  description = "Hash from api-gateway module that triggers redeployment when Ollama routes change"
+  type        = string
+  default     = ""
 }
 
 variable "tags" {
