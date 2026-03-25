@@ -25,6 +25,16 @@ output "vpc_cidr" {
   value       = module.vpc.vpc_cidr
 }
 
+output "cluster_security_group_id" {
+  description = "EKS cluster security group ID (for NodeClass)"
+  value       = module.eks.cluster_security_group_id
+}
+
+output "node_role_name" {
+  description = "IAM node role name (for NodeClass)"
+  value       = module.iam.node_role_name
+}
+
 # ==============================================================================
 # LAYER 2: EKS CLUSTER
 # ==============================================================================

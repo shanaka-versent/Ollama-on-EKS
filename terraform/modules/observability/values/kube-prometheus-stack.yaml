@@ -47,11 +47,11 @@ prometheus:
 
     resources:
       requests:
+        cpu: "250m"
+        memory: "512Mi"
+      limits:
         cpu: "500m"
         memory: "1Gi"
-      limits:
-        cpu: "1"
-        memory: "2Gi"
 
     # Scrape interval — 15m reduces AMP ingestion cost (~60x vs 15s)
     scrapeInterval: "15m"

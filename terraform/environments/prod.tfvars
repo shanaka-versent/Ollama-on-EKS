@@ -18,7 +18,7 @@ az_count           = 2
 enable_nat_gateway = true
 
 # EKS
-kubernetes_version = "1.31"
+kubernetes_version = "1.34"
 enable_logging     = true
 
 # Ollama — Tier 3 Flagship (PROD)

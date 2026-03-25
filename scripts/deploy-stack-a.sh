@@ -244,6 +244,101 @@ deploy_infrastructure() {
 }
 
 # ==============================================================================
+# Phase 2b: Patch NodeClass files with Terraform outputs
+# ==============================================================================
+# EKS Auto Mode NodeClass requires explicit subnet/SG IDs (tag-based discovery
+# not supported). After terraform apply creates a new VPC, the IDs change.
+# This step reads the new IDs from Terraform outputs and patches the K8s YAML
+# files, then commits + pushes so ArgoCD picks up the correct values.
+patch_nodeclass_files() {
+    step "Phase 2b: Patching NodeClass files with new VPC IDs"
+
+    cd "$TERRAFORM_DIR"
+
+    # Read Terraform outputs
+    local subnet_ids sg_id role_name
+    subnet_ids=$(terraform output -json private_subnet_ids 2>/dev/null)
+    sg_id=$(terraform output -raw cluster_security_group_id 2>/dev/null)
+    role_name=$(terraform output -raw node_role_name 2>/dev/null)
+
+    if [[ -z "$subnet_ids" || -z "$sg_id" || -z "$role_name" ]]; then
+        warn "Could not read Terraform outputs for NodeClass patching."
+        warn "You may need to manually update k8s/nodepools/ files with correct subnet/SG/role IDs."
+        cd "$REPO_DIR"
+        return
+    fi
+
+    log "Subnet IDs: ${subnet_ids}"
+    log "Security Group: ${sg_id}"
+    log "Node Role: ${role_name}"
+
+    # Convert JSON array to YAML subnet entries
+    local subnet_yaml
+    subnet_yaml=$(echo "$subnet_ids" | python3 -c "
+import sys, json
+ids = json.load(sys.stdin)
+for sid in ids:
+    print(f'    - id: {sid}')
+")
+
+    cd "$REPO_DIR"
+
+    # Patch both NodeClass files
+    for ncfile in k8s/nodepools/gpu-nodeclass.yaml k8s/nodepools/system-nodeclass.yaml; do
+        if [[ ! -f "$ncfile" ]]; then
+            warn "NodeClass file not found: $ncfile"
+            continue
+        fi
+
+        log "Patching ${ncfile}..."
+
+        # Replace role
+        sed -i.bak "s/^  role: .*/  role: ${role_name}/" "$ncfile"
+
+        # Replace subnetSelectorTerms block (everything between subnetSelectorTerms: and securityGroupSelectorTerms:)
+        python3 -c "
+import re, sys
+
+with open('${ncfile}', 'r') as f:
+    content = f.read()
+
+# Replace subnet block
+subnet_block = '''  subnetSelectorTerms:
+${subnet_yaml}'''
+content = re.sub(
+    r'  subnetSelectorTerms:\n(    - id: [^\n]+\n)+',
+    subnet_block + '\n',
+    content
+)
+
+# Replace security group
+content = re.sub(
+    r'(  securityGroupSelectorTerms:\n    - id: )[^\n]+',
+    r'\g<1>${sg_id}',
+    content
+)
+
+with open('${ncfile}', 'w') as f:
+    f.write(content)
+"
+        rm -f "${ncfile}.bak"
+    done
+
+    log "NodeClass files patched"
+
+    # Commit and push so ArgoCD picks up the changes
+    if git diff --quiet k8s/nodepools/ 2>/dev/null; then
+        log "NodeClass files unchanged — no commit needed"
+    else
+        log "Committing NodeClass updates..."
+        git add k8s/nodepools/gpu-nodeclass.yaml k8s/nodepools/system-nodeclass.yaml
+        git commit -m "fix: update NodeClass subnet/SG/role IDs from Terraform outputs"
+        git push
+        log "Pushed NodeClass updates to Git — ArgoCD will sync automatically"
+    fi
+}
+
+# ==============================================================================
 # Phase 3: Cluster Setup
 # ==============================================================================
 setup_cluster() {
@@ -395,6 +490,7 @@ check_prerequisites
 if [[ "$SKIP_INFRA" == "false" ]]; then
     setup_backend
     deploy_infrastructure
+    patch_nodeclass_files
 fi
 
 setup_cluster
