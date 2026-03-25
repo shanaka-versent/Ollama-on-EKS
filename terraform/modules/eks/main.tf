@@ -28,7 +28,7 @@ resource "aws_eks_cluster" "main" {
   # GPU nodes only provision when a pod requests nvidia.com/gpu resources.
   compute_config {
     enabled       = true
-    node_pools    = []  # No built-in pools — deploy script applies custom NodePool/NodeClass via kubectl immediately after cluster creation. This ensures t3.xlarge (x86) from the start, never c6g.large (Graviton).
+    node_pools    = ["system"]  # EKS Auto Mode requires at least one built-in pool. Deploy script applies custom NodePool/NodeClass via kubectl immediately after cluster creation, then deletes this built-in pool to ensure only t3.xlarge (x86) runs — never c6g.large (Graviton).
     node_role_arn = var.node_role_arn
   }
 

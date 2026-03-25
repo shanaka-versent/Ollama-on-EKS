@@ -402,6 +402,17 @@ with open('${ncfile}', 'w') as f:
         warn "  kubectl describe nodeclass system-x86"
     fi
 
+    # --- Step 4b: Delete built-in "system" NodePool (c6g.large) ---
+    # EKS Auto Mode requires node_pools=["system"] in terraform, which creates a
+    # built-in pool that provisions c6g.large Graviton instances. Now that our custom
+    # system-x86 pool is ready (t3.xlarge), delete the built-in pool so ONLY custom
+    # nodes run. EKS does NOT recreate the deleted pool.
+    if kubectl get nodepool system &>/dev/null; then
+        log "Deleting built-in 'system' NodePool (c6g.large) — custom system-x86 (t3.xlarge) takes over"
+        kubectl delete nodepool system
+        log "Built-in pool deleted — only t3.xlarge system nodes from now on"
+    fi
+
     # --- Step 5: Commit + push to main for ArgoCD ---
     if git diff --quiet k8s/nodepools/ 2>/dev/null; then
         log "NodeClass files unchanged — no commit needed"
