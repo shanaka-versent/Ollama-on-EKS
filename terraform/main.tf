@@ -515,7 +515,7 @@ module "cognito" {
   source = "./modules/cognito"
 
   project_name       = var.project_name
-  cloudfront_domain  = var.cloudfront_domain
+  cloudfront_domain  = module.cdn_waf.cloudfront_domain
   admin_email        = var.cognito_admin_email
   notification_email = var.cognito_notification_email
   tags               = var.tags
@@ -575,7 +575,7 @@ module "api_key_portal" {
   cognito_user_pool_id      = module.cognito.user_pool_id
   cognito_user_pool_arn     = module.cognito.user_pool_arn
   cognito_domain            = module.cognito.cognito_domain
-  cloudfront_domain         = var.cloudfront_domain
+  cloudfront_domain         = module.cdn_waf.cloudfront_domain
   signup_client_id          = module.cognito.signup_client_id
   cognito_client_id         = module.cognito.client_id
   cognito_client_secret     = module.cognito.client_secret

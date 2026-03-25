@@ -231,7 +231,7 @@ deploy_infrastructure() {
         exit 0
     fi
 
-    # Terraform apply
+    # Terraform apply (Phase 1 — creates all infrastructure)
     echo ""
     log "Applying Terraform plan..."
     terraform apply tfplan
@@ -239,7 +239,27 @@ deploy_infrastructure() {
     # Clean up plan file
     rm -f tfplan
 
-    log "Terraform apply complete"
+    log "Phase 1 apply complete"
+
+    # Phase 2 — re-apply with CloudFront domain for Cognito callbacks and portal CORS
+    # CloudFront domain is only known after first apply (circular dependency with portal S3 origins).
+    # Second apply updates: Cognito callback URLs, portal CORS headers, portal Lambda env vars.
+    echo ""
+    CLOUDFRONT_DOMAIN=$(terraform output -raw cloudfront_domain 2>/dev/null || echo "")
+    if [[ -n "$CLOUDFRONT_DOMAIN" ]]; then
+        log "CloudFront domain: ${CLOUDFRONT_DOMAIN}"
+        log "Updating terraform.tfvars with CloudFront domain for Cognito/portal wiring..."
+        sed -i.bak "s|^cloudfront_domain = .*|cloudfront_domain = \"${CLOUDFRONT_DOMAIN}\"|" terraform.tfvars
+        rm -f terraform.tfvars.bak
+
+        log "Running Phase 2 apply (Cognito callbacks + portal CORS)..."
+        terraform apply -auto-approve 2>&1 | tail -3
+        log "Phase 2 apply complete"
+    else
+        warn "Could not get CloudFront domain — Cognito callbacks will need manual wiring"
+    fi
+
+    log "Terraform deployment complete"
     cd "$REPO_DIR"
 }
 

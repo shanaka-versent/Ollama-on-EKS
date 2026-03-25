@@ -21,13 +21,11 @@ spec:
   role: role-eks-node-ollama-dev
   # Subnets — same as default NodeClass (Auto Mode selected these for the cluster)
   subnetSelectorTerms:
-    - id: subnet-04a7086952eb4ddd3
-    - id: subnet-0053c07d159b9c414
-    - id: subnet-00e6d2e08c5abf256
-    - id: subnet-0344b3491c45c1943
+    - id: subnet-0dd32354ab85b57cd
+    - id: subnet-066f317903382d947
   # Security group — same as default NodeClass
   securityGroupSelectorTerms:
-    - id: sg-07e61b81472b451d9
+    - id: sg-0fb86f09fddc0fd08
   # Ephemeral storage for the node (root volume)
   ephemeralStorage:
     size: 80Gi

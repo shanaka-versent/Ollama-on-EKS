@@ -52,7 +52,7 @@ waf_geo_countries      = ["AU", "US"]
 waf_enable_bot_control = false
 
 # CloudFront domain (set after first apply — used by Cognito callback URLs)
-cloudfront_domain = ""
+cloudfront_domain = "d1eg49k9r220u8.cloudfront.net"
 
 # Cognito Authentication (Open WebUI)
 cognito_admin_email        = "shanaka.jayasundera@versent.com.au"
