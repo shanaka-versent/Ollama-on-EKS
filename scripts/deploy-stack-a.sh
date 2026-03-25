@@ -402,15 +402,21 @@ with open('${ncfile}', 'w') as f:
         warn "  kubectl describe nodeclass system-x86"
     fi
 
-    # --- Step 4b: Delete built-in "system" NodePool (c6g.large) ---
-    # EKS Auto Mode requires node_pools=["system"] in terraform, which creates a
-    # built-in pool that provisions c6g.large Graviton instances. Now that our custom
-    # system-x86 pool is ready (t3.xlarge), delete the built-in pool so ONLY custom
-    # nodes run. EKS does NOT recreate the deleted pool.
+    # --- Step 4b: Neuter built-in "system" NodePool to prevent c6g.large provisioning ---
+    # EKS Auto Mode REQUIRES node_pools=["system"] when nodeRoleArn is set (API rejects []).
+    # The built-in pool provisions c6g.large Graviton instances we don't want.
+    # Solution: patch limits to 0 CPU / 0 memory — pool exists (satisfies EKS) but can never
+    # provision nodes. EKS does NOT revert this patch. Deleting the pool doesn't work because
+    # EKS Auto Mode reconciler recreates it.
     if kubectl get nodepool system &>/dev/null; then
-        log "Deleting built-in 'system' NodePool (c6g.large) — custom system-x86 (t3.xlarge) takes over"
-        kubectl delete nodepool system
-        log "Built-in pool deleted — only t3.xlarge system nodes from now on"
+        log "Patching built-in 'system' NodePool limits to 0 — prevents c6g.large provisioning"
+        kubectl patch nodepool system --type=merge -p '{"spec":{"limits":{"cpu":"0","memory":"0"}}}'
+        # Also delete any existing NodeClaims from the built-in pool
+        for nc in $(kubectl get nodeclaims -l karpenter.sh/nodepool=system -o name 2>/dev/null); do
+            log "Deleting built-in NodeClaim: $nc"
+            kubectl delete "$nc" --wait=false
+        done
+        log "Built-in pool neutered — only custom system-x86 (t3.xlarge) can provision nodes"
     fi
 
     # --- Step 5: Commit + push to main for ArgoCD ---
