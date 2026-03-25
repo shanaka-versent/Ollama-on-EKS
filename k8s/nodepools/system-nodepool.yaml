@@ -1,11 +1,11 @@
 # System NodePool for Non-GPU Workloads (EKS Auto Mode)
 # @author Shanaka Jayasundera - shanakaj@gmail.com
 #
-# Custom NodePool constrained to t3 x86 instances. No built-in pools —
-# EKS Auto Mode has node_pools=[] so this is the ONLY system pool.
-# Applied via kubectl immediately after EKS creation (before ArgoCD).
-# Guarantees all system workloads (ArgoCD, Prometheus, Istio, Open WebUI,
-# cert-manager, CoreDNS) run on x86 t3.xlarge. No c6g.large Graviton.
+# Custom NodePool constrained to t3 x86 instances. The deploy script applies
+# this via kubectl immediately after EKS creation, then deletes the built-in
+# "system" pool (which would provision c6g.large Graviton). This ensures
+# ALL system workloads (ArgoCD, Prometheus, Istio, Open WebUI, cert-manager,
+# CoreDNS) run on x86 t3.xlarge — never c6g.large.
 #
 # On-demand ONLY — system components cannot tolerate spot interruptions.
 # A spot reclaim would kill CoreDNS, Istio gateway, Prometheus, and ArgoCD
