@@ -83,6 +83,19 @@ resource "aws_nat_gateway" "main" {
   depends_on = [aws_internet_gateway.main]
 }
 
+# S3 Gateway Endpoint (free — routes S3 traffic through AWS backbone, not NAT)
+# Reduces NAT Gateway data processing costs for ECR image layer pulls (stored in S3)
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id       = aws_vpc.main.id
+  service_name = "com.amazonaws.${data.aws_region.current.name}.s3"
+
+  tags = merge(var.tags, {
+    Name = "vpce-s3-${var.name_prefix}"
+  })
+}
+
+data "aws_region" "current" {}
+
 # Public Route Table
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.main.id
@@ -126,4 +139,10 @@ resource "aws_route_table_association" "private" {
   count          = var.az_count
   subnet_id      = aws_subnet.private[count.index].id
   route_table_id = aws_route_table.private.id
+}
+
+# Associate S3 Gateway Endpoint with private route table
+resource "aws_vpc_endpoint_route_table_association" "s3_private" {
+  route_table_id  = aws_route_table.private.id
+  vpc_endpoint_id = aws_vpc_endpoint.s3.id
 }

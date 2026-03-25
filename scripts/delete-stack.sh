@@ -277,7 +277,8 @@ scale_down_workloads() {
     sleep 15
 
     # Check remaining GPU nodes
-    GPU_NODES=$(kubectl get nodes --no-headers 2>/dev/null | grep -c "g5\." || echo "0")
+    GPU_NODES=$(kubectl get nodes --no-headers 2>/dev/null | grep -c "g5\." || true)
+    GPU_NODES="${GPU_NODES:-0}"
     if [ "$GPU_NODES" -gt 0 ]; then
         warn "${GPU_NODES} GPU node(s) still present — they will terminate during cluster deletion"
     else
@@ -359,6 +360,45 @@ except:
     log "Deleting cert-manager resources..."
     kubectl delete certificates --all-namespaces --all --timeout=30s >> "$LOG_FILE" 2>&1 || true
     kubectl delete clusterissuers --all --timeout=30s >> "$LOG_FILE" 2>&1 || true
+
+    # Step 2g: Delete API Gateway REST API + VPC Link (blocks NLB + IGW deletion)
+    # VPC Link holds the NLB, which holds ENIs, which block IGW detach.
+    # Must be deleted BEFORE terraform destroy to avoid 20-min IGW timeout.
+    log "Cleaning up API Gateway REST API and VPC Links..."
+    REST_APIS=$(aws apigateway get-rest-apis --region "$REGION" \
+        --query "items[?contains(name, 'ollama')].id" --output text 2>/dev/null || echo "")
+    for api_id in $REST_APIS; do
+        if [ -n "$api_id" ]; then
+            log "  Deleting REST API: ${api_id}"
+            aws apigateway delete-rest-api --rest-api-id "$api_id" --region "$REGION" >> "$LOG_FILE" 2>&1 || true
+        fi
+    done
+
+    sleep 5
+
+    VPC_LINKS=$(aws apigateway get-vpc-links --region "$REGION" \
+        --query "items[?contains(name, 'ollama')].id" --output text 2>/dev/null || echo "")
+    for link_id in $VPC_LINKS; do
+        if [ -n "$link_id" ]; then
+            log "  Deleting VPC Link: ${link_id}"
+            aws apigateway delete-vpc-link --vpc-link-id "$link_id" --region "$REGION" >> "$LOG_FILE" 2>&1 || true
+        fi
+    done
+
+    if [ -n "$VPC_LINKS" ]; then
+        log "  Waiting for VPC Link deletion (up to 60s)..."
+        local vl_wait=0
+        while [ $vl_wait -lt 60 ]; do
+            REMAINING=$(aws apigateway get-vpc-links --region "$REGION" \
+                --query "items[?contains(name, 'ollama')].id" --output text 2>/dev/null || echo "")
+            if [ -z "$REMAINING" ]; then
+                log "  VPC Links deleted"
+                break
+            fi
+            sleep 10
+            vl_wait=$((vl_wait + 10))
+        done
+    fi
 }
 
 # Wait for all NLBs tagged with the cluster to be deleted
@@ -505,19 +545,25 @@ handle_errored_state() {
         terraform force-unlock -force "$LOCK_ID" >> "$LOG_FILE" 2>&1 || true
     fi
 
-    # Push the errored state
+    # Push the errored state (only if newer than remote)
     log "Pushing errored.tfstate to backend..."
     if terraform state push errored.tfstate >> "$LOG_FILE" 2>&1; then
         log "State recovered successfully"
         rm -f errored.tfstate
     else
-        error "Failed to push errored.tfstate — manual intervention needed"
-        error "Run: cd terraform && terraform state push errored.tfstate"
+        warn "Could not push errored.tfstate (may be stale) — removing and using remote state"
+        rm -f errored.tfstate
     fi
 }
 
 # Prompt for AWS re-authentication between retries
 prompt_reauth() {
+    if [ "$FORCE" = "true" ]; then
+        warn "AWS credentials may have expired. --force mode: waiting 30s then retrying..."
+        sleep 30
+        return
+    fi
+
     echo ""
     echo -e "${YELLOW}${BOLD}  AWS credentials may have expired.${NC}"
     echo "  Re-authenticate in another terminal, then press Enter to retry."
