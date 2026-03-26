@@ -5,7 +5,7 @@
 # With EKS Auto Mode + Karpenter: just scale the deployment to 1.
 # Karpenter provisions a g5 GPU node automatically (~2-3 min).
 # KEDA auto-scaling is paused during startup, then unpaused so
-# the 15-min idle timer starts from when the model finishes loading.
+# the 30-min idle timer starts from when the model finishes loading.
 #
 # Usage:
 #   ./scripts/scale-up.sh
@@ -102,16 +102,18 @@ echo -e "${CYAN}${BOLD}==> Waiting for Ollama API to be ready (model loading)...
 echo -n "  Waiting for model"
 SECONDS=0
 while true; do
-  # Check if Ollama API responds and has at least one model loaded
-  MODEL_COUNT=$(kubectl exec -n ollama deploy/ollama -- curl -s http://localhost:11434/api/tags 2>/dev/null \
+  # Check if Ollama API responds and has at least one model on disk
+  # Use Open WebUI pod for curl (Ollama container doesn't have curl)
+  MODEL_COUNT=$(kubectl exec -n open-webui deploy/open-webui -- \
+    curl -s --max-time 10 http://ollama.ollama.svc.cluster.local:11434/api/tags 2>/dev/null \
     | python3 -c "import json,sys; data=json.load(sys.stdin); print(len(data.get('models',[])))" 2>/dev/null || echo "0")
   if [[ "$MODEL_COUNT" -gt 0 ]]; then
-    echo " — done (${SECONDS}s, $MODEL_COUNT model(s) loaded)"
+    echo " — done (${SECONDS}s, $MODEL_COUNT model(s) on disk)"
     break
   fi
   if [[ $SECONDS -gt 300 ]]; then
     echo ""
-    echo -e "  ${YELLOW}⚠${NC} Model not loaded after 5 min — leaving KEDA paused"
+    echo -e "  ${YELLOW}⚠${NC} Model not found on disk after 5 min — leaving KEDA paused"
     echo -e "  ${YELLOW}⚠${NC} Safety check will auto-unpause KEDA after 15 min"
     echo -e "  Check: kubectl exec -n ollama deploy/ollama -- ollama list"
     echo ""
@@ -121,6 +123,45 @@ while true; do
   sleep 10
 done
 
+# Pre-load model into GPU memory with a warm-up inference request.
+# /api/tags only checks models on disk — the model isn't in GPU VRAM until
+# the first inference. Cold load from disk takes ~2 min. Without this step,
+# the first user chat request would hang for 2 min.
+echo ""
+echo -e "${CYAN}${BOLD}==> Pre-loading model into GPU memory (warm-up request)...${NC}"
+echo -e "  This takes ~2 min on cold start (loading weights from disk to GPU VRAM)"
+echo -n "  Loading"
+SECONDS=0
+WARMUP_DONE=false
+# Get the default model from the Ollama deployment env vars
+DEFAULT_MODEL=$(kubectl get deployment ollama -n ollama \
+  -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="OLLAMA_MODEL")].value}' 2>/dev/null)
+DEFAULT_MODEL="${DEFAULT_MODEL:-qwen3.5:27b}"
+while true; do
+  # Use Open WebUI pod for curl (Ollama container doesn't have curl)
+  RESPONSE=$(kubectl exec -n open-webui deploy/open-webui -- \
+    curl -s --max-time 300 -X POST "http://ollama.ollama.svc.cluster.local:11434/api/generate" \
+    -H 'Content-Type: application/json' \
+    -d "{\"model\":\"$DEFAULT_MODEL\",\"prompt\":\"hi\",\"stream\":false,\"think\":false,\"options\":{\"num_predict\":5}}" 2>/dev/null || echo "")
+  if echo "$RESPONSE" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d.get('done')" 2>/dev/null; then
+    echo " — done (${SECONDS}s)"
+    WARMUP_DONE=true
+    break
+  fi
+  if [[ $SECONDS -gt 300 ]]; then
+    echo ""
+    echo -e "  ${YELLOW}⚠${NC} Warm-up timed out after 5 min — model may still be loading"
+    echo -e "  First chat request will trigger the load instead"
+    break
+  fi
+  echo -n "."
+  sleep 10
+done
+
+if $WARMUP_DONE; then
+  echo -e "  ${GREEN}✓${NC} Model loaded into GPU VRAM — ready for instant inference"
+fi
+
 # Do NOT unpause KEDA from this script. Let the EventBridge safety check
 # handle it after the 15-min grace period. This prevents the race condition
 # where KEDA unpauses, sees no Prometheus metrics yet (query lag), and
@@ -129,7 +170,7 @@ done
 # Flow: scale-up.sh pauses KEDA → 15 min grace → EventBridge unpauses KEDA
 #       → KEDA checks triggers → if active, keeps running; if idle, scales to 0
 echo ""
-echo -e "${CYAN}${BOLD}==> KEDA stays paused (safety check will unpause after 15 min)${NC}"
+echo -e "${CYAN}${BOLD}==> KEDA stays paused (safety check will unpause after 30 min)${NC}"
 echo -e "  ${GREEN}✓${NC} This prevents KEDA from immediately killing the pod"
 echo -e "  ${GREEN}✓${NC} To stop manually: ./scripts/scale-down.sh (unpauses KEDA)"
 
@@ -142,5 +183,5 @@ echo "  Test:"
 echo "    kubectl exec -n ollama deploy/ollama -- ollama list"
 echo ""
 echo "  Stop (manual):  ./scripts/scale-down.sh"
-echo "  Auto-stop:      KEDA scales to 0 after 15 min of no requests"
+echo "  Auto-stop:      KEDA scales to 0 after 30 min of no requests"
 echo ""
