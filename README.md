@@ -34,7 +34,7 @@ flowchart TB
                     direction LR
                     ISTIO["Istio Gateway\nAmbient mTLS"]
                     OLLAMA["Ollama Pod\nv0.18.2 · NVIDIA A10G"]
-                    EBS["EBS gp3 200GB\n6000 IOPS · 400 MB/s\nSnapshot Pre-loaded"]
+                    EBS["EBS gp3-ephemeral 200GB\n6000 IOPS · 400 MB/s\nEphemeral from Snapshot"]
                     WEBUI["Open WebUI v0.8.10\nCustom Login Portal"]
                     COG["Cognito User Pool\nOAuth/OIDC + TOTP MFA"]
                     MON["Prometheus + DCGM\n→ AMP → AMG (SSO)"]
@@ -95,7 +95,7 @@ CloudFront connects to the internal NLB via **VPC Origins** — private connecti
 | Internal NLB | Your EKS VPC | Only reachable via VPC Link and VPC Origin — not internet-facing |
 | Istio Ambient Mesh | Your EKS cluster | L4 mTLS between pods, Gateway API routing |
 | Ollama server | Your EKS GPU node | Model server — runs GPU inference |
-| EBS gp3 (200GB) | Your AWS account | Pre-loaded models via EBS snapshot, 6000 IOPS, 400 MB/s |
+| EBS gp3-ephemeral (200GB) | Your AWS account | Ephemeral volume from EBS snapshot per pod startup, 6000 IOPS, 400 MB/s. Deleted on pod termination |
 | Custom Login Portal | S3 + Lambda + API GW | Handles all auth flows (login, signup, MFA, password reset) — no Cognito hosted UI |
 | Cognito User Pool | Your AWS account | OAuth/OIDC provider with TOTP MFA, group-based roles, admin-approved signups |
 
@@ -133,17 +133,17 @@ One stack handles all tiers — no separate DEV/PROD overlays needed:
 - **Tier switching:** `./switch-model.sh use <tier>` patches deployment resources at runtime
 - **Terraform:** `terraform apply -var-file=environments/dev.tfvars` for cloud-level config
 
-**Availability zones:** Defaults to single AZ (`ap-southeast-2a`) — keeps costs down and EBS PVCs co-located. For multi-AZ HA, uncomment `ap-southeast-2b` in `k8s/nodepools/gpu-nodepool.yaml`. Karpenter will provision GPU nodes across both AZs automatically.
+**Availability zones:** GPU NodePool spans `ap-southeast-2a` + `ap-southeast-2b` for better spot capacity. Ollama uses **ephemeral volumes from EBS snapshot** — a fresh volume is created in whichever AZ the GPU node lands (EBS snapshots are region-level, not AZ-bound). Volume is deleted when the pod terminates; models are preserved in the snapshot. System nodes remain single-AZ (`ap-southeast-2a`).
 
 ### Key Design Decisions
 
 | Decision | Rationale |
 |----------|-----------|
 | CloudFront + WAF + API Gateway (not Kong) | 99% cost reduction ($756/mo → $6/mo), adds DDoS protection, eliminates Transit Gateway dependency |
-| EKS Auto Mode + Custom NodePools | Built-in pools disabled (`node_pools = []`). Two custom Karpenter NodePools: system (t3.xlarge on-demand, single AZ `ap-southeast-2a`, `WhenEmptyOrUnderutilized` 5m) and GPU (g5 spot, same AZ, `WhenEmpty` 30m). DEV uses single AZ to keep EBS PVCs co-located and consolidate to 1 system node. System on-demand because CoreDNS/Istio/Prometheus cannot tolerate spot interruptions. AWS manages NVIDIA device plugin and drivers |
+| EKS Auto Mode + Custom NodePools | Built-in pools disabled (`node_pools = []`). Two custom Karpenter NodePools: system (t3.xlarge on-demand, single AZ `ap-southeast-2a`, `WhenEmptyOrUnderutilized` 5m) and GPU (g5 spot, multi-AZ `2a`+`2b`, `WhenEmpty` 10m). GPU uses ephemeral volumes from EBS snapshot for multi-AZ flexibility. System on-demand because CoreDNS/Istio/Prometheus cannot tolerate spot interruptions. AWS manages NVIDIA device plugin and drivers |
 | KEDA auto-scale-to-zero | KEDA **only targets the Ollama deployment** (GPU workload). After 15 min idle, scales Ollama to 0. Karpenter terminates empty GPU node after 10 min. Total idle-to-zero: ~25 min. Open WebUI stays at 1 replica on system nodes (never scaled to zero). Manual scale-up via `scripts/scale-up.sh` |
-| EBS snapshots for model weights | Pre-loaded models on disk, no internet needed for model loading (air-gap compliant), cold start ~3 min instead of 15-25 min |
-| High-throughput gp3 (400 MB/s + 6000 IOPS) | Fast model loading from snapshot — critical for reasonable cold start times |
+| EBS snapshots + ephemeral volumes | Pre-loaded models via snapshot, ephemeral volume created per pod in any AZ (region-level snapshot). No persistent PVC needed — volume deleted on pod termination, models preserved in snapshot. Air-gap compliant, cold start ~3 min |
+| High-throughput gp3-ephemeral (400 MB/s + 6000 IOPS) | Compensates for EBS snapshot lazy-loading — data is fetched from S3 on first read, then cached locally |
 | AWS Managed Grafana (AMG) | Prometheus + DCGM Exporter in-cluster → AMP → AMG (SSO via IAM Identity Center). All dashboards including FinOps |
 | Spot with on-demand fallback | Karpenter tries spot first (~65% savings), auto-falls back to on-demand if reclaimed |
 | Dual-mode pipeline | Two separate stacks (not config flag) — compliance by design, eliminates human error risk |
@@ -151,7 +151,7 @@ One stack handles all tiers — no separate DEV/PROD overlays needed:
 | Custom login portal + Cognito | All auth flows (login, signup, MFA, password reset) handled by custom portal — users never see Cognito hosted UI. Cognito provides OAuth/OIDC backend with TOTP MFA and group-based roles |
 | cert-manager (not manual openssl) | Automated TLS lifecycle — 90d duration, 30d auto-renewal, no manual cert rotation |
 | Flex mode (single-stack architecture) | One stack, all tiers. NodePool ceiling allows both g5.xlarge and g5.12xlarge. `switch-model.sh` patches deployment resources, Karpenter auto-provisions the right instance. Cost = Tier 1 by default; flagship costs only while active. No reprovisioning needed |
-| Single AZ default, multi-AZ configurable | Defaults to `ap-southeast-2a`. Multi-AZ HA enabled by uncommenting one line in `k8s/nodepools/gpu-nodepool.yaml` — no other changes needed |
+| Multi-AZ GPU, single-AZ system | GPU NodePool spans `2a`+`2b` for wider spot capacity pool. System nodes stay in `2a` (single node consolidation). Ephemeral snapshot volumes enable cross-AZ GPU provisioning at zero additional cost |
 
 ### Dual-Mode Pipeline — Two Separate Stacks
 
@@ -238,7 +238,7 @@ sequenceDiagram
     participant IGW as Istio Gateway
     participant ZT as ztunnel (Ambient mTLS)
     participant OLM as Ollama Pod (NVIDIA A10G)
-    participant EBS as EBS Volume (200GB gp3)
+    participant EBS as EBS Ephemeral Volume (200GB gp3)
 
     Dev->>CF: POST /v1/chat/completions (HTTPS)
 
@@ -270,7 +270,7 @@ sequenceDiagram
     end
 
     OLM->>+EBS: Load model weights (if not already in GPU VRAM)
-    EBS-->>-OLM: Model from EBS snapshot (pre-loaded)
+    EBS-->>-OLM: Ephemeral volume from EBS snapshot (lazy-loaded)
 
     Note over OLM: GPU inference — NVIDIA A10G (DEV: 1x 24GB / PROD: 4x 96GB)
     Note over OLM: Context window: 32K tokens, 4 parallel requests
@@ -687,6 +687,89 @@ KEDA **only targets the Ollama deployment** (GPU workload) — Open WebUI stays 
 
 **Manual scale-down (immediate):** `./scripts/scale-down.sh` scales to 0 immediately without waiting for the 15-min idle window.
 
+**KEDA Safety Check (EventBridge):** An EventBridge rule invokes the GPU controller Lambda every 5 minutes. If KEDA has been paused for longer than 15 minutes (e.g., someone started the GPU manually and forgot to stop it), the Lambda auto-unpauses KEDA — allowing KEDA's idle detection to take over and scale down if there's no activity. This prevents forgotten GPU starts from running indefinitely.
+
+| Safety Check | Details |
+|-------------|---------|
+| Trigger | EventBridge `rate(5 minutes)` → GPU controller Lambda |
+| Grace period | 15 min from when KEDA was paused (configurable via `KEDA_GRACE_MINUTES`) |
+| Action | Auto-unpauses KEDA → KEDA checks triggers → scales to 0 if idle |
+| Max cost exposure | ~$0.09 (15 min at $0.35/hr spot) per forgotten start |
+
+### GPU Lifecycle State Diagram
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle: Cluster deployed
+    Idle --> Starting: scale-up.sh / Portal Start
+    Starting --> Running: Pod ready + model loaded (~3 min)
+    Running --> Running: Requests within 15-min window
+    Running --> IdleDetection: No requests for 15 min
+    IdleDetection --> ScalingDown: KEDA scales Ollama to 0
+    ScalingDown --> NodeTerminating: Karpenter detects empty node
+    NodeTerminating --> Idle: GPU node terminated (~10 min)
+    Running --> Stopping: scale-down.sh / Portal Stop
+    Stopping --> NodeTerminating: Immediate scale to 0
+
+    state Starting {
+        [*] --> KEDAPaused: Pause KEDA
+        KEDAPaused --> NodeProvisioning: Karpenter provisions GPU node
+        NodeProvisioning --> PodScheduled: Node ready
+        PodScheduled --> ModelLoading: Ephemeral volume from snapshot
+        ModelLoading --> [*]: Model in VRAM
+    }
+
+    state Running {
+        [*] --> Serving: Inference requests
+        Serving --> SafetyCheck: EventBridge every 5 min
+        SafetyCheck --> KEDAUnpaused: Grace period (15 min) exceeded
+        KEDAUnpaused --> Serving: KEDA active, monitoring idle
+    }
+
+    note right of Idle: $0/hr — no GPU node
+    note right of Running: $0.35/hr (spot) or $1.90/hr (flagship)
+    note right of NodeTerminating: ~10 min consolidation delay
+```
+
+### KEDA + Cost Management State Diagram
+
+```mermaid
+stateDiagram-v2
+    [*] --> KEDAActive: Normal state
+
+    state "KEDA Active" as KEDAActive {
+        [*] --> Monitoring
+        Monitoring --> ScaleToZero: CPU below threshold for 15 min
+        ScaleToZero --> [*]: Ollama replicas = 0
+    }
+
+    state "KEDA Paused" as KEDAPaused {
+        [*] --> ManualStart
+        ManualStart --> GracePeriod: Timestamp recorded
+        GracePeriod --> SafetyUnpause: 15 min elapsed (EventBridge)
+        SafetyUnpause --> [*]: KEDA resumed
+    }
+
+    state "GPU Billing" as GPUBilling {
+        [*] --> SpotActive: Karpenter provisions spot
+        SpotActive --> SpotReclaimed: AWS reclaims
+        SpotReclaimed --> OnDemandFallback: No spot available
+        SpotActive --> NodeEmpty: Pod scaled to 0
+        OnDemandFallback --> NodeEmpty: Pod scaled to 0
+        NodeEmpty --> Terminated: 10 min consolidation
+        Terminated --> [*]: $0/hr
+    }
+
+    KEDAActive --> KEDAPaused: scale-up.sh / Portal Start
+    KEDAPaused --> KEDAActive: scale-down.sh / Portal Stop / Safety check
+    KEDAActive --> GPUBilling: Scale to 1 replica
+    GPUBilling --> KEDAActive: Node terminated
+
+    note right of KEDAActive: Auto-shutdown after 15 min idle
+    note right of KEDAPaused: Safety net — max 15 min paused
+    note left of GPUBilling: Spot preferred, on-demand fallback
+```
+
 ### GPU Start/Stop (CLI)
 
 GPU is managed via CLI scripts — no web portal needed. When the GPU is running, Open WebUI automatically lists available models (users just refresh the page).
@@ -731,7 +814,7 @@ Terraform provisions ArgoCD during `terraform apply`. ArgoCD then auto-syncs all
 | 0 | `istiod`, `istio-cni`, `ztunnel` | Ambient mesh (NVIDIA plugin managed by EKS Auto Mode) |
 | 1 | `namespaces` | `ollama`, `istio-system` namespaces with ambient mesh label |
 | 1 | `system-nodepool` | System NodePool (t3.xlarge on-demand) + GPU NodePool (g5 spot) + NodeClasses — GitOps-managed node lifecycle |
-| 2 | `ollama-storage` | StorageClass `gp3` (Retain, WaitForFirstConsumer) + PVC 200Gi |
+| 2 | `ollama-storage` | StorageClasses (`gp3` Retain + `gp3-ephemeral` Delete), VolumeSnapshot from EBS snap, GPU controller RBAC |
 | 2 | `keda` | KEDA operator (Helm chart, auto-scale-to-zero support) |
 | 3 | `ollama` | Deployment (DEV: 1 GPU / PROD: 4 GPUs, `strategy: Recreate`), Service, NetworkPolicy |
 | 4 | `model-loader` | Job: pulls models to EBS PVC |
@@ -750,7 +833,7 @@ flowchart LR
     subgraph W1["Waves 1-2"]
         NS["Namespaces\n+ Ambient Labels"]
         NP["System + GPU NodePools\n+ NodeClasses"]
-        ST["StorageClass gp3\n+ PVC 200Gi"]
+        ST["StorageClasses + VolumeSnapshot\n+ GPU Controller RBAC"]
         KEDA["KEDA Operator"]
     end
 
@@ -792,9 +875,9 @@ flowchart LR
 | **NetworkPolicy** | Air-gap enforced: ingress from `istio-system` and `istio-ingress` on port 11434; egress DNS + intra-cluster only |
 | **AWS VPC** | Nodes in private subnets, NAT for outbound only |
 | **Node Isolation** | System NodePool (t3.xlarge on-demand, all non-GPU workloads), GPU NodePool (g5 spot, `workload-type: gpu-inference` nodeSelector + `nvidia.com/gpu` taint) |
-| **EBS Snapshot** | Pre-loaded models — no internet needed for model loading |
+| **EBS Snapshot + Ephemeral Volumes** | Pre-loaded models via region-level snapshot, ephemeral volume per pod (deleted on termination). No persistent data on GPU nodes, no internet needed for model loading |
 | **Cognito + Custom Portal** | Custom login portal (auth_proxy Lambda + login.html SPA) handles all auth flows — users never see Cognito hosted UI. OAuth/OIDC with mandatory TOTP MFA, roles synced from Cognito groups, admin-approved signups, in-app password reset, no local passwords, admin chat access and DB export disabled |
-| **GPU Controller Lambda** | GPU start/stop via K8s API (used by CLI scripts). EKS access scoped to `ollama` namespace only (`AmazonEKSEditPolicy`). Bearer token is short-lived (60s STS presigned URL). Stop always unpauses KEDA to prevent runaway GPU cost |
+| **GPU Controller Lambda** | GPU start/stop/status via K8s API (portal + CLI scripts). EKS access scoped to `ollama` namespace (RBAC for deployments, scales, KEDA ScaledObjects). Bearer token is short-lived (60s STS presigned URL). Stop always unpauses KEDA. EventBridge safety check auto-unpauses KEDA after 15-min grace period to prevent runaway GPU cost |
 | **IRSA** | EBS CSI + LB Controller + Bedrock (Stack B) use least-privilege IAM roles via OIDC |
 | **cert-manager** | Automated TLS certificate lifecycle (90d duration, 30d auto-renewal) |
 
@@ -909,9 +992,9 @@ terraform/
     bedrock-integration/           # Stack B: VPC endpoint + IRSA for Bedrock
 
 k8s/
-  ollama/                          # Deployment, Service, NetworkPolicy (air-gapped)
+  ollama/                          # Deployment (ephemeral snapshot volume), Service, NetworkPolicy, StorageClasses, VolumeSnapshot, GPU controller RBAC
   model-loader/                    # Job to pull models
-  nodepools/                       # Custom Karpenter NodePools: system (t3.xlarge on-demand) + GPU (g5 spot), NodeClasses (eks.amazonaws.com/v1)
+  nodepools/                       # Custom Karpenter NodePools: system (t3.xlarge on-demand, single AZ) + GPU (g5 spot, multi-AZ 2a+2b), NodeClasses (eks.amazonaws.com/v1)
   cert-manager/                    # ClusterIssuer + Certificate
   open-webui/                      # Open WebUI — Cognito auth, model locked to admins
   keda/                            # KEDA ScaledObject for auto-scale-to-zero (15-min idle → scale Ollama to 0)
