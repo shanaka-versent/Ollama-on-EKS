@@ -103,7 +103,7 @@
       "pluginVersion": "9.5.0",
       "targets": [
         {
-          "expr": "clamp_max(count(kube_node_labels{label_karpenter_sh_capacity_type=\"on-demand\"} * on(node) kube_node_status_capacity{resource=\"nvidia_com_gpu\"} > 0) > 0, 1) * 2 or clamp_max(count(kube_node_labels{label_karpenter_sh_capacity_type=\"spot\"} * on(node) kube_node_status_capacity{resource=\"nvidia_com_gpu\"} > 0) > 0, 1) or vector(0)",
+          "expr": "max_over_time((clamp_max(count(kube_node_labels{label_karpenter_sh_capacity_type=\"on-demand\"} * on(node) kube_node_status_capacity{resource=\"nvidia_com_gpu\"} > 0) > 0, 1) * 2 or clamp_max(count(kube_node_labels{label_karpenter_sh_capacity_type=\"spot\"} * on(node) kube_node_status_capacity{resource=\"nvidia_com_gpu\"} > 0) > 0, 1) or vector(0))[15m:1m])",
           "format": "time_series",
           "instant": true,
           "intervalFactor": 2,
@@ -310,14 +310,14 @@
       "pluginVersion": "9.5.0",
       "targets": [
         {
-          "expr": "count(kube_node_labels{label_karpenter_sh_capacity_type=\"spot\"} * on(node) kube_node_status_capacity{resource=\"nvidia_com_gpu\"} > 0) or vector(0)",
+          "expr": "max_over_time((count(kube_node_labels{label_karpenter_sh_capacity_type=\"spot\"} * on(node) kube_node_status_capacity{resource=\"nvidia_com_gpu\"} > 0) or vector(0))[15m:1m])",
           "format": "time_series",
           "intervalFactor": 2,
           "legendFormat": "GPU Spot",
           "refId": "A"
         },
         {
-          "expr": "count(kube_node_labels{label_karpenter_sh_capacity_type=\"on-demand\"} * on(node) kube_node_status_capacity{resource=\"nvidia_com_gpu\"} > 0) or vector(0)",
+          "expr": "max_over_time((count(kube_node_labels{label_karpenter_sh_capacity_type=\"on-demand\"} * on(node) kube_node_status_capacity{resource=\"nvidia_com_gpu\"} > 0) or vector(0))[15m:1m])",
           "format": "time_series",
           "intervalFactor": 2,
           "legendFormat": "GPU On-Demand",

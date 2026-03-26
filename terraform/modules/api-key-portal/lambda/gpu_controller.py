@@ -126,8 +126,15 @@ def k8s_request(method, path, body=None):
 # ==============================================================================
 
 def _extract_token(event):
-    """Extract the Open WebUI session token from the Cookie header."""
+    """Extract the Open WebUI session token from Authorization header or Cookie."""
     headers = event.get('headers') or {}
+    # Primary: Authorization header (portal JS sends "Bearer <jwt>" from localStorage)
+    auth = headers.get('Authorization', '') or headers.get('authorization', '')
+    if auth.startswith('Bearer '):
+        return auth[7:]
+    if auth:
+        return auth
+    # Fallback: token cookie (for direct browser requests)
     cookie_header = headers.get('Cookie', '') or headers.get('cookie', '')
     for part in cookie_header.split(';'):
         part = part.strip()
@@ -251,6 +258,25 @@ def handle_status():
             keda_paused = paused_val == 'true'
         except Exception:
             pass  # KEDA might not be installed
+
+        # Safety: auto-unpause KEDA once Ollama is running.
+        # This ensures the 15-min idle auto-shutdown works even if
+        # someone forgets to click Stop. initialCooldownPeriod (30 min)
+        # gives the user time before the first scale-down check.
+        if status == 'running' and keda_paused:
+            try:
+                k8s_request(
+                    'PATCH',
+                    f'/apis/keda.sh/v1alpha1/namespaces/{NAMESPACE}'
+                    f'/scaledobjects/{SCALED_OBJECT}',
+                    {'metadata': {'annotations': {
+                        'autoscaling.keda.sh/paused': '0',
+                    }}},
+                )
+                keda_paused = False
+                print('Auto-unpaused KEDA — idle auto-shutdown now active')
+            except Exception as e:
+                print(f'Auto-unpause KEDA failed (non-fatal): {e}')
 
         return api_response(200, {
             'status': status,

@@ -264,12 +264,14 @@ resource "aws_iam_role_policy" "key_manager" {
           "apigateway:GET",
           "apigateway:DELETE",
           "apigateway:PATCH",
+          "apigateway:PUT",
         ]
         Resource = [
           "arn:aws:apigateway:${var.region}::/apikeys",
           "arn:aws:apigateway:${var.region}::/apikeys/*",
           "arn:aws:apigateway:${var.region}::/usageplans/${var.usage_plan_id}/keys",
           "arn:aws:apigateway:${var.region}::/usageplans/${var.usage_plan_id}/keys/*",
+          "arn:aws:apigateway:${var.region}::/tags/*",
         ]
       },
       {

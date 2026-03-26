@@ -158,24 +158,22 @@ export OPENAI_BASE_URL=https://${cloudfront_domain}/v1</code></pre>
 // Config injected by Terraform templatefile
 const API_BASE = '${api_base_url}';
 
-// --- API Calls (sends Cognito id_token if available, otherwise relies on Open WebUI session cookie) ---
+// --- API Calls (reads token from localStorage — shared origin with Open WebUI) ---
 async function apiFetch(path, opts = {}) {
   opts.headers = opts.headers || {};
   opts.headers['Content-Type'] = 'application/json';
-  // Try Cognito id_token from localStorage (set during login)
-  var idToken = localStorage.getItem('cognito_id_token');
-  // Fallback: check cookie (auth_proxy also sets cognito_id_token cookie)
-  if (!idToken) idToken = (document.cookie.match(/cognito_id_token=([^;]+)/) || [])[1];
-  if (idToken) {
-    opts.headers['Authorization'] = idToken;
+  // Open WebUI stores its JWT in localStorage under 'token' (same origin = shared)
+  var token = localStorage.getItem('token');
+  // Fallback: try Cognito id_token (set by custom login portal)
+  if (!token) token = localStorage.getItem('cognito_id_token');
+  if (!token) token = (document.cookie.match(/cognito_id_token=([^;]+)/) || [])[1];
+  if (token) {
+    opts.headers['Authorization'] = 'Bearer ' + token;
   }
-  // If no Cognito token, the request still proceeds — the Lambda reads the
-  // Open WebUI 'token' cookie (sent automatically for same-origin requests).
   opts.credentials = 'same-origin';
   const resp = await fetch(API_BASE + '/portal/api' + path, opts);
   if (resp.status === 401) {
-    // No valid session at all — redirect to login
-    localStorage.removeItem('cognito_id_token');
+    // No valid session — redirect to login
     window.location.href = '/auth/login.html?returnTo=/portal/';
     throw new Error('Session expired');
   }
