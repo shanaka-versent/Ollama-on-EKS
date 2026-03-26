@@ -234,6 +234,10 @@ Metrics flow:
 - No pod egress needed for Grafana, no IRSA for Grafana, no Grafana-specific NetworkPolicy exception
 - Dashboard JSON files in `terraform/modules/observability/dashboards/` — import into AMG via `scripts/setup-amg.sh` (creates service account, configures AMP + CloudWatch data sources, imports all 4 dashboards)
 
+## AWS Profile
+
+All AWS CLI and Terraform commands must use: `AWS_PROFILE=stax-stax-au1-versent-innovation` (account `183758910727`).
+
 ## AWS Account Prerequisites
 
 Before deploying GPU workloads, ensure these Service Quotas are increased (default is 0 for GPU instances in most accounts):

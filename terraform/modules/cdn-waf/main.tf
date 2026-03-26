@@ -240,6 +240,28 @@ resource "aws_wafv2_web_acl" "ollama" {
       managed_rule_group_statement {
         name        = "AWSManagedRulesCommonRuleSet"
         vendor_name = "AWS"
+
+        # Override rules that cause false positives on Open WebUI chat requests.
+        # Chat API sends conversation history as JSON POST body which easily
+        # exceeds 8KB and can contain code snippets that trigger XSS/SQLi rules.
+        rule_action_override {
+          name = "SizeRestrictions_BODY"
+          action_to_use {
+            count {}
+          }
+        }
+        rule_action_override {
+          name = "CrossSiteScripting_BODY"
+          action_to_use {
+            count {}
+          }
+        }
+        rule_action_override {
+          name = "SQLi_BODY"
+          action_to_use {
+            count {}
+          }
+        }
       }
     }
 
@@ -379,6 +401,9 @@ resource "aws_cloudfront_distribution" "ollama" {
   # VPC Origins require AllViewerExceptHostHeader — forwarding the viewer Host
   # header breaks the private NLB connection. OPENID_REDIRECT_URI env var on
   # Open WebUI handles OAuth redirect_uri separately.
+  # compress=false: Open WebUI streams SSE (text/event-stream) for chat responses.
+  # CloudFront gzip compression buffers the entire response before sending,
+  # which breaks streaming and causes JSON parse errors on the frontend.
   default_cache_behavior {
     allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
     cached_methods   = ["GET", "HEAD"]
@@ -388,7 +413,7 @@ resource "aws_cloudfront_distribution" "ollama" {
     origin_request_policy_id = "b689b0a8-53d0-40ab-baf2-68738e2966ac" # AllViewerExceptHostHeader
 
     viewer_protocol_policy = "https-only"
-    compress               = true
+    compress               = false
 
     # Auto-redirect unauthenticated users to Cognito login (skip landing page)
     dynamic "function_association" {
@@ -433,7 +458,7 @@ resource "aws_cloudfront_distribution" "ollama" {
       origin_request_policy_id = "b689b0a8-53d0-40ab-baf2-68738e2966ac" # AllViewerExceptHostHeader
 
       viewer_protocol_policy = "https-only"
-      compress               = true
+      compress               = false
     }
   }
 
@@ -490,7 +515,7 @@ resource "aws_cloudfront_distribution" "ollama" {
       origin_request_policy_id = "b689b0a8-53d0-40ab-baf2-68738e2966ac" # AllViewerExceptHostHeader
 
       viewer_protocol_policy = "https-only"
-      compress               = true
+      compress               = false
     }
   }
 
