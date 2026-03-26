@@ -259,24 +259,12 @@ def handle_status():
         except Exception:
             pass  # KEDA might not be installed
 
-        # Safety: auto-unpause KEDA once Ollama is running.
-        # This ensures the 15-min idle auto-shutdown works even if
-        # someone forgets to click Stop. initialCooldownPeriod (30 min)
-        # gives the user time before the first scale-down check.
-        if status == 'running' and keda_paused:
-            try:
-                k8s_request(
-                    'PATCH',
-                    f'/apis/keda.sh/v1alpha1/namespaces/{NAMESPACE}'
-                    f'/scaledobjects/{SCALED_OBJECT}',
-                    {'metadata': {'annotations': {
-                        'autoscaling.keda.sh/paused': '0',
-                    }}},
-                )
-                keda_paused = False
-                print('Auto-unpaused KEDA — idle auto-shutdown now active')
-            except Exception as e:
-                print(f'Auto-unpause KEDA failed (non-fatal): {e}')
+        # NOTE: Do NOT auto-unpause KEDA here. KEDA's initialCooldownPeriod
+        # does not apply when unpausing via annotation — KEDA immediately
+        # checks triggers and scales to 0 if no CPU activity exists yet
+        # (e.g., during model loading). KEDA stays paused during manual
+        # start; the Stop button unpauses it. A scheduled safety Lambda
+        # can handle the "forgotten GPU" scenario separately.
 
         return api_response(200, {
             'status': status,
