@@ -450,6 +450,8 @@
 
         if (data.status === 'success') {
           if (data.id_token) localStorage.setItem('cognito_id_token', data.id_token);
+          // Pre-warm VPC Origin connection before redirect — eliminates cold start delay
+          fetch('/api/config', { credentials: 'same-origin' }).catch(function(){});
           window.location.href = getReturnTo();
           return;
         }
@@ -495,6 +497,8 @@
 
         if (data.status === 'success') {
           if (data.id_token) localStorage.setItem('cognito_id_token', data.id_token);
+          // Pre-warm VPC Origin connection before redirect — eliminates cold start delay
+          fetch('/api/config', { credentials: 'same-origin' }).catch(function(){});
           window.location.href = getReturnTo();
           return;
         }

@@ -41,7 +41,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+      "gridPos": { "h": 5, "w": 5, "x": 0, "y": 0 },
       "id": 1,
       "options": {
         "colorMode": "background",
@@ -74,6 +74,55 @@
           "color": {
             "mode": "thresholds"
           },
+          "mappings": [
+            { "options": { "0": { "text": "No GPU", "color": "grey", "index": 0 } }, "type": "value" },
+            { "options": { "1": { "text": "Spot", "color": "green", "index": 1 } }, "type": "value" },
+            { "options": { "2": { "text": "On-Demand", "color": "orange", "index": 2 } }, "type": "value" }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "grey", "value": null },
+              { "color": "green", "value": 1 },
+              { "color": "orange", "value": 2 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 5, "w": 5, "x": 5, "y": 0 },
+      "id": 10,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "values": false, "fields": "", "calcs": ["lastNotNull"] },
+        "textMode": "auto"
+      },
+      "pluginVersion": "9.5.0",
+      "targets": [
+        {
+          "expr": "clamp_max(count(kube_node_labels{label_karpenter_sh_capacity_type=\"on-demand\"} * on(node) kube_node_status_capacity{resource=\"nvidia_com_gpu\"} > 0) > 0, 1) * 2 or clamp_max(count(kube_node_labels{label_karpenter_sh_capacity_type=\"spot\"} * on(node) kube_node_status_capacity{resource=\"nvidia_com_gpu\"} > 0) > 0, 1) or vector(0)",
+          "format": "time_series",
+          "instant": true,
+          "intervalFactor": 2,
+          "refId": "A"
+        }
+      ],
+      "title": "GPU Capacity Type",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -85,7 +134,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
+      "gridPos": { "h": 5, "w": 5, "x": 10, "y": 0 },
       "id": 2,
       "options": {
         "colorMode": "background",
@@ -129,7 +178,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
+      "gridPos": { "h": 5, "w": 5, "x": 15, "y": 0 },
       "id": 3,
       "options": {
         "colorMode": "background",
@@ -172,7 +221,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+      "gridPos": { "h": 5, "w": 4, "x": 20, "y": 0 },
       "id": 4,
       "options": {
         "colorMode": "background",
@@ -233,7 +282,13 @@
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "GPU Nodes" },
+            "matcher": { "id": "byName", "options": "GPU Spot" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "#4CAF50", "mode": "fixed" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "GPU On-Demand" },
             "properties": [
               { "id": "color", "value": { "fixedColor": "#FF9800", "mode": "fixed" } }
             ]
@@ -241,7 +296,7 @@
           {
             "matcher": { "id": "byName", "options": "System Nodes" },
             "properties": [
-              { "id": "color", "value": { "fixedColor": "#4CAF50", "mode": "fixed" } }
+              { "id": "color", "value": { "fixedColor": "#2196F3", "mode": "fixed" } }
             ]
           }
         ]
@@ -255,11 +310,18 @@
       "pluginVersion": "9.5.0",
       "targets": [
         {
-          "expr": "max_over_time((count(kube_node_status_capacity{resource=\"nvidia_com_gpu\"} > 0) or vector(0))[15m:1m])",
+          "expr": "count(kube_node_labels{label_karpenter_sh_capacity_type=\"spot\"} * on(node) kube_node_status_capacity{resource=\"nvidia_com_gpu\"} > 0) or vector(0)",
           "format": "time_series",
           "intervalFactor": 2,
-          "legendFormat": "GPU Nodes",
+          "legendFormat": "GPU Spot",
           "refId": "A"
+        },
+        {
+          "expr": "count(kube_node_labels{label_karpenter_sh_capacity_type=\"on-demand\"} * on(node) kube_node_status_capacity{resource=\"nvidia_com_gpu\"} > 0) or vector(0)",
+          "format": "time_series",
+          "intervalFactor": 2,
+          "legendFormat": "GPU On-Demand",
+          "refId": "C"
         },
         {
           "expr": "max_over_time((count(kube_node_info unless on(node) (kube_node_status_capacity{resource=\"nvidia_com_gpu\"} > 0)) or vector(0))[15m:1m])",
@@ -269,7 +331,7 @@
           "refId": "B"
         }
       ],
-      "title": "Node Count Over Time (GPU vs System)",
+      "title": "Node Count Over Time (Spot vs On-Demand GPU)",
       "type": "timeseries"
     },
     {
