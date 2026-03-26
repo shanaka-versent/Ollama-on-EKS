@@ -18,9 +18,19 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: ollama
+  # Ignore KEDA pause annotations — these are managed at runtime by the
+  # GPU controller Lambda and scale-up.sh, not by Git. Without this,
+  # ArgoCD selfHeal reverts the pause annotation and KEDA kills the GPU pod.
+  ignoreDifferences:
+    - group: keda.sh
+      kind: ScaledObject
+      jsonPointers:
+        - /metadata/annotations/autoscaling.keda.sh~1paused
+        - /metadata/annotations/gpu-controller~1paused-at
   syncPolicy:
     automated:
       prune: true
       selfHeal: true
     syncOptions:
       - ApplyOutOfSyncOnly=true
+      - RespectIgnoreDifferences=true
