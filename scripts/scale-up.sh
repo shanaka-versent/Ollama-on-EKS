@@ -50,11 +50,14 @@ if [[ "$(echo "$confirm" | tr '[:upper:]' '[:lower:]')" != "y" ]]; then
 fi
 
 # Pause KEDA auto-scaling to prevent it from scaling back to 0 during startup
+# Record pause timestamp so the EventBridge safety check knows when it was paused
 echo ""
 echo -e "${CYAN}${BOLD}==> Pausing KEDA auto-scaling...${NC}"
+PAUSE_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 if kubectl annotate scaledobject ollama-autoscaler -n ollama \
-  autoscaling.keda.sh/paused="true" --overwrite 2>/dev/null; then
-  echo -e "  ${GREEN}✓${NC} KEDA paused"
+  autoscaling.keda.sh/paused="true" \
+  gpu-controller/paused-at="$PAUSE_TIME" --overwrite 2>/dev/null; then
+  echo -e "  ${GREEN}✓${NC} KEDA paused (safety check will auto-unpause after 15 min)"
 else
   echo -e "  ${YELLOW}⚠${NC} KEDA ScaledObject not found (KEDA may not be deployed yet)"
 fi
@@ -90,16 +93,45 @@ INSTANCE_TYPE=$(kubectl get node "$GPU_NODE" -o jsonpath='{.metadata.labels.node
 CAPACITY_TYPE=$(kubectl get node "$GPU_NODE" -o jsonpath='{.metadata.labels.karpenter\.sh/capacity-type}' 2>/dev/null || echo "unknown")
 echo -e "  ${GREEN}✓${NC} GPU node: $GPU_NODE ($INSTANCE_TYPE, $CAPACITY_TYPE)"
 
-# Unpause KEDA — model loading created CPU activity, so KEDA has an "active"
-# reference point. The 15-min idle timer starts from this point.
+# Wait for Ollama to be ready (model loaded) before unpausing KEDA.
+# "Running" only means the container started — the model still needs to load
+# from the ephemeral EBS snapshot volume. If we unpause KEDA before the model
+# is loaded, KEDA sees zero activity and immediately scales back to 0.
 echo ""
-echo -e "${CYAN}${BOLD}==> Unpausing KEDA auto-scaling...${NC}"
-if kubectl annotate scaledobject ollama-autoscaler -n ollama \
-  autoscaling.keda.sh/paused- --overwrite 2>/dev/null; then
-  echo -e "  ${GREEN}✓${NC} KEDA unpaused — will auto-scale to 0 after 15 min idle"
-else
-  echo -e "  ${YELLOW}⚠${NC} KEDA ScaledObject not found"
-fi
+echo -e "${CYAN}${BOLD}==> Waiting for Ollama API to be ready (model loading)...${NC}"
+echo -n "  Waiting for model"
+SECONDS=0
+while true; do
+  # Check if Ollama API responds and has at least one model loaded
+  MODEL_COUNT=$(kubectl exec -n ollama deploy/ollama -- curl -s http://localhost:11434/api/tags 2>/dev/null \
+    | python3 -c "import json,sys; data=json.load(sys.stdin); print(len(data.get('models',[])))" 2>/dev/null || echo "0")
+  if [[ "$MODEL_COUNT" -gt 0 ]]; then
+    echo " — done (${SECONDS}s, $MODEL_COUNT model(s) loaded)"
+    break
+  fi
+  if [[ $SECONDS -gt 300 ]]; then
+    echo ""
+    echo -e "  ${YELLOW}⚠${NC} Model not loaded after 5 min — leaving KEDA paused"
+    echo -e "  ${YELLOW}⚠${NC} Safety check will auto-unpause KEDA after 15 min"
+    echo -e "  Check: kubectl exec -n ollama deploy/ollama -- ollama list"
+    echo ""
+    exit 0
+  fi
+  echo -n "."
+  sleep 10
+done
+
+# Do NOT unpause KEDA from this script. Let the EventBridge safety check
+# handle it after the 15-min grace period. This prevents the race condition
+# where KEDA unpauses, sees no Prometheus metrics yet (query lag), and
+# immediately scales to 0 — killing the pod we just started.
+#
+# Flow: scale-up.sh pauses KEDA → 15 min grace → EventBridge unpauses KEDA
+#       → KEDA checks triggers → if active, keeps running; if idle, scales to 0
+echo ""
+echo -e "${CYAN}${BOLD}==> KEDA stays paused (safety check will unpause after 15 min)${NC}"
+echo -e "  ${GREEN}✓${NC} This prevents KEDA from immediately killing the pod"
+echo -e "  ${GREEN}✓${NC} To stop manually: ./scripts/scale-down.sh (unpauses KEDA)"
 
 echo ""
 echo "========================================"
