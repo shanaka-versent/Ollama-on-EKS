@@ -64,13 +64,15 @@ spec:
           values:
             - spot
             - on-demand
-        # Single AZ — keeps all EBS PVCs co-located
-        # For multi-AZ HA: uncomment ap-southeast-2b
+        # Multi-AZ for spot availability — GPU pod uses ephemeral volume
+        # from EBS snapshot, so it can land in any AZ. System nodes stay
+        # in ap-southeast-2a; GPU node may land in 2a or 2b depending on
+        # spot capacity. Karpenter picks the cheapest option across AZs.
         - key: topology.kubernetes.io/zone
           operator: In
           values:
             - ap-southeast-2a
-            # - ap-southeast-2b    # Uncomment for multi-AZ HA
+            - ap-southeast-2b
         - key: kubernetes.io/arch
           operator: In
           values: ["amd64"]

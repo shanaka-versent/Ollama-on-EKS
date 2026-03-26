@@ -1,7 +1,8 @@
 # Ollama Deployment
 # Runs the Ollama LLM server on GPU nodes (NVIDIA A10G).
 # The pod is scheduled exclusively on GPU nodes via nodeSelector + toleration.
-# Model data is stored on a 200Gi EBS gp3 PVC that persists across restarts.
+# Model data is loaded from an EBS snapshot via ephemeral volume — enables
+# multi-AZ GPU provisioning (volume created in whichever AZ the node lands).
 #
 # Resource limits (GPU count, memory, CPU) are set per environment via
 # Kustomize overlays in k8s/overlays/dev/ and k8s/overlays/prod/.
@@ -84,6 +85,20 @@ spec:
             periodSeconds: 30
             failureThreshold: 3
       volumes:
+        # Ephemeral volume from EBS snapshot — created in the pod's AZ,
+        # deleted when pod terminates. Models are preserved in the snapshot.
+        # This enables multi-AZ GPU provisioning for better spot availability.
         - name: ollama-data
-          persistentVolumeClaim:
-            claimName: ollama-models-pvc
+          ephemeral:
+            volumeClaimTemplate:
+              spec:
+                accessModes:
+                  - ReadWriteOnce
+                storageClassName: gp3-ephemeral
+                resources:
+                  requests:
+                    storage: 200Gi
+                dataSource:
+                  name: ollama-models-snapshot
+                  kind: VolumeSnapshot
+                  apiGroup: snapshot.storage.k8s.io
