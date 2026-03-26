@@ -1347,6 +1347,33 @@ resource "aws_lambda_permission" "gpu_controller_apigw" {
 }
 
 # ==============================================================================
+# EVENTBRIDGE — KEDA Safety Check (auto-unpause after 30 min grace)
+# ==============================================================================
+
+resource "aws_cloudwatch_event_rule" "keda_safety_check" {
+  name                = "ollama-keda-safety-check"
+  description         = "Auto-unpause KEDA after 30 min grace — prevents forgotten GPU from running indefinitely"
+  schedule_expression = "rate(5 minutes)"
+  tags = {
+    Project   = var.project_name
+    ManagedBy = "Terraform"
+  }
+}
+
+resource "aws_cloudwatch_event_target" "keda_safety_check" {
+  rule = aws_cloudwatch_event_rule.keda_safety_check.name
+  arn  = aws_lambda_function.gpu_controller.arn
+}
+
+resource "aws_lambda_permission" "gpu_controller_eventbridge" {
+  statement_id  = "AllowEventBridgeInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.gpu_controller.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.keda_safety_check.arn
+}
+
+# ==============================================================================
 # S3 — GPU Control Page (served via login S3 bucket)
 # ==============================================================================
 

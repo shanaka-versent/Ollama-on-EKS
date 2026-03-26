@@ -198,8 +198,18 @@ def get_user_role(event):
 # HANDLER
 # ==============================================================================
 
+KEDA_GRACE_MINUTES = int(os.environ.get('KEDA_GRACE_MINUTES', '30'))
+
+
 def handler(event, context):
-    """Route requests to appropriate handlers. Admin-only access."""
+    """Route requests to appropriate handlers. Admin-only access.
+
+    Also handles EventBridge scheduled invocations for the KEDA safety check.
+    """
+    # EventBridge scheduled rule — check if KEDA has been paused too long
+    if event.get('source') == 'aws.events' or event.get('detail-type') == 'Scheduled Event':
+        return handle_keda_safety_check()
+
     path = event.get('path', '')
     method = event.get('httpMethod', '')
 
@@ -285,7 +295,9 @@ def handle_status():
 def handle_start():
     """Pause KEDA and scale Ollama to 1 replica."""
     try:
-        # Step 1: Pause KEDA so it doesn't scale back to 0
+        # Step 1: Pause KEDA and record when it was paused (ISO 8601 UTC).
+        # The safety check uses this timestamp to auto-unpause after grace period.
+        pause_time = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
         try:
             k8s_request(
                 'PATCH',
@@ -293,6 +305,7 @@ def handle_start():
                 f'/scaledobjects/{SCALED_OBJECT}',
                 {'metadata': {'annotations': {
                     'autoscaling.keda.sh/paused': 'true',
+                    'gpu-controller/paused-at': pause_time,
                 }}},
             )
         except Exception as e:
@@ -352,6 +365,65 @@ def handle_stop():
     except Exception as e:
         print(f'Stop error: {e}')
         return api_response(500, {'error': 'Failed to stop GPU'})
+
+
+# ==============================================================================
+# KEDA SAFETY CHECK (EventBridge scheduled)
+# ==============================================================================
+
+def handle_keda_safety_check():
+    """Auto-unpause KEDA if it's been paused longer than the grace period.
+
+    Invoked by EventBridge every 5 minutes. If KEDA has been paused for
+    longer than KEDA_GRACE_MINUTES (default 30), unpause it so KEDA's
+    idle detection takes over. This prevents forgotten GPU starts from
+    running indefinitely.
+
+    Flow: manual start → KEDA paused (30 min grace) → this check unpauses
+    → KEDA checks triggers → if active, keeps running; if idle, scales to 0.
+    """
+    try:
+        so = k8s_request(
+            'GET',
+            f'/apis/keda.sh/v1alpha1/namespaces/{NAMESPACE}'
+            f'/scaledobjects/{SCALED_OBJECT}',
+        )
+        annotations = so.get('metadata', {}).get('annotations', {})
+        paused_val = annotations.get('autoscaling.keda.sh/paused', '0')
+
+        if paused_val != 'true':
+            print('KEDA safety check: not paused, nothing to do')
+            return {'status': 'ok', 'action': 'none'}
+
+        paused_at = annotations.get('gpu-controller/paused-at', '')
+        if not paused_at:
+            print('KEDA safety check: paused but no timestamp — unpausing now')
+        else:
+            import calendar
+            paused_ts = calendar.timegm(time.strptime(paused_at, '%Y-%m-%dT%H:%M:%SZ'))
+            elapsed_min = (time.time() - paused_ts) / 60
+            print(f'KEDA safety check: paused for {elapsed_min:.1f} min '
+                  f'(grace: {KEDA_GRACE_MINUTES} min)')
+            if elapsed_min < KEDA_GRACE_MINUTES:
+                return {'status': 'ok', 'action': 'within_grace',
+                        'elapsed_min': round(elapsed_min, 1)}
+
+        # Grace period exceeded — unpause KEDA
+        k8s_request(
+            'PATCH',
+            f'/apis/keda.sh/v1alpha1/namespaces/{NAMESPACE}'
+            f'/scaledobjects/{SCALED_OBJECT}',
+            {'metadata': {'annotations': {
+                'autoscaling.keda.sh/paused': '0',
+                'gpu-controller/paused-at': '',
+            }}},
+        )
+        print('KEDA safety check: unpaused KEDA — idle auto-shutdown now active')
+        return {'status': 'ok', 'action': 'unpaused'}
+
+    except Exception as e:
+        print(f'KEDA safety check error: {e}')
+        return {'status': 'error', 'message': str(e)}
 
 
 # ==============================================================================
