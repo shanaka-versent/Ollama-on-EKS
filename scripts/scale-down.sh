@@ -55,6 +55,17 @@ echo -e "${CYAN}${BOLD}==> Scaling Ollama to 0 replicas...${NC}"
 kubectl scale deployment ollama -n ollama --replicas=0
 echo -e "  ${GREEN}✓${NC} Deployment scaled to 0"
 
+# Unpause KEDA so it can manage auto-scaling going forward
+echo ""
+echo -e "${CYAN}${BOLD}==> Unpausing KEDA auto-scaling...${NC}"
+if kubectl annotate scaledobject ollama-autoscaler -n ollama \
+  autoscaling.keda.sh/paused="0" \
+  gpu-controller/paused-at- --overwrite 2>/dev/null; then
+  echo -e "  ${GREEN}✓${NC} KEDA unpaused"
+else
+  echo -e "  ${YELLOW}⚠${NC} KEDA ScaledObject not found"
+fi
+
 echo ""
 echo -e "${CYAN}${BOLD}==> Verifying...${NC}"
 sleep 3
