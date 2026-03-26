@@ -1,0 +1,42 @@
+# VolumeSnapshot for Ollama models — enables multi-AZ GPU provisioning
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# The EBS snapshot (snap-07cf5033c6bd06ea1) contains pre-loaded Qwen models.
+# When Ollama pod starts, an ephemeral volume is created from this snapshot
+# in whichever AZ the GPU node lands — enabling spot across all AZs.
+#
+# Snapshot is REGION-level (not AZ-bound), so volumes can be created in any AZ.
+# EBS lazy-loads data from the snapshot on first read — no full copy needed.
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: ebs-snapshot
+driver: ebs.csi.eks.amazonaws.com
+deletionPolicy: Retain
+---
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotContent
+metadata:
+  name: ollama-models-snapshot-content
+spec:
+  deletionPolicy: Retain
+  driver: ebs.csi.eks.amazonaws.com
+  source:
+    snapshotHandle: snap-07cf5033c6bd06ea1
+  volumeSnapshotRef:
+    name: ollama-models-snapshot
+    namespace: ollama
+  volumeSnapshotClassName: ebs-snapshot
+---
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: ollama-models-snapshot
+  namespace: ollama
+  labels:
+    app: ollama
+    app.kubernetes.io/part-of: ollama-private-llm
+spec:
+  volumeSnapshotClassName: ebs-snapshot
+  source:
+    volumeSnapshotContentName: ollama-models-snapshot-content

@@ -16,3 +16,22 @@ parameters:
   type: gp3
   iops: "4000"
   throughput: "250"
+---
+# Ephemeral variant — volume is deleted when pod terminates.
+# Used with snapshot-based ephemeral volumes for multi-AZ GPU provisioning.
+# Models are preserved in the EBS snapshot; the volume is disposable.
+# Higher IOPS/throughput to compensate for EBS snapshot lazy-loading.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3-ephemeral
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "false"
+provisioner: ebs.csi.eks.amazonaws.com
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+parameters:
+  type: gp3
+  iops: "6000"
+  throughput: "400"
