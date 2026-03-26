@@ -127,6 +127,39 @@ check_prerequisites() {
         exit 1
     fi
 
+    # Check GPU Service Quotas (required for Karpenter to provision g5 instances)
+    echo ""
+    log "Checking GPU Service Quotas..."
+    local spot_quota on_demand_quota
+    spot_quota=$(aws service-quotas get-service-quota --service-code ec2 \
+        --quota-code L-3819A6DF --region "$REGION" \
+        --query 'Quota.Value' --output text 2>/dev/null || echo "0")
+    on_demand_quota=$(aws service-quotas get-service-quota --service-code ec2 \
+        --quota-code L-DB2E81BA --region "$REGION" \
+        --query 'Quota.Value' --output text 2>/dev/null || echo "0")
+
+    log "GPU Spot quota (G/VT):      ${spot_quota} vCPUs"
+    log "GPU On-Demand quota (G/VT): ${on_demand_quota} vCPUs"
+
+    if (( $(echo "$spot_quota < 4" | bc -l 2>/dev/null || echo 1) )) && \
+       (( $(echo "$on_demand_quota < 4" | bc -l 2>/dev/null || echo 1) )); then
+        warn "GPU quotas are 0 or very low — Karpenter will fail to provision GPU nodes."
+        warn "Request increases: https://console.aws.amazon.com/servicequotas"
+        warn "  L-3819A6DF (G/VT Spot): minimum 4 vCPUs for g5.xlarge"
+        warn "  L-DB2E81BA (G/VT On-Demand): minimum 4 vCPUs for g5.xlarge"
+        warn "Continuing deploy — system nodes will work, but GPU workloads will not start."
+    fi
+
+    # Reset stale NLB/CloudFront values for fresh deploys
+    # Phase 2 and Phase 3b will discover and populate the correct values
+    echo ""
+    log "Resetting NLB/CloudFront values for clean deployment..."
+    sed -i.bak 's|^nlb_arn .*=.*|nlb_arn      = ""|' "$TERRAFORM_DIR/terraform.tfvars"
+    sed -i.bak 's|^nlb_dns_name .*=.*|nlb_dns_name = ""|' "$TERRAFORM_DIR/terraform.tfvars"
+    sed -i.bak 's|^cloudfront_domain = .*|cloudfront_domain = ""|' "$TERRAFORM_DIR/terraform.tfvars"
+    rm -f "$TERRAFORM_DIR/terraform.tfvars.bak"
+    log "Stale values cleared — will be auto-discovered during deployment"
+
     log "Stack A configuration verified"
 }
 
@@ -602,6 +635,23 @@ wire_nlb_to_terraform() {
 # ==============================================================================
 setup_grafana_dashboards() {
     step "Phase 3c: Setting up Grafana dashboards"
+
+    # Check if AMG workspace exists (requires IAM Identity Center)
+    local amg_status
+    amg_status=$(aws grafana list-workspaces --region "$REGION" \
+        --query 'workspaces[?name==`ollama-grafana`].status' --output text 2>/dev/null || echo "")
+
+    if [[ -z "$amg_status" || "$amg_status" == "None" ]]; then
+        warn "AMG workspace not found — IAM Identity Center may not be enabled"
+        warn "Enable IAM Identity Center, then run: ./scripts/setup-amg.sh"
+        return
+    fi
+
+    if [[ "$amg_status" != "ACTIVE" ]]; then
+        warn "AMG workspace status: ${amg_status} (expected ACTIVE) — skipping dashboard setup"
+        warn "Run manually once active: ./scripts/setup-amg.sh"
+        return
+    fi
 
     if [[ -x "${SCRIPT_DIR}/setup-amg.sh" ]]; then
         log "Running setup-amg.sh (creates data sources + imports 4 dashboards)..."
