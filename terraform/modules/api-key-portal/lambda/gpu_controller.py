@@ -198,7 +198,7 @@ def get_user_role(event):
 # HANDLER
 # ==============================================================================
 
-KEDA_GRACE_MINUTES = int(os.environ.get('KEDA_GRACE_MINUTES', '30'))
+KEDA_GRACE_MINUTES = int(os.environ.get('KEDA_GRACE_MINUTES', '15'))
 
 
 def handler(event, context):
