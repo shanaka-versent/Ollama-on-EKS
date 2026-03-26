@@ -1,0 +1,30 @@
+# RBAC for GPU Controller Lambda to manage KEDA ScaledObjects
+# EKS AmazonEKSEditPolicy covers standard K8s resources (deployments, pods, etc.)
+# but NOT CRDs like keda.sh ScaledObjects — explicit RBAC needed.
+#
+# Subject must match the STS assumed-role ARN that EKS maps via access entries:
+#   arn:aws:sts::<account>:assumed-role/ollama-gpu-controller/ollama-gpu-controller
+# NOT the IAM role ARN (arn:aws:iam::<account>:role/ollama-gpu-controller).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gpu-controller-keda
+  namespace: ollama
+rules:
+  - apiGroups: ["keda.sh"]
+    resources: ["scaledobjects"]
+    verbs: ["get", "list", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gpu-controller-keda
+  namespace: ollama
+subjects:
+  - kind: User
+    name: "arn:aws:sts::183758910727:assumed-role/ollama-gpu-controller/ollama-gpu-controller"
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: gpu-controller-keda
+  apiGroup: rbac.authorization.k8s.io

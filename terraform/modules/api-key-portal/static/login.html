@@ -449,6 +449,8 @@
         }
 
         if (data.status === 'success') {
+          // Store tokens in localStorage for portal cross-page access
+          if (data.token) localStorage.setItem('token', data.token);
           if (data.id_token) localStorage.setItem('cognito_id_token', data.id_token);
           // Pre-warm VPC Origin connection before redirect — eliminates cold start delay
           fetch('/api/config', { credentials: 'same-origin' }).catch(function(){});
@@ -496,6 +498,8 @@
         var data = await res.json();
 
         if (data.status === 'success') {
+          // Store tokens in localStorage for portal cross-page access
+          if (data.token) localStorage.setItem('token', data.token);
           if (data.id_token) localStorage.setItem('cognito_id_token', data.id_token);
           // Pre-warm VPC Origin connection before redirect — eliminates cold start delay
           fetch('/api/config', { credentials: 'same-origin' }).catch(function(){});

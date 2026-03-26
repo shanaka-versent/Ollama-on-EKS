@@ -102,6 +102,17 @@ def parse_body(event):
 
 
 # ==============================================================================
+# TOKEN EXTRACTION HELPER
+# ==============================================================================
+
+def _extract_token_value(cookie_str):
+    """Extract JWT value from a raw 'token=eyJ...;...' Set-Cookie string."""
+    if cookie_str and cookie_str.startswith('token='):
+        return cookie_str.split(';')[0][6:]
+    return None
+
+
+# ==============================================================================
 # COGNITO SECRET HASH HELPER
 # ==============================================================================
 
@@ -775,6 +786,9 @@ def _complete_oauth_with_tokens(email, password, totp_code=None):
             if token_cookie:
                 id_token = _get_cognito_id_token(email, password)
                 response_body = {'status': 'success'}
+                token_value = _extract_token_value(token_cookie)
+                if token_value:
+                    response_body['token'] = token_value
                 if id_token:
                     response_body['id_token'] = id_token
                 cookies = [token_cookie]
@@ -831,6 +845,9 @@ def _complete_oauth_with_tokens(email, password, totp_code=None):
                         print(f'OAuth flow: MFA succeeded with field={field_name}')
                         id_token = _get_cognito_id_token(email, password, totp_code)
                         response_body = {'status': 'success'}
+                        token_value = _extract_token_value(token_cookie)
+                        if token_value:
+                            response_body['token'] = token_value
                         if id_token:
                             response_body['id_token'] = id_token
                         cookies = [token_cookie]

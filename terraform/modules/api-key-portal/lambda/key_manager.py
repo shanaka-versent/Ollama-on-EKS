@@ -54,13 +54,23 @@ def _decode_jwt_payload(jwt_token):
 
 
 def _get_user_from_event(event):
-    """Get user identity from Cognito Authorizer claims.
+    """Get user identity from Authorization header or Open WebUI session cookie.
 
-    API Gateway Cognito Authorizer validates the id_token and passes claims
-    in event.requestContext.authorizer.claims. The 'sub' field is the stable
-    Cognito user ID; 'email' comes from the token claims.
+    Auth chain:
+      1. Cognito Authorizer claims (if API GW authorizer is configured)
+      2. Authorization header (Bearer JWT or raw JWT)
+      3. Open WebUI 'token' cookie (HttpOnly JWT set after OAuth login)
     """
-    # Primary: Cognito Authorizer claims
+    headers = event.get("headers") or {}
+
+    # Debug: log headers received (cookie values redacted for security)
+    cookie_raw = headers.get("Cookie", "") or headers.get("cookie", "")
+    cookie_names = [p.strip().split("=")[0] for p in cookie_raw.split(";") if "=" in p] if cookie_raw else []
+    auth_raw = headers.get("Authorization", "") or headers.get("authorization", "")
+    logger.info("Auth debug: cookie_names=%s, auth_header_present=%s, auth_header_prefix=%s",
+                cookie_names, bool(auth_raw), auth_raw[:20] if auth_raw else "none")
+
+    # 1. Cognito Authorizer claims (if authorizer is configured on API GW method)
     try:
         claims = event["requestContext"]["authorizer"]["claims"]
         user_id = claims.get("sub", "")
@@ -71,23 +81,22 @@ def _get_user_from_event(event):
     except (KeyError, TypeError):
         pass
 
-    # Fallback: decode token directly (for local testing)
-    headers = event.get("headers") or {}
-    auth_header = headers.get("Authorization", "") or headers.get("authorization", "")
-    if auth_header.startswith("Bearer "):
-        result = _decode_jwt_payload(auth_header[7:])
+    # 2. Authorization header — accept both "Bearer <jwt>" and raw JWT
+    if auth_raw:
+        token_val = auth_raw[7:] if auth_raw.startswith("Bearer ") else auth_raw
+        result = _decode_jwt_payload(token_val)
         if result:
             return result
 
-    cookie_header = headers.get("Cookie", "") or headers.get("cookie", "")
-    for part in cookie_header.split(";"):
+    # 3. Open WebUI 'token' cookie (HttpOnly JWT, sent automatically by browser)
+    for part in cookie_raw.split(";"):
         part = part.strip()
         if part.startswith("token="):
             result = _decode_jwt_payload(part[6:])
             if result:
                 return result
 
-    logger.warning("No valid user identity found")
+    logger.warning("No valid user identity found (cookies: %s)", cookie_names)
     return "", "unknown"
 
 

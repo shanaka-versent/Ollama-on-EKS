@@ -154,13 +154,14 @@
 
     async function apiCall(endpoint, method = 'GET') {
       try {
-        var idToken = localStorage.getItem('cognito_id_token');
-        if (!idToken) idToken = (document.cookie.match(/cognito_id_token=([^;]+)/) || [])[1];
+        // Open WebUI stores its JWT in localStorage under 'token' (same origin = shared)
+        var token = localStorage.getItem('token');
+        if (!token) token = localStorage.getItem('cognito_id_token');
+        if (!token) token = (document.cookie.match(/cognito_id_token=([^;]+)/) || [])[1];
         var headers = {};
-        if (idToken) headers['Authorization'] = idToken;
-        const resp = await fetch(`${API_BASE}/${endpoint}`, { method, headers });
+        if (token) headers['Authorization'] = 'Bearer ' + token;
+        const resp = await fetch(`${API_BASE}/${endpoint}`, { method, headers, credentials: 'same-origin' });
         if (resp.status === 401) {
-          localStorage.removeItem('cognito_id_token');
           showLockout('Session expired. Please log in again.');
           return { error: 'Unauthorized' };
         }
@@ -185,7 +186,19 @@
       text.textContent = labels[data.status] || data.status;
 
       replicas.textContent = `${data.ready_replicas || 0} / ${data.replicas || 0}`;
-      kedaStatus.textContent = data.keda_paused ? 'Paused' : 'Active';
+      if (data.status === 'stopped' && !data.keda_paused) {
+        kedaStatus.textContent = 'Active (auto-shutdown on)';
+        kedaStatus.style.color = '#16a34a';
+      } else if (data.keda_paused && data.status !== 'stopped') {
+        kedaStatus.textContent = 'Held (resumes on Stop)';
+        kedaStatus.style.color = '#71717a';
+      } else if (data.keda_paused && data.status === 'stopped') {
+        kedaStatus.textContent = 'Paused (click Stop to fix)';
+        kedaStatus.style.color = '#dc2626';
+      } else {
+        kedaStatus.textContent = 'Active';
+        kedaStatus.style.color = '#16a34a';
+      }
       costEstimate.textContent = data.status === 'stopped' ? '$0/hr' : '~$0.35/hr (spot)';
 
       btnStart.disabled = data.status !== 'stopped';
