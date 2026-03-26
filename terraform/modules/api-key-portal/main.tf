@@ -457,13 +457,13 @@ resource "aws_api_gateway_resource" "portal_key_by_id" {
 }
 
 # --- GET /portal/api/keys (list user's keys) ---
-# Auth: Lambda Authorizer validates Open WebUI token cookie at API GW level.
+# Auth: key_manager Lambda validates token from Authorization header (Cognito id_token)
+# or Open WebUI session cookie. No API GW authorizer — Lambda handles both token types.
 resource "aws_api_gateway_method" "list_keys" {
   rest_api_id      = var.rest_api_id
   resource_id      = aws_api_gateway_resource.portal_keys.id
   http_method      = "GET"
-  authorization    = "COGNITO_USER_POOLS"
-  authorizer_id    = aws_api_gateway_authorizer.cognito.id
+  authorization    = "NONE"
   api_key_required = false
 }
 
@@ -481,8 +481,7 @@ resource "aws_api_gateway_method" "create_key" {
   rest_api_id      = var.rest_api_id
   resource_id      = aws_api_gateway_resource.portal_keys.id
   http_method      = "POST"
-  authorization    = "COGNITO_USER_POOLS"
-  authorizer_id    = aws_api_gateway_authorizer.cognito.id
+  authorization    = "NONE"
   api_key_required = false
 }
 
@@ -500,8 +499,7 @@ resource "aws_api_gateway_method" "update_key" {
   rest_api_id      = var.rest_api_id
   resource_id      = aws_api_gateway_resource.portal_key_by_id.id
   http_method      = "PATCH"
-  authorization    = "COGNITO_USER_POOLS"
-  authorizer_id    = aws_api_gateway_authorizer.cognito.id
+  authorization    = "NONE"
   api_key_required = false
 }
 
@@ -519,8 +517,7 @@ resource "aws_api_gateway_method" "delete_key" {
   rest_api_id      = var.rest_api_id
   resource_id      = aws_api_gateway_resource.portal_key_by_id.id
   http_method      = "DELETE"
-  authorization    = "COGNITO_USER_POOLS"
-  authorizer_id    = aws_api_gateway_authorizer.cognito.id
+  authorization    = "NONE"
   api_key_required = false
 }
 
@@ -1396,8 +1393,7 @@ resource "aws_api_gateway_method" "gpu_status" {
   rest_api_id      = var.rest_api_id
   resource_id      = aws_api_gateway_resource.gpu_status.id
   http_method      = "GET"
-  authorization    = "COGNITO_USER_POOLS"
-  authorizer_id    = aws_api_gateway_authorizer.cognito.id
+  authorization    = "NONE"
   api_key_required = false
 }
 
@@ -1415,8 +1411,7 @@ resource "aws_api_gateway_method" "gpu_start" {
   rest_api_id      = var.rest_api_id
   resource_id      = aws_api_gateway_resource.gpu_start.id
   http_method      = "POST"
-  authorization    = "COGNITO_USER_POOLS"
-  authorizer_id    = aws_api_gateway_authorizer.cognito.id
+  authorization    = "NONE"
   api_key_required = false
 }
 
@@ -1434,8 +1429,7 @@ resource "aws_api_gateway_method" "gpu_stop" {
   rest_api_id      = var.rest_api_id
   resource_id      = aws_api_gateway_resource.gpu_stop.id
   http_method      = "POST"
-  authorization    = "COGNITO_USER_POOLS"
-  authorizer_id    = aws_api_gateway_authorizer.cognito.id
+  authorization    = "NONE"
   api_key_required = false
 }
 
