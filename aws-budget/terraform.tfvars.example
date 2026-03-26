@@ -1,0 +1,64 @@
+# AWS Cost Protection Stack — Configuration Example
+# Copy to terraform.tfvars and edit values for your account.
+# Works with any AWS account — not specific to any one platform.
+#
+# @author Shanaka Jayasundera - shanaka.jayasundera@versent.com.au
+
+aws_region  = "ap-southeast-2"
+# aws_profile = "your-profile"   # Uncomment if using named AWS CLI profile
+alert_email = "your-email@example.com"
+environment = "dev"
+
+# --- Budget thresholds ---
+monthly_budget_amount = 350   # Monthly budget cap in USD
+daily_budget_amount   = 15    # Daily early-warning budget (fires before circuit breaker)
+daily_cost_threshold  = 30    # Daily billing alarm — triggers the circuit breaker
+anomaly_threshold     = 20    # Cost anomaly detection threshold in USD
+
+# --- Per-service cost thresholds (daily, in USD) ---
+# Each service gets its own independently tunable billing alarm.
+# Adjust these based on your expected spend per service.
+lambda_cost_threshold  = 5    # Lambda compute
+ec2_cost_threshold     = 30   # EC2 (includes GPU instances)
+nat_gw_cost_threshold  = 10   # NAT Gateway / VPC
+api_gw_cost_threshold  = 5    # API Gateway
+
+# --- API Gateway real-time monitoring ---
+# Fast detection (5-10 min) for all API Gateways — auto-discovers new APIs.
+api_gw_request_threshold = 100  # 5xx errors per 5 min that trigger alarm
+
+# --- EKS monitoring (optional — set cluster name if using EKS) ---
+eks_cluster_name   = "your-cluster-name"
+gpu_node_max_hours = 4    # Alert if GPU node runs > N hours
+
+# --- NAT Gateway ---
+nat_gw_data_threshold_gb = 5  # Alert if NAT transfers > N GB/hour
+
+# --- Circuit breaker ---
+# IMPORTANT: Start with dry_run = true to test what would be disabled.
+circuit_breaker_dry_run = true
+
+# --- Exempt resources ---
+# Lambda functions that must NEVER be disabled by the circuit breaker.
+# Add any platform-critical functions here (auth, webhooks, etc.)
+exempt_lambda_functions = [
+  # "my-auth-function",
+  # "my-critical-webhook",
+]
+
+# REST API Gateway IDs to exempt from throttling.
+# New APIs are auto-discovered and auto-throttled — only exempt critical ones.
+# Find IDs: aws apigateway get-rest-apis --query 'items[].{name:name,id:id}' --output table
+exempt_api_gateway_ids = [
+  # "abc123def4"
+]
+
+# --- Tags ---
+tags = {
+  Project     = "your-project"
+  ManagedBy   = "terraform"
+  Owner       = "your.name"
+  Company     = "your-company"
+  CostCenter  = "your-cost-center"
+  Stack       = "cost-protection"
+}

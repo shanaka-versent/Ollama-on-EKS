@@ -24,6 +24,7 @@ spec:
     - Egress
   ingress:
     # Allow traffic from Istio (ztunnel in istio-system + gateway in istio-ingress)
+    # and Open WebUI (calls ollama.ollama.svc:11434 for model listing + inference)
     - from:
         - namespaceSelector:
             matchLabels:
@@ -31,6 +32,9 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: istio-ingress
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: open-webui
       ports:
         - port: 11434
           protocol: TCP

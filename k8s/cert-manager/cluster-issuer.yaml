@@ -15,7 +15,7 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: istio-gateway-cert
-  namespace: istio-system
+  namespace: istio-ingress
 spec:
   secretName: istio-gateway-tls
   duration: 2160h    # 90 days
