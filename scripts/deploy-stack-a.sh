@@ -598,6 +598,21 @@ wire_nlb_to_terraform() {
 }
 
 # ==============================================================================
+# Phase 3c: Setup AWS Managed Grafana (dashboards + data sources)
+# ==============================================================================
+setup_grafana_dashboards() {
+    step "Phase 3c: Setting up Grafana dashboards"
+
+    if [[ -x "${SCRIPT_DIR}/setup-amg.sh" ]]; then
+        log "Running setup-amg.sh (creates data sources + imports 4 dashboards)..."
+        "${SCRIPT_DIR}/setup-amg.sh" || warn "Grafana setup had errors — run manually: ./scripts/setup-amg.sh"
+    else
+        warn "setup-amg.sh not found or not executable — skipping Grafana dashboard setup"
+        warn "Run manually after deploy: ./scripts/setup-amg.sh"
+    fi
+}
+
+# ==============================================================================
 # Phase 4: Verification
 # ==============================================================================
 verify_deployment() {
@@ -617,6 +632,7 @@ verify_deployment() {
 
     CLOUDFRONT_DOMAIN=$(terraform output -raw cloudfront_domain 2>/dev/null || echo "pending")
     API_KEY_ID=$(terraform output -raw api_key_id 2>/dev/null || echo "")
+    GRAFANA_URL=$(terraform output -raw managed_grafana_url 2>/dev/null || echo "pending")
     MODEL=$(grep '^ollama_model' "$TERRAFORM_DIR/terraform.tfvars" | sed 's/.*= *"//;s/".*//')
 
     cd "$REPO_DIR"
@@ -640,12 +656,11 @@ verify_deployment() {
     echo "      -d '{\"model\": \"${MODEL}\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}]}'"
     echo ""
     echo "  Open WebUI (browser-based chat):"
-    echo "    kubectl port-forward -n open-webui svc/open-webui 8080:8080"
-    echo "    Open: http://localhost:8080"
+    echo "    https://${CLOUDFRONT_DOMAIN}"
     echo ""
-    echo "  Grafana dashboards:"
-    echo "    kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80"
-    echo "    Open: http://localhost:3000"
+    echo "  Grafana dashboards (via IAM Identity Center SSO):"
+    echo "    ${GRAFANA_URL}"
+    echo "    Dashboards: GPU Metrics, Ollama API, Karpenter Nodes, FinOps Showback"
     echo ""
     echo "  Switch model tiers:"
     echo "    ./switch-model.sh use 3   # Flagship (default)"
@@ -654,6 +669,12 @@ verify_deployment() {
     echo ""
     echo "  Scale down (stop billing):"
     echo "    ./scripts/scale-down.sh"
+    echo ""
+    echo -e "${YELLOW}  ACTION REQUIRED — Confirm SNS email subscriptions:${NC}"
+    echo "    Check your inbox for 2 SNS confirmation emails:"
+    echo "    1. Alert notifications (GPU alerts, spot interruptions)"
+    echo "    2. Signup notifications (new user requests)"
+    echo "    Click 'Confirm subscription' in each email to activate."
     echo ""
 }
 
@@ -680,4 +701,5 @@ fi
 
 setup_cluster
 wire_nlb_to_terraform
+setup_grafana_dashboards
 verify_deployment
