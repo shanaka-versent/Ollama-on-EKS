@@ -94,7 +94,7 @@ footer{text-align:center;color:var(--muted);font-size:0.8rem;margin:40px 0 20px}
 <div class="stat-bar">
   <div style="background:var(--crit);flex:8" onclick="switchTab('critical')">8 Critical (4 Fixed, 4 Deferred)</div>
   <div style="background:var(--high);flex:14" onclick="switchTab('high')">14 High (All Fixed)</div>
-  <div style="background:var(--med);color:#000;flex:18" onclick="switchTab('medium')">18 Medium (2 Fixed)</div>
+  <div style="background:var(--med);color:#000;flex:18" onclick="switchTab('medium')">18 Medium (3 Fixed)</div>
   <div style="background:var(--low);flex:12" onclick="switchTab('low')">12 Low</div>
   <div style="background:var(--cost);flex:7" onclick="switchTab('cost')">7 Cost Opts (2 Fixed)</div>
   <div style="background:var(--arch);flex:9" onclick="switchTab('arch')">9 Arch Improvements</div>
@@ -104,10 +104,10 @@ footer{text-align:center;color:var(--muted);font-size:0.8rem;margin:40px 0 20px}
 <div class="tabs">
   <div class="tab active" data-tab="critical" onclick="switchTab('critical')">Critical (4/8 Fixed)</div>
   <div class="tab" data-tab="high" onclick="switchTab('high')">High (14/14 Fixed)</div>
-  <div class="tab" data-tab="medium" onclick="switchTab('medium')">Medium (2/18 Fixed)</div>
+  <div class="tab" data-tab="medium" onclick="switchTab('medium')">Medium (3/18 Fixed)</div>
   <div class="tab" data-tab="low" onclick="switchTab('low')">Low (12)</div>
   <div class="tab" data-tab="cost" onclick="switchTab('cost')">Cost Opts (2/7 Fixed)</div>
-  <div class="tab" data-tab="arch" onclick="switchTab('arch')">Architecture (9)</div>
+  <div class="tab" data-tab="arch" onclick="switchTab('arch')">Architecture (1/9 Fixed)</div>
   <div class="tab" data-tab="actions" onclick="switchTab('actions')">Action Plan</div>
 </div>
 
@@ -1097,7 +1097,7 @@ action_to_use { block {} }</code></pre></div></details>
 
 <details class="sev-med"><summary><span class="badge b-med">MED</span> 6. EBS Snapshot = Single Copy of Model Weights</summary><div class="detail-body"><p class="file">Missing DLM policy</p><p>Add Data Lifecycle Manager to auto-copy the Ollama model snapshot daily. Keep 7 copies. Cost: ~$3/mo.</p><pre><code># Same pattern as Open WebUI backup (Critical #6), but target the ollama-models snapshot tag</code></pre></div></details>
 
-<details class="sev-med"><summary><span class="badge b-med">MED</span> 7. Hardcoded Env Vars in Deployments (No ConfigMaps)</summary><div class="detail-body"><p class="file">k8s/ollama/deployment.yaml, k8s/open-webui/deployment.yaml</p><p>Move tunable parameters (<code>OLLAMA_NUM_PARALLEL</code>, <code>AIOHTTP_CLIENT_TIMEOUT</code>, feature flags) to ConfigMaps for runtime tuning.</p><pre><code># k8s/ollama/configmap.yaml
+<details class="sev-med"><summary><span class="badge b-med">MED</span> 7. Hardcoded Env Vars in Deployments (No ConfigMaps) &mdash; <span class="badge b-low">FIXED</span></summary><div class="detail-body"><p class="file">k8s/ollama/deployment.yaml, k8s/open-webui/deployment.yaml</p><p>Move tunable parameters (<code>OLLAMA_NUM_PARALLEL</code>, <code>AIOHTTP_CLIENT_TIMEOUT</code>, feature flags) to ConfigMaps for runtime tuning.</p><pre><code># k8s/ollama/configmap.yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -1531,7 +1531,7 @@ spec:
 <p><strong>Benefit:</strong> Auto-scales for concurrent users. Karpenter provisions additional system node if needed.</p>
 </div></details>
 
-<details class="sev-arch"><summary><span class="badge b-arch">ARCH</span> 4. Move Env Vars to ConfigMaps</summary><div class="detail-body">
+<details class="sev-arch"><summary><span class="badge b-arch">ARCH</span> 4. Move Env Vars to ConfigMaps &mdash; <span class="badge b-low">FIXED</span></summary><div class="detail-body">
 <p><strong>Current:</strong> 30+ env vars hardcoded in deployment YAML. Any change requires manifest edit + ArgoCD sync.</p>
 <pre><code># k8s/ollama/configmap.yaml
 apiVersion: v1
