@@ -194,43 +194,66 @@ containers:
 <div class="detail-body">
 <p class="file">terraform/modules/iam/main.tf:189</p>
 <p><strong>Risk:</strong> Compromised GitHub workflow token = full AWS account access (everything except IAM user creation).</p>
-<h4>How to Fix</h4>
-<p>Replace <code>PowerUserAccess</code> with a scoped custom policy:</p>
-<pre><code># terraform/modules/iam/main.tf — replace the policy attachment
-resource "aws_iam_policy" "github_actions_scoped" {
-  name = "${var.project_name}-github-actions"
+
+<div class="mermaid">
+flowchart LR
+    subgraph CURRENT["Current — PowerUserAccess"]
+        GH1["GitHub Actions"] -->|"OIDC assume role"| R1["IAM Role"]
+        R1 -->|"PowerUserAccess"| A1["ALL AWS Services<br/>EC2, S3, Lambda, RDS,<br/>DynamoDB, SNS, SQS..."]
+    end
+    subgraph FIXED["Fixed — Scoped Policy"]
+        GH2["GitHub Actions"] -->|"OIDC assume role"| R2["IAM Role"]
+        R2 -->|"Custom policy"| A2["EKS, S3 (state),<br/>CloudFront, WAF,<br/>API GW, Cognito"]
+        R2 -.->|"DENIED"| A3["RDS, SQS, Redshift,<br/>DynamoDB, Kinesis..."]
+    end
+    style CURRENT fill:#fef2f2,stroke:#dc3545,stroke-width:2px
+    style FIXED fill:#f0fdf4,stroke:#198754,stroke-width:2px
+    style A1 fill:#dc3545,color:#fff
+    style A3 fill:#198754,color:#fff
+</div>
+
+<div class="before-after">
+<div class="ba-before">
+<h5>CURRENT</h5>
+<pre><code># terraform/modules/iam/main.tf:189
+resource "aws_iam_role_policy_attachment"
+  "github_actions_power_user" {
+
+  policy_arn = "arn:aws:iam::aws:policy/
+    PowerUserAccess"
+  # Full access to ALL AWS services
+  # except IAM user/policy creation
+}</code></pre>
+</div>
+<div class="ba-after">
+<h5>FIXED</h5>
+<pre><code># terraform/modules/iam/main.tf
+resource "aws_iam_policy"
+  "github_actions_scoped" {
+  name = "${var.project_name}-gh-actions"
   policy = jsonencode({
-    Version = "2012-10-17"
     Statement = [
-      {
-        Sid    = "EKS"
-        Effect = "Allow"
+      { Sid = "EKS"
         Action = ["eks:*"]
-        Resource = "arn:aws:eks:${var.region}:${data.aws_caller_identity.current.account_id}:cluster/${var.cluster_name}"
+        Resource = "...cluster/${var.cluster_name}"
       },
-      {
-        Sid    = "Terraform"
-        Effect = "Allow"
+      { Sid = "Terraform"
         Action = [
-          "s3:GetObject", "s3:PutObject", "s3:ListBucket",
-          "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem",
-          "ec2:Describe*", "elasticloadbalancing:Describe*",
-          "cloudfront:*", "wafv2:*", "apigateway:*",
-          "cognito-idp:*", "lambda:*", "iam:PassRole",
-          "logs:*", "sns:*", "ses:*", "secretsmanager:*",
-          "aps:*", "grafana:*"
+          "s3:Get*","s3:Put*","s3:List*",
+          "dynamodb:*Item",
+          "cloudfront:*","wafv2:*",
+          "apigateway:*","cognito-idp:*",
+          "lambda:*","iam:PassRole",
+          "logs:*","sns:*","ses:*"
         ]
         Resource = "*"
       }
     ]
   })
-}
-
-resource "aws_iam_role_policy_attachment" "github_actions" {
-  policy_arn = aws_iam_policy.github_actions_scoped.arn
-  role       = aws_iam_role.github_actions_terraform[0].name
 }</code></pre>
-<p><strong>Test:</strong> Run <code>terraform plan</code> in CI &mdash; should succeed. Run <code>terraform apply</code> &mdash; should succeed. Try <code>aws iam create-user</code> &mdash; should be denied.</p>
+</div>
+</div>
+<p><strong>Test:</strong> <code>terraform plan</code> in CI &rarr; succeeds. <code>aws rds describe-db-instances</code> &rarr; Access Denied.</p>
 </div>
 </details>
 
@@ -440,7 +463,41 @@ topologySpreadConstraints:
 <div class="detail-body">
 <p class="file">Missing resource — no DLM policy for open-webui PVC</p>
 <p><strong>Risk:</strong> Chat history + user preferences stored in SQLite on EBS PVC. EBS failure = total data loss. No snapshots, no backup schedule.</p>
-<h4>How to Fix</h4>
+
+<div class="mermaid">
+flowchart LR
+    subgraph CURRENT["Current — No Backup"]
+        PVC1["EBS PVC<br/>(SQLite + chat history)"] -->|"EBS failure"| LOST["DATA LOST<br/>No recovery possible"]
+    end
+    subgraph FIXED["Fixed — DLM Automated Backup"]
+        PVC2["EBS PVC<br/>(SQLite + chat history)"] -->|"DLM snapshot<br/>daily 2 AM"| SNAPS["7 Daily Snapshots<br/>in S3 (~$5/mo)"]
+        SNAPS -->|"Restore any day"| RECOVER["New EBS Volume<br/>from snapshot<br/>(~5 min recovery)"]
+    end
+    style CURRENT fill:#fef2f2,stroke:#dc3545,stroke-width:2px
+    style FIXED fill:#f0fdf4,stroke:#198754,stroke-width:2px
+    style LOST fill:#dc3545,color:#fff
+    style RECOVER fill:#198754,color:#fff
+</div>
+
+<div class="before-after">
+<div class="ba-before">
+<h5>CURRENT (no backup)</h5>
+<pre><code># No DLM policy exists
+# No snapshot schedule
+# EBS PVC has no tags for backup
+# EBS failure = total data loss
+# Chat history, user prefs GONE</code></pre>
+</div>
+<div class="ba-after">
+<h5>FIXED (DLM daily backup)</h5>
+<pre><code># 1. Tag the Open WebUI EBS volume:
+#    Name = "open-webui-data"
+#
+# 2. Add DLM policy in Terraform:
+#    (see full code below)</code></pre>
+</div>
+</div>
+<h4>Full Terraform Implementation</h4>
 <pre><code># terraform/main.tf — add Data Lifecycle Manager policy
 resource "aws_dlm_lifecycle_policy" "webui_backup" {
   description        = "Daily backup of Open WebUI data volume"
@@ -487,24 +544,42 @@ resource "aws_iam_role_policy_attachment" "dlm" {
 <div class="detail-body">
 <p class="file">terraform/variables.tf:61 &mdash; <code>enable_logging = false</code></p>
 <p><strong>Risk:</strong> No CloudWatch audit trail for K8s API calls, auth events, or controller actions. Cannot investigate security incidents.</p>
-<h4>How to Fix</h4>
-<pre><code># terraform/variables.tf — change default
-variable "enable_logging" {
-  description = "Enable EKS control plane logging to CloudWatch"
-  type        = bool
-  default     = true    # Changed from false
-}
 
-# terraform/modules/eks/main.tf — ensure logging config exists
-cluster_enabled_log_types = var.enable_logging ? [
-  "api", "audit", "authenticator", "controllerManager", "scheduler"
-] : []</code></pre>
-<p>Then set log retention to control costs:</p>
-<pre><code>resource "aws_cloudwatch_log_group" "eks" {
-  name              = "/aws/eks/${var.cluster_name}/cluster"
-  retention_in_days = 30    # 30 days for dev; 90+ for prod
+<div class="before-after">
+<div class="ba-before">
+<h5>CURRENT</h5>
+<pre><code># terraform/variables.tf:61
+variable "enable_logging" {
+  default = false
+  # No logs sent to CloudWatch
+  # Cannot audit: who called K8s API?
+  # Cannot detect: unauthorized access
+  # Cannot investigate: security incidents
 }</code></pre>
-<p><strong>Cost:</strong> ~$10-15/mo for dev usage. <strong>Benefit:</strong> Full audit trail for security investigations.</p>
+</div>
+<div class="ba-after">
+<h5>FIXED</h5>
+<pre><code># terraform/variables.tf:61
+variable "enable_logging" {
+  default = true   # CHANGED
+
+# terraform/modules/eks/main.tf
+cluster_enabled_log_types = [
+  "api",               # API server calls
+  "audit",             # Who did what
+  "authenticator",     # Auth attempts
+  "controllerManager", # Controller ops
+  "scheduler"          # Pod scheduling
+]
+
+# Control costs with retention:
+resource "aws_cloudwatch_log_group" "eks" {
+  name              = "/aws/eks/..."
+  retention_in_days = 30  # dev: 30d, prod: 90d
+}</code></pre>
+</div>
+</div>
+<p><strong>Cost:</strong> ~$10-15/mo. <strong>Benefit:</strong> Full audit trail. Query with CloudWatch Insights: <code>fields @timestamp, verb, user.username | filter verb = "delete"</code></p>
 </div>
 </details>
 
@@ -736,23 +811,52 @@ apply_server_side_encryption_by_default {
 <div class="detail-body">
 <p class="file">terraform/modules/vpc/main.tf:73-84</p>
 <p><strong>Risk:</strong> All private subnet egress routes through one NAT in <code>ap-southeast-2a</code>. NAT failure = no outbound connectivity.</p>
-<h4>How to Fix</h4>
-<pre><code># Option A: NAT per AZ (high availability, +$32/mo)
-resource "aws_nat_gateway" "main" {
-  count         = var.enable_nat_gateway ? length(var.azs) : 0
-  allocation_id = aws_eip.nat[count.index].id
-  subnet_id     = aws_subnet.public[count.index].id
-}
 
-# Option B: VPC endpoints to eliminate NAT for most traffic (cheaper)
-# Add endpoints for: ECR, S3, DynamoDB, CloudWatch, STS
-resource "aws_vpc_endpoint" "ecr_api" {
-  vpc_id            = aws_vpc.main.id
-  service_name      = "com.amazonaws.${var.region}.ecr.api"
-  vpc_endpoint_type = "Interface"
-  subnet_ids        = aws_subnet.private[*].id
+<div class="mermaid">
+flowchart TB
+    subgraph CURRENT["Current — Single NAT"]
+        PS1["Private Subnet 2a"] --> NAT1["NAT Gateway<br/>(ap-southeast-2a)"]
+        PS2["Private Subnet 2b"] --> NAT1
+        PS3["Private Subnet 2c"] --> NAT1
+        NAT1 -->|"Single point of failure"| IGW1["Internet Gateway"]
+    end
+    subgraph FIXED["Fixed — VPC Endpoints (cheaper)"]
+        PS4["Private Subnets"] --> VPE1["S3 Endpoint (free)"]
+        PS4 --> VPE2["DynamoDB Endpoint (free)"]
+        PS4 --> VPE3["ECR Endpoint (~$8/mo)"]
+        PS4 --> NAT2["NAT (only for<br/>remaining traffic)"]
+    end
+    style CURRENT fill:#fef2f2,stroke:#dc3545,stroke-width:2px
+    style FIXED fill:#f0fdf4,stroke:#198754,stroke-width:2px
+    style NAT1 fill:#dc3545,color:#fff
+</div>
+
+<div class="before-after">
+<div class="ba-before">
+<h5>CURRENT (single NAT)</h5>
+<pre><code># terraform/modules/vpc/main.tf:73
+resource "aws_nat_gateway" "main" {
+  count = var.enable_nat_gateway ? 1 : 0
+  # Only in AZ 0
+  subnet_id = aws_subnet.public[0].id
+  # ALL private egress routes here
 }</code></pre>
-<p>Option B is more cost-effective: VPC endpoints are cheaper than NAT Gateway and eliminate egress traffic charges for AWS services.</p>
+</div>
+<div class="ba-after">
+<h5>FIXED (VPC endpoints reduce NAT dependency)</h5>
+<pre><code># terraform/modules/vpc/main.tf — add:
+resource "aws_vpc_endpoint" "dynamodb" {
+  vpc_id       = aws_vpc.main.id
+  service_name = "com.amazonaws.${var.region}.dynamodb"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids = [aws_route_table.private.id]
+}
+# S3 gateway endpoint already exists
+# Add ECR, CloudWatch, STS interface endpoints
+# for container image pulls + metrics</code></pre>
+</div>
+</div>
+<p><strong>Recommended:</strong> VPC endpoints first (cheaper), NAT per AZ only if multi-AZ HA is needed.</p>
 </div>
 </details>
 
@@ -1090,8 +1194,44 @@ log() { echo -e "$(date -u +%H:%M:%S) ${GREEN}[INFO]${NC} $*"; }</code></pre></d
 <div class="tab-panel" id="panel-cost">
 
 <details class="sev-cost"><summary><span class="badge b-cost">COST</span> 1. API Gateway Usage Plans (Prevent Runaway GPU Costs)</summary><div class="detail-body">
-<p><strong>Current:</strong> Unlimited API requests = unlimited GPU hours. One heavy user could burn $100+/day.</p>
-<p><strong>Savings:</strong> Prevents cost overruns. No additional cost.</p>
+
+<div class="mermaid">
+flowchart LR
+    subgraph CURRENT["Current — No Quotas"]
+        U1["User A<br/>3 requests"] --> GPU1["GPU runs"]
+        U2["User B<br/>5000 requests"] --> GPU1
+        GPU1 --> BILL1["$$$$ bill shock"]
+    end
+    subgraph FIXED["Fixed — Usage Plans"]
+        U3["User A<br/>3 requests"] --> QUOTA["API Gateway<br/>1000 req/day/key"]
+        U4["User B<br/>1000 requests"] --> QUOTA
+        U4B["User B<br/>request 1001"] -.->|"429 Too Many"| QUOTA
+        QUOTA --> GPU2["GPU runs<br/>predictable cost"]
+    end
+    style CURRENT fill:#fef2f2,stroke:#dc3545,stroke-width:2px
+    style FIXED fill:#f0fdf4,stroke:#198754,stroke-width:2px
+    style BILL1 fill:#dc3545,color:#fff
+</div>
+
+<div class="before-after">
+<div class="ba-before">
+<h5>CURRENT (unlimited)</h5>
+<pre><code># terraform/modules/api-gateway/main.tf
+# Usage plan exists but NO quotas set
+# Any API key = unlimited requests
+# 1 heavy user = $100+/day in GPU</code></pre>
+</div>
+<div class="ba-after">
+<h5>FIXED (daily quotas)</h5>
+<pre><code># Add quota_settings to usage plan
+quota_settings {
+  limit  = 1000   # 1000 requests/day
+  period = "DAY"
+}
+# Excess requests get 429 Too Many Requests</code></pre>
+</div>
+</div>
+<h4>Full Terraform Implementation</h4>
 <pre><code># terraform/modules/api-gateway/main.tf
 resource "aws_api_gateway_usage_plan" "standard" {
   name = "${var.project_name}-standard"
@@ -1256,18 +1396,90 @@ def handler(event, context):
 </div></details>
 
 <details class="sev-arch"><summary><span class="badge b-arch">ARCH</span> 2. Open WebUI: Recreate &rarr; RollingUpdate</summary><div class="detail-body">
-<p><strong>Current:</strong> <code>strategy: Recreate</code> causes downtime on every deployment.</p>
+
+<div class="mermaid">
+sequenceDiagram
+    participant U as Users
+    participant O as Old Pod
+    participant N as New Pod
+
+    rect rgb(254, 242, 242)
+        Note over U,N: CURRENT — Recreate Strategy
+        U->>O: Requests
+        Note over O: kubectl apply (new version)
+        O->>O: KILLED immediately
+        Note over U: DOWNTIME (30-60s)
+        N->>N: Starting...
+        N->>N: Ready
+        U->>N: Requests resume
+    end
+
+    rect rgb(240, 253, 244)
+        Note over U,N: FIXED — RollingUpdate Strategy
+        U->>O: Requests
+        Note over N: New pod starts alongside old
+        N->>N: Starting...
+        N->>N: Ready check passes
+        U->>N: Traffic shifts to new pod
+        O->>O: Old pod terminates gracefully
+        Note over U: ZERO DOWNTIME
+    end
+</div>
+
+<div class="before-after">
+<div class="ba-before">
+<h5>CURRENT</h5>
+<pre><code># k8s/open-webui/deployment.yaml
+strategy:
+  type: Recreate
+  # Old pod killed BEFORE new starts
+  # 30-60s downtime every deploy</code></pre>
+</div>
+<div class="ba-after">
+<h5>FIXED</h5>
 <pre><code># k8s/open-webui/deployment.yaml
 strategy:
   type: RollingUpdate
   rollingUpdate:
-    maxSurge: 1
-    maxUnavailable: 0</code></pre>
-<p><strong>Note:</strong> Open WebUI uses SQLite on a PVC. With RollingUpdate, two pods briefly share the PVC. SQLite handles concurrent reads but not concurrent writes. Since only one pod processes OAuth callbacks at a time (via cookie affinity), this is safe.</p>
+    maxSurge: 1        # Start new before killing old
+    maxUnavailable: 0  # Never have 0 pods</code></pre>
+</div>
+</div>
+<p><strong>Note:</strong> SQLite on shared PVC handles concurrent reads. Only one pod processes OAuth callbacks (cookie affinity), so writes don't conflict.</p>
 </div></details>
 
 <details class="sev-arch"><summary><span class="badge b-arch">ARCH</span> 3. HPA for Open WebUI (Auto-Scale on Load)</summary><div class="detail-body">
-<p><strong>Current:</strong> Fixed 1 replica. Under concurrent user load, response times degrade.</p>
+
+<div class="mermaid">
+flowchart LR
+    subgraph CURRENT["Current — Fixed 1 Replica"]
+        U1["10 Users"] --> P1["1 Pod<br/>CPU: 95%<br/>Slow responses"]
+    end
+    subgraph FIXED["Fixed — HPA 1-3 Replicas"]
+        U2["10 Users"] --> LB["Load Balanced"]
+        LB --> P2A["Pod 1<br/>CPU: 35%"]
+        LB --> P2B["Pod 2<br/>CPU: 35%"]
+        LB --> P2C["Pod 3<br/>CPU: 30%"]
+    end
+    style CURRENT fill:#fef2f2,stroke:#dc3545,stroke-width:2px
+    style FIXED fill:#f0fdf4,stroke:#198754,stroke-width:2px
+    style P1 fill:#dc3545,color:#fff
+</div>
+
+<div class="before-after">
+<div class="ba-before">
+<h5>CURRENT (no HPA)</h5>
+<pre><code># k8s/open-webui/deployment.yaml
+replicas: 1
+# Fixed — no scaling
+# 10+ users = slow responses</code></pre>
+</div>
+<div class="ba-after">
+<h5>FIXED (HPA auto-scales)</h5>
+<pre><code># k8s/open-webui/hpa.yaml (NEW FILE)</code></pre>
+</div>
+</div>
+<h4>New file to create:</h4>
 <pre><code># k8s/open-webui/hpa.yaml
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
@@ -1335,7 +1547,40 @@ spec:
 </div></details>
 
 <details class="sev-arch"><summary><span class="badge b-arch">ARCH</span> 6. Velero for Full Cluster Backup/Restore</summary><div class="detail-body">
-<p><strong>Current:</strong> No backup for K8s resources or PVCs. Manual reconstruction on disaster.</p>
+
+<div class="mermaid">
+flowchart LR
+    subgraph CURRENT["Current — No Backup"]
+        CL1["EKS Cluster"] -.->|"Disaster"| LOST1["Manual rebuild<br/>hours/days"]
+    end
+    subgraph FIXED["Fixed — Velero Daily Backup"]
+        CL2["EKS Cluster"] -->|"Daily 2 AM"| S3["S3 Bucket<br/>7 daily backups"]
+        S3 -->|"velero restore"| CL3["Restored Cluster<br/>~30 min RTO"]
+    end
+    style CURRENT fill:#fef2f2,stroke:#dc3545,stroke-width:2px
+    style FIXED fill:#f0fdf4,stroke:#198754,stroke-width:2px
+    style LOST1 fill:#dc3545,color:#fff
+    style CL3 fill:#198754,color:#fff
+</div>
+
+<div class="before-after">
+<div class="ba-before">
+<h5>CURRENT (no backup)</h5>
+<pre><code># No Velero installed
+# No PVC snapshots scheduled
+# Disaster = manual rebuild
+# Chat history, configs LOST</code></pre>
+</div>
+<div class="ba-after">
+<h5>FIXED (Velero daily backup)</h5>
+<pre><code># Velero backs up:
+# - All K8s resources (deployments, configmaps, secrets)
+# - All PVCs (EBS snapshots)
+# - Scheduled daily, 7-day retention
+# Recovery: velero restore create --from-backup daily-xxx</code></pre>
+</div>
+</div>
+<h4>Installation</h4>
 <pre><code># Install Velero:
 helm repo add vmware-tanzu https://charts.velero.io
 helm install velero vmware-tanzu/velero \
