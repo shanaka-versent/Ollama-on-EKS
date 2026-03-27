@@ -64,7 +64,8 @@
   .diagram-label { text-align: center; font-size: 0.85rem; color: var(--muted); margin-top: -8px; margin-bottom: 16px; }
 
   .layer-bar { display: flex; gap: 0; margin: 16px 0; border-radius: 8px; overflow: hidden; font-size: 0.82rem; font-weight: 600; text-align: center; }
-  .layer-bar div { padding: 10px 8px; flex: 1; color: white; }
+  .layer-bar a { padding: 10px 8px; flex: 1; color: white; text-decoration: none; display: block; transition: filter 0.15s; }
+  .layer-bar a:hover { filter: brightness(1.15); text-decoration: none; }
 
   hr { border: none; border-top: 1px solid var(--border); margin: 32px 0; }
 
@@ -79,13 +80,14 @@
 
 <!-- LAYER BAR -->
 <div class="layer-bar">
-  <div style="background:#f97316">CloudFront + WAF</div>
-  <div style="background:#3b82f6">CF Function</div>
-  <div style="background:#8b5cf6">Cognito + Portal</div>
-  <div style="background:#10b981">Open WebUI OAuth</div>
-  <div style="background:#6366f1">Socket.io</div>
-  <div style="background:#ef4444">API Gateway Key</div>
+  <a href="#edge" style="background:#f97316">CloudFront + WAF</a>
+  <a href="#edge" style="background:#3b82f6">CF Function</a>
+  <a href="#portal" style="background:#8b5cf6">Cognito + Portal</a>
+  <a href="#oauth" style="background:#10b981">Open WebUI OAuth</a>
+  <a href="#socketio" style="background:#6366f1">Socket.io</a>
+  <a href="#apikey" style="background:#ef4444">API Gateway Key</a>
 </div>
+<p style="font-size:0.8rem;color:var(--muted);text-align:center;margin-top:-8px;">Click any layer to jump to its section</p>
 
 <!-- TOC -->
 <div class="toc">
