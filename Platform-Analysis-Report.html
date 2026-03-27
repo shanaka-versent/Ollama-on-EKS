@@ -4,7 +4,19 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Ollama-on-EKS — Platform Analysis Report</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
 <style>
+.mermaid{margin:12px 0;text-align:center}
+.diagram-label{text-align:center;font-size:0.8rem;color:var(--muted);margin-top:-6px;margin-bottom:10px}
+.before-after{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:12px 0}
+.before-after>div{border-radius:8px;padding:12px}
+.ba-before{background:#fef2f2;border:1px solid #fca5a5}
+.ba-after{background:#f0fdf4;border:1px solid #86efac}
+.ba-before h5,.ba-after h5{margin:0 0 6px;font-size:0.85rem}
+.ba-before h5{color:var(--crit)}
+.ba-after h5{color:var(--low)}
+@media(max-width:768px){.before-after{grid-template-columns:1fr}}
+
 :root{--bg:#f8f9fa;--card:#fff;--border:#dee2e6;--text:#212529;--muted:#6c757d;--accent:#0d6efd;--crit:#dc3545;--high:#fd7e14;--med:#eab308;--low:#198754;--cost:#7c3aed;--arch:#0891b2}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.6}
@@ -109,28 +121,70 @@ footer{text-align:center;color:var(--muted);font-size:0.8rem;margin:40px 0 20px}
 <div class="detail-body">
 <p class="file">k8s/ollama/deployment.yaml, k8s/open-webui/deployment.yaml, k8s/model-loader/job.yaml</p>
 <p><strong>Risk:</strong> All containers run as UID 0. Container escape = full node compromise. Fails CIS Kubernetes Benchmark 5.2.6.</p>
-<h4>How to Fix</h4>
-<p>Add <code>securityContext</code> to each container spec. Ollama needs write access to <code>/root/.ollama</code>, so use a non-root UID with matching volume permissions:</p>
-<pre><code># k8s/ollama/deployment.yaml — add under containers[0]
-securityContext:
-  runAsNonRoot: true
-  runAsUser: 1000
-  runAsGroup: 1000
-  allowPrivilegeEscalation: false
-  seccompProfile:
-    type: RuntimeDefault
-  capabilities:
-    drop: ["ALL"]
 
-# Also add initContainer to fix volume permissions:
+<div class="mermaid">
+flowchart LR
+    subgraph BEFORE["Current — Running as Root"]
+        direction TB
+        P1["Ollama Container<br/>UID 0 (root)"]
+        P2["Open WebUI Container<br/>UID 0 (root)"]
+        P3["Model Loader Job<br/>UID 0 (root)"]
+        RISK["Container Escape<br/>= Full Node Access"]
+        P1 -.->|"privilege escalation"| RISK
+    end
+    subgraph AFTER["Fixed — Non-Root + Hardened"]
+        direction TB
+        Q1["Ollama Container<br/>UID 1000 · no caps"]
+        Q2["Open WebUI Container<br/>UID 1000 · no caps"]
+        Q3["Model Loader Job<br/>UID 1000 · no caps"]
+        SAFE["Container Escape<br/>= Limited Damage"]
+        Q1 -.->|"blocked"| SAFE
+    end
+    style BEFORE fill:#fef2f2,stroke:#dc3545,stroke-width:2px
+    style AFTER fill:#f0fdf4,stroke:#198754,stroke-width:2px
+    style RISK fill:#dc3545,color:#fff
+    style SAFE fill:#198754,color:#fff
+</div>
+
+<div class="before-after">
+<div class="ba-before">
+<h5>BEFORE (current)</h5>
+<pre><code># k8s/ollama/deployment.yaml
+containers:
+  - name: ollama
+    image: ollama/ollama:0.18.2
+    # No securityContext at all
+    # Runs as root (UID 0)
+    # Can escalate privileges
+    # Full filesystem access</code></pre>
+</div>
+<div class="ba-after">
+<h5>AFTER (fixed)</h5>
+<pre><code># k8s/ollama/deployment.yaml
 initContainers:
   - name: fix-permissions
     image: busybox:1.36
-    command: ["sh", "-c", "chown -R 1000:1000 /root/.ollama"]
+    command: ["sh","-c","chown -R 1000:1000 /models"]
+    securityContext:
+      runAsUser: 0   # init only
     volumeMounts:
       - name: ollama-models
-        mountPath: /root/.ollama</code></pre>
-<p>Repeat for <code>open-webui</code> (UID 1000, mount <code>/app/backend/data</code>) and <code>model-loader</code> job.</p>
+        mountPath: /models
+containers:
+  - name: ollama
+    image: ollama/ollama:0.18.2
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      runAsGroup: 1000
+      allowPrivilegeEscalation: false
+      seccompProfile:
+        type: RuntimeDefault
+      capabilities:
+        drop: ["ALL"]</code></pre>
+</div>
+</div>
+<p>Repeat the same <code>securityContext</code> block for <code>open-webui</code> and <code>model-loader</code>. The <code>initContainer</code> runs once as root to fix volume ownership, then the main container runs non-root.</p>
 <p><strong>Test:</strong> <code>kubectl exec -n ollama deploy/ollama -- id</code> &rarr; should show <code>uid=1000</code></p>
 </div>
 </details>
@@ -185,20 +239,39 @@ resource "aws_iam_role_policy_attachment" "github_actions" {
 <div class="detail-body">
 <p class="file">Missing resource — all namespaces</p>
 <p><strong>Risk:</strong> Cluster upgrades, node drains, and Karpenter consolidation terminate all replicas simultaneously. Guaranteed outage during any maintenance.</p>
-<h4>How to Fix</h4>
-<pre><code># k8s/ollama/pdb.yaml
+
+<div class="mermaid">
+flowchart LR
+    subgraph BEFORE["Without PDB"]
+        DRAIN1["kubectl drain node"] --> KILL1["Ollama pod KILLED"]
+        KILL1 --> DOWN1["Service DOWN<br/>mid-inference"]
+    end
+    subgraph AFTER["With PDB"]
+        DRAIN2["kubectl drain node"] --> BLOCK2["PDB blocks eviction"]
+        BLOCK2 --> WAIT2["Drain waits for<br/>inference to finish"]
+        WAIT2 --> SAFE2["Graceful shutdown"]
+    end
+    style BEFORE fill:#fef2f2,stroke:#dc3545,stroke-width:2px
+    style AFTER fill:#f0fdf4,stroke:#198754,stroke-width:2px
+    style DOWN1 fill:#dc3545,color:#fff
+    style SAFE2 fill:#198754,color:#fff
+</div>
+
+<h4>New files to create:</h4>
+<pre><code># k8s/ollama/pdb.yaml (NEW FILE)
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: ollama
   namespace: ollama
 spec:
-  maxUnavailable: 0        # Never evict voluntarily when running
+  maxUnavailable: 0        # Never evict voluntarily
   selector:
     matchLabels:
       app: ollama
+
 ---
-# k8s/open-webui/pdb.yaml
+# k8s/open-webui/pdb.yaml (NEW FILE)
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
@@ -209,7 +282,7 @@ spec:
   selector:
     matchLabels:
       app: open-webui</code></pre>
-<p>Add these files to the respective ArgoCD app paths. For Ollama (single replica + GPU), <code>maxUnavailable: 0</code> prevents Karpenter from draining mid-inference. Cluster upgrades will wait for the pod to finish.</p>
+<p>Add these files to the respective ArgoCD app paths (<code>k8s/ollama/</code> and <code>k8s/open-webui/</code>). ArgoCD auto-syncs them.</p>
 <p><strong>Test:</strong> <code>kubectl drain &lt;node&gt; --ignore-daemonsets</code> &mdash; should block with "Cannot evict pod (PDB)".</p>
 </div>
 </details>
@@ -219,18 +292,68 @@ spec:
 <div class="detail-body">
 <p class="file">k8s/ollama/deployment.yaml:73-86</p>
 <p><strong>Risk:</strong> Model loading takes 2-4 minutes. Liveness probe fires at ~70s, marking pod unhealthy. Kubelet kills and restarts it &mdash; infinite restart loop on every cold start.</p>
-<h4>How to Fix</h4>
-<pre><code># k8s/ollama/deployment.yaml — add BEFORE livenessProbe
+
+<div class="mermaid">
+gantt
+    title Probe Timeline — Cold Start
+    dateFormat s
+    axisFormat %S s
+
+    section BEFORE (broken)
+    Pod starts           :a1, 0, 10s
+    Model loading (2-4 min) :a2, 10, 240s
+    Liveness fires (fail)  :crit, a3, 70, 10s
+    Kubelet KILLS pod      :crit, a4, 80, 5s
+    CrashLoopBackOff       :crit, a5, 85, 30s
+
+    section AFTER (fixed)
+    Pod starts              :b1, 0, 10s
+    Model loading (2-4 min) :b2, 10, 240s
+    Startup probe (waiting) :active, b3, 30, 300s
+    Startup passes          :done, b4, 250, 5s
+    Liveness takes over     :done, b5, 255, 10s
+</div>
+<p class="diagram-label">Timeline: Without startup probe, liveness kills the pod at ~70s during model load</p>
+
+<div class="before-after">
+<div class="ba-before">
+<h5>BEFORE (current — no startup probe)</h5>
+<pre><code># k8s/ollama/deployment.yaml
+livenessProbe:
+  httpGet:
+    path: /
+    port: 11434
+  initialDelaySeconds: 60
+  periodSeconds: 10
+  failureThreshold: 6
+# 60 + (10 x 6) = 120s max
+# Model load takes 180-240s
+# Pod KILLED at ~120s every time</code></pre>
+</div>
+<div class="ba-after">
+<h5>AFTER (fixed — startup probe added)</h5>
+<pre><code># k8s/ollama/deployment.yaml — ADD before livenessProbe
 startupProbe:
   httpGet:
     path: /api/tags
     port: 11434
   initialDelaySeconds: 30
   periodSeconds: 15
-  failureThreshold: 20    # 30 + (15 x 20) = 330s = 5.5 min grace
-  # Liveness/readiness probes are suppressed until startupProbe passes</code></pre>
-<p>The startup probe gives Ollama up to 5.5 minutes to load the model before liveness kicks in. Once startup succeeds, the normal liveness/readiness probes take over.</p>
-<p><strong>Test:</strong> Scale Ollama from 0 &rarr; 1. Watch: <code>kubectl get pods -n ollama -w</code>. Pod should stay in <code>Running</code> (not <code>CrashLoopBackOff</code>) during model load.</p>
+  failureThreshold: 20
+  # Grace: 30 + (15 x 20) = 330s = 5.5 min
+  # Liveness/readiness SUPPRESSED until
+  # startupProbe passes
+
+# Keep existing liveness + readiness unchanged
+livenessProbe:
+  httpGet:
+    path: /
+    port: 11434
+  initialDelaySeconds: 60
+  periodSeconds: 10</code></pre>
+</div>
+</div>
+<p><strong>Test:</strong> Scale Ollama from 0 &rarr; 1. <code>kubectl get pods -n ollama -w</code> &mdash; pod should stay <code>Running</code> (not <code>CrashLoopBackOff</code>) during model load.</p>
 </div>
 </details>
 
@@ -239,26 +362,76 @@ startupProbe:
 <div class="detail-body">
 <p class="file">k8s/nodepools/system-nodepool.yaml</p>
 <p><strong>Risk:</strong> All system pods (CoreDNS, Istio, ArgoCD, Prometheus, Open WebUI) in <code>ap-southeast-2a</code>. AZ failure = complete platform outage, 30+ min RTO.</p>
-<h4>How to Fix</h4>
-<pre><code># k8s/nodepools/system-nodepool.yaml — change zone constraint
-spec:
-  template:
-    spec:
-      requirements:
-        - key: topology.kubernetes.io/zone
-          operator: In
-          values:
-            - ap-southeast-2a
-            - ap-southeast-2b     # ADD THIS
 
-      # Also add: spread pods across AZs
-      topologySpreadConstraints:
-        - maxSkew: 1
-          topologyKey: topology.kubernetes.io/zone
-          whenUnsatisfiable: DoNotSchedule</code></pre>
-<p>Then add <code>topologySpreadConstraints</code> to Open WebUI deployment (when running 2+ replicas) to spread across AZs.</p>
-<p><strong>Cost:</strong> +$60/mo (second t3.xlarge in 2b). <strong>Benefit:</strong> 99.99% system availability.</p>
-<p><strong>Note:</strong> Open WebUI PVC (EBS) is AZ-bound. Either: (a) use EFS instead of EBS for cross-AZ access, or (b) keep Open WebUI pinned to 2a and accept that UI fails during 2a outage while API (GPU in 2b) stays up.</p>
+<div class="mermaid">
+flowchart TB
+    subgraph BEFORE["BEFORE — Single AZ (current)"]
+        direction LR
+        subgraph AZ1B["ap-southeast-2a"]
+            SYS1["System Node (t3.xlarge)<br/>CoreDNS + Istio + ArgoCD<br/>+ Prometheus + Open WebUI<br/>+ EBS PVC"]
+        end
+        subgraph AZ2B["ap-southeast-2b"]
+            GPU1B["GPU Node (spot)<br/>Ollama"]
+        end
+        FAIL1["AZ-a Failure"] -->|"ALL system pods DOWN<br/>30+ min RTO"| SYS1
+    end
+
+    subgraph AFTER["AFTER — Multi-AZ (proposed)"]
+        direction LR
+        subgraph AZ1A["ap-southeast-2a"]
+            SYS2A["System Node 1<br/>CoreDNS + Istio + ArgoCD<br/>+ Open WebUI + PVC"]
+        end
+        subgraph AZ2A["ap-southeast-2b"]
+            SYS2B["System Node 2<br/>CoreDNS + Istio + Prometheus"]
+            GPU1A["GPU Node (spot)<br/>Ollama"]
+        end
+        FAIL2["AZ-a Failure"] -->|"System Node 2<br/>takes over (~30s)"| SYS2B
+    end
+
+    style BEFORE fill:#fef2f2,stroke:#dc3545,stroke-width:2px
+    style AFTER fill:#f0fdf4,stroke:#198754,stroke-width:2px
+    style FAIL1 fill:#dc3545,color:#fff
+    style FAIL2 fill:#198754,color:#fff
+    style SYS1 fill:#fca5a5,stroke:#dc3545
+    style SYS2A fill:#86efac,stroke:#198754
+    style SYS2B fill:#86efac,stroke:#198754
+</div>
+<p class="diagram-label">Topology: Single AZ failure takes down entire platform vs. graceful failover</p>
+
+<div class="before-after">
+<div class="ba-before">
+<h5>BEFORE (current)</h5>
+<pre><code># k8s/nodepools/system-nodepool.yaml
+requirements:
+  - key: topology.kubernetes.io/zone
+    operator: In
+    values:
+      - ap-southeast-2a
+      # Only ONE AZ — all system pods here</code></pre>
+</div>
+<div class="ba-after">
+<h5>AFTER (fixed)</h5>
+<pre><code># k8s/nodepools/system-nodepool.yaml
+requirements:
+  - key: topology.kubernetes.io/zone
+    operator: In
+    values:
+      - ap-southeast-2a
+      - ap-southeast-2b   # ADD second AZ
+
+# Also add to Open WebUI deployment
+# (when running 2+ replicas via HPA):
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: DoNotSchedule
+    labelSelector:
+      matchLabels:
+        app: open-webui</code></pre>
+</div>
+</div>
+<p><strong>Cost:</strong> +$60/mo (second t3.xlarge). <strong>Benefit:</strong> 99.99% system availability.</p>
+<p><strong>Note:</strong> Open WebUI PVC (EBS) is AZ-bound. Either: (a) use EFS for cross-AZ access, or (b) keep Open WebUI pinned to 2a and accept UI downtime during 2a outage while GPU API (in 2b) stays up.</p>
 </div>
 </details>
 
@@ -340,27 +513,81 @@ cluster_enabled_log_types = var.enable_logging ? [
 <div class="detail-body">
 <p class="file">scripts/scale-up.sh, switch-model.sh</p>
 <p><strong>Risk:</strong> If Ctrl+C is pressed while KEDA is paused (during model loading), KEDA stays paused indefinitely. GPU node runs 24/7 at $0.35-$1.90/hr until someone notices.</p>
-<h4>How to Fix</h4>
-<pre><code># Add at the TOP of scripts/scale-up.sh and switch-model.sh (after set -e)
 
+<div class="mermaid">
+flowchart TD
+    subgraph BEFORE["BEFORE — No trap handler"]
+        A1["scale-up.sh starts"] --> A2["Pause KEDA"]
+        A2 --> A3["Provision GPU node..."]
+        A3 --> A4["Loading model..."]
+        A4 -->|"User presses Ctrl+C"| A5["Script exits"]
+        A5 --> A6["KEDA STAYS PAUSED"]
+        A6 --> A7["GPU runs forever<br/>$0.35-$1.90/hr"]
+    end
+
+    subgraph AFTER["AFTER — With trap handler"]
+        B1["scale-up.sh starts"] --> B1T["Register trap cleanup"]
+        B1T --> B2["Pause KEDA"]
+        B2 --> B3["Provision GPU node..."]
+        B3 --> B4["Loading model..."]
+        B4 -->|"User presses Ctrl+C"| B5["trap fires: cleanup()"]
+        B5 --> B6["Unpause KEDA"]
+        B6 --> B7["KEDA scales to 0<br/>GPU node terminated<br/>$0/hr"]
+    end
+
+    style BEFORE fill:#fef2f2,stroke:#dc3545,stroke-width:2px
+    style AFTER fill:#f0fdf4,stroke:#198754,stroke-width:2px
+    style A6 fill:#dc3545,color:#fff
+    style A7 fill:#dc3545,color:#fff
+    style B6 fill:#198754,color:#fff
+    style B7 fill:#198754,color:#fff
+</div>
+
+<div class="before-after">
+<div class="ba-before">
+<h5>BEFORE (current — no trap)</h5>
+<pre><code>#!/bin/bash
+set -euo pipefail
+
+# Pause KEDA
+kubectl annotate scaledobject ...
+  autoscaling.keda.sh/paused="true"
+
+# ... long-running model load ...
+# If Ctrl+C here → script exits
+# KEDA stays paused forever
+# GPU node runs 24/7</code></pre>
+</div>
+<div class="ba-after">
+<h5>AFTER (fixed — trap handler)</h5>
+<pre><code>#!/bin/bash
+set -euo pipefail
+
+# Register cleanup trap FIRST
 cleanup() {
   echo ""
-  log "Interrupted! Ensuring KEDA is unpaused..."
-  kubectl annotate scaledobject ollama-autoscaler -n ollama \
+  log "Interrupted! Unpausing KEDA..."
+  kubectl annotate scaledobject \
+    ollama-autoscaler -n ollama \
     autoscaling.keda.sh/paused- \
     gpu-controller/paused-at- \
     --overwrite 2>/dev/null || true
-  warn "KEDA unpaused. Check GPU node status: kubectl get nodes"
+  warn "KEDA unpaused safely."
   exit 1
 }
-
 trap cleanup INT TERM EXIT
 
-# ... rest of script ...
+# Pause KEDA
+kubectl annotate scaledobject ...
 
-# At the END of the script (on success), remove the trap:
-trap - INT TERM EXIT</code></pre>
-<p>This ensures KEDA is always unpaused, even on Ctrl+C, terminal close, or script error. The <code>trap - EXIT</code> at the end prevents cleanup from running on normal exit (since the script itself unpauses KEDA in the success path).</p>
+# ... long-running model load ...
+# Ctrl+C here → trap fires → KEDA unpaused
+
+# On success, remove trap:
+trap - INT TERM EXIT
+# Script's own unpause runs normally</code></pre>
+</div>
+</div>
 <p><strong>Test:</strong> Run <code>./scripts/scale-up.sh</code>, press Ctrl+C during model load. Verify: <code>kubectl get scaledobject -n ollama</code> &mdash; PAUSED should be <code>false</code>.</p>
 </div>
 </details>
@@ -405,19 +632,56 @@ set {
 <div class="detail-body">
 <p class="file">k8s/ollama/networkpolicy.yaml:49-50</p>
 <p><strong>Risk:</strong> <code>namespaceSelector: {}</code> allows Ollama to reach any service in the cluster. If compromised, lateral movement is unrestricted.</p>
-<h4>How to Fix</h4>
-<pre><code># k8s/ollama/networkpolicy.yaml — tighten egress
+
+<div class="mermaid">
+flowchart LR
+    subgraph BEFORE["BEFORE — Broad egress"]
+        OB["Ollama Pod"] -->|"allowed"| DNS1["kube-dns :53"]
+        OB -->|"allowed"| WB["Open WebUI"]
+        OB -->|"allowed"| ARGO["ArgoCD"]
+        OB -->|"allowed"| PROM["Prometheus"]
+        OB -->|"allowed"| ANY["Any pod in cluster"]
+    end
+    subgraph AFTER["AFTER — DNS only"]
+        OA["Ollama Pod"] -->|"allowed"| DNS2["kube-dns :53"]
+        OA -.->|"BLOCKED"| WA["Open WebUI"]
+        OA -.->|"BLOCKED"| ARGA["ArgoCD"]
+        OA -.->|"BLOCKED"| PROMA["Prometheus"]
+    end
+    style BEFORE fill:#fef2f2,stroke:#dc3545,stroke-width:2px
+    style AFTER fill:#f0fdf4,stroke:#198754,stroke-width:2px
+    style ANY fill:#dc3545,color:#fff
+</div>
+
+<div class="before-after">
+<div class="ba-before">
+<h5>BEFORE (current)</h5>
+<pre><code># k8s/ollama/networkpolicy.yaml
 egress:
-  # DNS only
+  - to:
+      - namespaceSelector: {}   # ALL namespaces
+    ports:
+      - port: 53
+  - to:
+      - namespaceSelector: {}   # ALL namespaces
+    # No port restriction = any port</code></pre>
+</div>
+<div class="ba-after">
+<h5>AFTER (fixed — DNS only)</h5>
+<pre><code># k8s/ollama/networkpolicy.yaml
+egress:
+  # DNS resolution only
   - to: []
     ports:
       - port: 53
         protocol: UDP
       - port: 53
         protocol: TCP
-  # No other egress needed — Ollama is air-gapped
-  # (Remove the broad namespaceSelector: {} rule)</code></pre>
-<p>Ollama doesn't need to call any other service. It only needs DNS resolution. Remove the intra-cluster egress entirely.</p>
+  # No other egress — Ollama is air-gapped
+  # It serves requests, doesn't call others</code></pre>
+</div>
+</div>
+<p>Ollama is a <strong>server</strong> — it receives inference requests but never initiates outbound connections (except DNS). Remove all intra-cluster egress.</p>
 </div>
 </details>
 
@@ -916,23 +1180,79 @@ variable "prometheus_retention_days" {
 <details class="sev-arch"><summary><span class="badge b-arch">ARCH</span> 1. Auto Scale-from-Zero (Lambda Trigger on First Request)</summary><div class="detail-body">
 <p><strong>Current:</strong> KEDA scales to zero after idle, but scaling UP requires manual <code>./scripts/scale-up.sh</code>.</p>
 <p><strong>Improvement:</strong> API Gateway Lambda checks Ollama replicas. If 0, triggers scale-up and returns <code>503 Retry-After: 180</code>.</p>
+
+<div class="mermaid">
+sequenceDiagram
+    participant U as User
+    participant CF as CloudFront
+    participant LB as Scale-Trigger<br/>Lambda
+    participant K8s as K8s API
+    participant KEDA as KEDA
+    participant KP as Karpenter
+    participant OL as Ollama
+
+    Note over OL: Ollama at 0 replicas (idle)
+
+    U->>CF: POST /v1/chat/completions
+    CF->>LB: Forward request
+    LB->>K8s: Check: replicas == 0?
+    K8s-->>LB: Yes, 0 replicas
+
+    rect rgb(255, 243, 224)
+        Note over LB,KP: Auto scale-up (background)
+        LB->>K8s: Patch: replicas = 1
+        LB->>KEDA: Pause KEDA (prevent race)
+        K8s->>KP: Pending pod detected
+        KP->>KP: Provision GPU node (~90s)
+    end
+
+    LB-->>CF: 503 Retry-After: 180
+    CF-->>U: "Model warming up — retry in 3 min"
+
+    Note over KP,OL: ~3 min later
+    KP->>OL: Pod scheduled + model loaded
+    LB->>KEDA: Unpause KEDA
+
+    U->>CF: POST /v1/chat/completions (retry)
+    CF->>OL: Forward to running Ollama
+    OL-->>U: Streaming response
+</div>
+<p class="diagram-label">Auto scale-from-zero: Lambda detects cold state, triggers GPU provision, returns friendly wait message</p>
+
 <pre><code># terraform/modules/api-gateway/lambda/auto_scale_trigger.py
-import boto3, json
+import boto3, json, base64, urllib3
 
 def handler(event, context):
-    k8s = boto3.client('eks')
-    # Check if Ollama is at 0 replicas (via CloudWatch metric or K8s API)
-    # If 0: trigger scale-up, return 503
-    # If running: proxy request to NLB
-    return {
-        'statusCode': 503,
-        'headers': {'Retry-After': '180'},
-        'body': json.dumps({'message': 'Model loading, please wait ~3 minutes'})
-    }
+    # Use EKS bearer token (short-lived STS presigned URL)
+    eks = boto3.client('eks')
+    cluster = eks.describe_cluster(name='eks-ollama-dev')
+    endpoint = cluster['cluster']['endpoint']
 
-# CloudFront custom error page for 503:
-# "Your request is warming up the GPU. Please retry in 3 minutes."</code></pre>
-<p><strong>Benefit:</strong> Fully automatic cold start. No SSH/kubectl needed. Users just wait.</p>
+    # Check current replicas
+    replicas = get_ollama_replicas(endpoint)
+
+    if replicas == 0:
+        # Trigger scale-up
+        patch_ollama_replicas(endpoint, 1)
+        pause_keda(endpoint)  # Prevent KEDA from scaling back to 0
+
+        return {
+            'statusCode': 503,
+            'headers': {
+                'Retry-After': '180',
+                'Content-Type': 'application/json'
+            },
+            'body': json.dumps({
+                'error': {'message': 'Model is loading. Please retry in ~3 minutes.', 'type': 'model_loading'}
+            })
+        }
+
+    # Ollama is running — proxy to NLB (or return 200 passthrough)
+    return {'statusCode': 200}
+
+# CloudFront custom error response for 503:
+# Show branded "warming up" page with auto-refresh</code></pre>
+<p><strong>Benefit:</strong> Fully automatic cold start. No SSH/kubectl needed. Users just see a "warming up" message and retry.</p>
 </div></details>
 
 <details class="sev-arch"><summary><span class="badge b-arch">ARCH</span> 2. Open WebUI: Recreate &rarr; RollingUpdate</summary><div class="detail-body">
@@ -1201,12 +1521,18 @@ spec:
 <footer>Platform Analysis Report &mdash; Ollama-on-EKS &mdash; 2026-03-27</footer>
 
 <script>
+mermaid.initialize({startOnLoad:true, theme:'default', securityLevel:'loose', gantt:{fontSize:11}});
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   document.querySelector(`.tab[data-tab="${name}"]`).classList.add('active');
-  document.getElementById(`panel-${name}`).classList.add('active');
+  const panel = document.getElementById(`panel-${name}`);
+  panel.classList.add('active');
   window.scrollTo({top: document.querySelector('.tabs').offsetTop - 10, behavior: 'smooth'});
+  // Re-render any unprocessed Mermaid diagrams in newly visible panel
+  panel.querySelectorAll('.mermaid:not([data-processed])').forEach(el => {
+    mermaid.run({nodes:[el]});
+  });
 }
 </script>
 </body>
