@@ -92,7 +92,7 @@ footer{text-align:center;color:var(--muted);font-size:0.8rem;margin:40px 0 20px}
 
 <!-- STAT BAR (clickable) -->
 <div class="stat-bar">
-  <div style="background:var(--crit);flex:8" onclick="switchTab('critical')">8 Critical (3 Fixed, 2 Deferred)</div>
+  <div style="background:var(--crit);flex:8" onclick="switchTab('critical')">8 Critical (3 Fixed, 3 Deferred)</div>
   <div style="background:var(--high);flex:14" onclick="switchTab('high')">14 High</div>
   <div style="background:var(--med);color:#000;flex:18" onclick="switchTab('medium')">18 Medium</div>
   <div style="background:var(--low);flex:12" onclick="switchTab('low')">12 Low</div>
@@ -475,7 +475,7 @@ topologySpreadConstraints:
 </details>
 
 <details class="sev-crit">
-<summary><span class="badge b-crit">CRIT</span> 6. No Open WebUI Data Backup</summary>
+<summary><span class="badge b-crit">CRIT</span> 6. No Open WebUI Data Backup &mdash; <span class="badge b-info">DEFERRED</span></summary>
 <div class="detail-body">
 <p class="file">Missing resource — no DLM policy for open-webui PVC</p>
 <p><strong>Risk:</strong> Chat history + user preferences stored in SQLite on EBS PVC. EBS failure = total data loss. No snapshots, no backup schedule.</p>
@@ -552,6 +552,12 @@ resource "aws_iam_role_policy_attachment" "dlm" {
 }</code></pre>
 <p>Tag the Open WebUI EBS volume with <code>Name = open-webui-data</code> so DLM can find it.</p>
 <p><strong>Cost:</strong> ~$5/mo (7 daily snapshots of ~10GB volume). <strong>Recovery:</strong> Restore any snapshot to a new volume in &lt;5 min.</p>
+
+<h4>Decision: Accepted Risk</h4>
+<div style="background:#f0f9ff;border:1px solid #0dcaf0;border-radius:8px;padding:12px;margin:12px 0">
+<p><strong>Status: Deferred</strong> &mdash; Chat history and user preferences are not critical data for the current phase. The platform is used for ad-hoc consulting queries — conversations are disposable and not referenced long-term. Losing chat history is an inconvenience, not a business impact.</p>
+<p><strong>Revisit when:</strong> Chat history becomes valuable (e.g., client audit trail, knowledge base for RAG, or compliance requirement to retain conversations).</p>
+</div>
 </div>
 </details>
 
