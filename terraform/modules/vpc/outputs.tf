@@ -17,7 +17,12 @@ output "public_subnet_ids" {
 }
 
 output "private_subnet_ids" {
-  description = "List of private subnet IDs (includes AZ c if enabled)"
+  description = "List of private subnet IDs (original AZs only — safe for EKS cluster)"
+  value       = aws_subnet.private[*].id
+}
+
+output "gpu_subnet_ids" {
+  description = "All private subnet IDs including AZ c (for Karpenter NodeClass)"
   value       = concat(aws_subnet.private[*].id, aws_subnet.private_2c[*].id)
 }
 
