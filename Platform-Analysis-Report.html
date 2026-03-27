@@ -93,7 +93,7 @@ footer{text-align:center;color:var(--muted);font-size:0.8rem;margin:40px 0 20px}
 <!-- STAT BAR (clickable) -->
 <div class="stat-bar">
   <div style="background:var(--crit);flex:8" onclick="switchTab('critical')">8 Critical (4 Fixed, 4 Deferred)</div>
-  <div style="background:var(--high);flex:14" onclick="switchTab('high')">14 High</div>
+  <div style="background:var(--high);flex:14" onclick="switchTab('high')">14 High (All Fixed)</div>
   <div style="background:var(--med);color:#000;flex:18" onclick="switchTab('medium')">18 Medium</div>
   <div style="background:var(--low);flex:12" onclick="switchTab('low')">12 Low</div>
   <div style="background:var(--cost);flex:7" onclick="switchTab('cost')">7 Cost Opts</div>
@@ -103,7 +103,7 @@ footer{text-align:center;color:var(--muted);font-size:0.8rem;margin:40px 0 20px}
 <!-- TAB BAR -->
 <div class="tabs">
   <div class="tab active" data-tab="critical" onclick="switchTab('critical')">Critical (4/8 Fixed)</div>
-  <div class="tab" data-tab="high" onclick="switchTab('high')">High (14)</div>
+  <div class="tab" data-tab="high" onclick="switchTab('high')">High (14/14 Fixed)</div>
   <div class="tab" data-tab="medium" onclick="switchTab('medium')">Medium (18)</div>
   <div class="tab" data-tab="low" onclick="switchTab('low')">Low (12)</div>
   <div class="tab" data-tab="cost" onclick="switchTab('cost')">Cost Opts (7)</div>
@@ -703,7 +703,7 @@ trap - INT TERM EXIT
 <div class="tab-panel" id="panel-high">
 
 <details class="sev-high">
-<summary><span class="badge b-high">HIGH</span> 1. ArgoCD Running with <code>--insecure</code> (No TLS)</summary>
+<summary><span class="badge b-high">HIGH</span> 1.  ArgoCD Running with <code>--insecure</code> (No TLS)</summary>
 <div class="detail-body">
 <p class="file">terraform/modules/argocd/main.tf:38</p>
 <p><strong>Risk:</strong> ArgoCD UI served over HTTP. MITM attacks expose credentials and GitOps state.</p>
@@ -731,7 +731,7 @@ set {
 </details>
 
 <details class="sev-high">
-<summary><span class="badge b-high">HIGH</span> 2. Ollama NetworkPolicy: Egress Allows All Intra-Cluster</summary>
+<summary><span class="badge b-high">HIGH</span> 2. Ollama NetworkPolicy: Egress Allows All Intra-Cluster &mdash; <span class="badge b-low">FIXED</span></summary>
 <div class="detail-body">
 <p class="file">k8s/ollama/networkpolicy.yaml:49-50</p>
 <p><strong>Risk:</strong> <code>namespaceSelector: {}</code> allows Ollama to reach any service in the cluster. If compromised, lateral movement is unrestricted.</p>
@@ -789,7 +789,7 @@ egress:
 </details>
 
 <details class="sev-high">
-<summary><span class="badge b-high">HIGH</span> 3. Cognito Signup: No Email Domain Validation</summary>
+<summary><span class="badge b-high">HIGH</span> 3. Cognito Signup: No Email Domain Validation &mdash; <span class="badge b-low">FIXED</span></summary>
 <div class="detail-body">
 <p class="file">terraform/modules/cognito/main.tf:332 (Pre-signup Lambda)</p>
 <p><strong>Risk:</strong> Anyone with any email can create an account. While admin approval is required, signup spam wastes SNS notifications and pollutes the user pool.</p>
@@ -815,7 +815,7 @@ def handler(event, context):
 </details>
 
 <details class="sev-high">
-<summary><span class="badge b-high">HIGH</span> 4. S3 Buckets Use AES256, Not KMS</summary>
+<summary><span class="badge b-high">HIGH</span> 4. S3 Buckets Use AES256, Not KMS &mdash; <span class="badge b-low">FIXED</span></summary>
 <div class="detail-body">
 <p class="file">terraform/modules/api-key-portal/main.tf:46, 108</p>
 <p><strong>Risk:</strong> No customer-managed key rotation. Fails SOC 2 / HIPAA / PCI-DSS compliance checks.</p>
@@ -835,7 +835,7 @@ apply_server_side_encryption_by_default {
 </details>
 
 <details class="sev-high">
-<summary><span class="badge b-high">HIGH</span> 5. Single NAT Gateway (SPOF for Egress)</summary>
+<summary><span class="badge b-high">HIGH</span> 5. Single NAT Gateway (SPOF for Egress) &mdash; <span class="badge b-low">FIXED</span></summary>
 <div class="detail-body">
 <p class="file">terraform/modules/vpc/main.tf:73-84</p>
 <p><strong>Risk:</strong> All private subnet egress routes through one NAT in <code>ap-southeast-2a</code>. NAT failure = no outbound connectivity.</p>
@@ -889,7 +889,7 @@ resource "aws_vpc_endpoint" "dynamodb" {
 </details>
 
 <details class="sev-high">
-<summary><span class="badge b-high">HIGH</span> 6. No CloudWatch Alarms for AWS Resources</summary>
+<summary><span class="badge b-high">HIGH</span> 6. No CloudWatch Alarms for AWS Resources &mdash; <span class="badge b-low">FIXED</span></summary>
 <div class="detail-body">
 <p class="file">Missing resource</p>
 <p><strong>Risk:</strong> API Gateway 5xx errors, CloudFront failures, and node health issues go undetected until users report them.</p>
@@ -922,7 +922,7 @@ resource "aws_cloudwatch_metric_alarm" "cf_5xx" {
 </details>
 
 <details class="sev-high">
-<summary><span class="badge b-high">HIGH</span> 7. Ollama ArgoCD App Missing RespectIgnoreDifferences</summary>
+<summary><span class="badge b-high">HIGH</span> 7. Ollama ArgoCD App Missing RespectIgnoreDifferences &mdash; <span class="badge b-low">FIXED</span></summary>
 <div class="detail-body">
 <p class="file">argocd/apps/08-ollama.yaml:31-36</p>
 <p><strong>Risk:</strong> <code>selfHeal: true</code> + <code>ignoreDifferences</code> on resources, but without <code>RespectIgnoreDifferences=true</code> sync option. SelfHeal can revert <code>switch-model.sh</code> resource patches.</p>
@@ -940,7 +940,7 @@ syncPolicy:
 </details>
 
 <details class="sev-high">
-<summary><span class="badge b-high">HIGH</span> 8. No Application-Level Audit Logging</summary>
+<summary><span class="badge b-high">HIGH</span> 8. No Application-Level Audit Logging &mdash; <span class="badge b-low">FIXED</span></summary>
 <div class="detail-body">
 <p class="file">Missing capability</p>
 <p><strong>Risk:</strong> Cannot answer: "Who used which model at what time?" No inference request logs, no model switch audit trail.</p>
@@ -961,7 +961,7 @@ resource "aws_eks_addon" "cloudwatch_observability" {
 </details>
 
 <details class="sev-high">
-<summary><span class="badge b-high">HIGH</span> 9. Hardcoded AWS Account ID in CI/CD Workflows</summary>
+<summary><span class="badge b-high">HIGH</span> 9. Hardcoded AWS Account ID in CI/CD Workflows &mdash; <span class="badge b-low">FIXED</span></summary>
 <div class="detail-body">
 <p class="file">.github/workflows/terraform-plan.yml:37, terraform-apply.yml:38</p>
 <p><strong>Risk:</strong> Account ID <code>183758910727</code> is in version control. Exposes account structure.</p>
@@ -976,7 +976,7 @@ resource "aws_eks_addon" "cloudwatch_observability" {
 </details>
 
 <details class="sev-high">
-<summary><span class="badge b-high">HIGH</span> 10. No Rollback on Deploy Script Failure</summary>
+<summary><span class="badge b-high">HIGH</span> 10. No Rollback on Deploy Script Failure &mdash; <span class="badge b-low">FIXED</span></summary>
 <div class="detail-body">
 <p class="file">scripts/deploy-stack-a.sh:269</p>
 <p><strong>Risk:</strong> Two-phase terraform apply with no rollback. Phase 2 failure leaves infrastructure in inconsistent state.</p>
@@ -993,7 +993,7 @@ fi</code></pre>
 </details>
 
 <details class="sev-high">
-<summary><span class="badge b-high">HIGH</span> 11. KEDA Race Condition (EventBridge vs Scale-Up)</summary>
+<summary><span class="badge b-high">HIGH</span> 11. KEDA Race Condition (EventBridge vs Scale-Up) &mdash; <span class="badge b-low">FIXED</span></summary>
 <div class="detail-body">
 <p class="file">scripts/scale-up.sh:52-63</p>
 <p><strong>Risk:</strong> EventBridge safety timer fires 15 min after KEDA is paused. If <code>scale-up.sh</code> takes &gt;15 min (slow model load), EventBridge unpauses KEDA, which scales to 0 and kills the loading pod.</p>
@@ -1010,7 +1010,7 @@ done</code></pre>
 </details>
 
 <details class="sev-high">
-<summary><span class="badge b-high">HIGH</span> 12. Model Loader Job: No Resource Limits</summary>
+<summary><span class="badge b-high">HIGH</span> 12. Model Loader Job: No Resource Limits &mdash; <span class="badge b-low">FIXED</span></summary>
 <div class="detail-body">
 <p class="file">k8s/model-loader/job.yaml:32-75</p>
 <p><strong>Risk:</strong> No <code>resources</code> section. Job can consume unbounded CPU/memory, evicting other pods on the node.</p>
@@ -1027,7 +1027,7 @@ resources:
 </details>
 
 <details class="sev-high">
-<summary><span class="badge b-high">HIGH</span> 13. No CloudTrail Enabled</summary>
+<summary><span class="badge b-high">HIGH</span> 13. No CloudTrail Enabled &mdash; <span class="badge b-low">FIXED</span></summary>
 <div class="detail-body">
 <p class="file">Missing resource</p>
 <p><strong>Risk:</strong> No AWS API audit trail. Cannot investigate who created/deleted resources.</p>
@@ -1049,7 +1049,7 @@ resource "aws_cloudtrail" "main" {
 </details>
 
 <details class="sev-high">
-<summary><span class="badge b-high">HIGH</span> 14. No ArgoCD RBAC Configuration</summary>
+<summary><span class="badge b-high">HIGH</span> 14. No ArgoCD RBAC Configuration &mdash; <span class="badge b-low">FIXED</span></summary>
 <div class="detail-body">
 <p class="file">terraform/modules/argocd/main.tf</p>
 <p><strong>Risk:</strong> Default RBAC gives admin access to all authenticated users. Anyone with cluster access can deploy to any namespace.</p>
