@@ -36,10 +36,38 @@ spec:
         - key: nvidia.com/gpu
           operator: Exists
           effect: NoSchedule
+      # Security: run all containers as non-root (CIS Benchmark 5.2.6)
+      # fsGroup ensures the ephemeral volume is writable by UID 1000
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      # Fix volume ownership before main container starts.
+      # EBS snapshot was created as root; initContainer runs once to chown.
+      initContainers:
+        - name: fix-permissions
+          image: busybox:1.36
+          command: ["sh", "-c", "chown -R 1000:1000 /data/models"]
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "FOWNER"]
+          volumeMounts:
+            - name: ollama-data
+              mountPath: /data/models
       containers:
         - name: ollama
           image: ollama/ollama:0.18.2
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - name: http
               containerPort: 11434
@@ -47,6 +75,10 @@ spec:
           env:
             - name: OLLAMA_HOST
               value: "0.0.0.0:11434"
+            # Redirect model storage from /root/.ollama to /data/models
+            # so the container doesn't need write access to /root
+            - name: OLLAMA_MODELS
+              value: "/data/models"
             - name: OLLAMA_KEEP_ALIVE
               value: "24h"
             - name: OLLAMA_NUM_PARALLEL
@@ -57,6 +89,9 @@ spec:
             # qwen3.5:122b-a10b (MoE, 10B active) fits comfortably on 4x A10G with 32K context.
             - name: OLLAMA_CONTEXT_LENGTH
               value: "32768"
+            # HOME must be writable for Ollama's config files
+            - name: HOME
+              value: "/tmp/ollama-home"
           resources:
             # Set per environment via Kustomize overlay
             limits:
@@ -69,7 +104,9 @@ spec:
               cpu: "1"
           volumeMounts:
             - name: ollama-data
-              mountPath: /root/.ollama
+              mountPath: /data/models
+            - name: tmp-home
+              mountPath: /tmp/ollama-home
           readinessProbe:
             httpGet:
               path: /api/tags
@@ -85,6 +122,9 @@ spec:
             periodSeconds: 30
             failureThreshold: 3
       volumes:
+        # Writable home dir for Ollama config (emptyDir, pod-scoped)
+        - name: tmp-home
+          emptyDir: {}
         # Ephemeral volume from EBS snapshot — created in the pod's AZ,
         # deleted when pod terminates. Models are preserved in the snapshot.
         # This enables multi-AZ GPU provisioning for better spot availability.

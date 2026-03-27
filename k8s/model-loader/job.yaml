@@ -29,9 +29,28 @@ spec:
         - key: CriticalAddonsOnly
           operator: Exists
           effect: NoSchedule
+      # Security: run as non-root (CIS Benchmark 5.2.6)
+      # curlimages/curl runs as UID 100 by default; enforce explicitly
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: model-loader
           image: curlimages/curl:latest
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
           env:
             - name: OLLAMA_MODEL
               # Set per environment via Kustomize overlay
