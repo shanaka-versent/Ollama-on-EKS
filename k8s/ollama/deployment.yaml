@@ -75,6 +75,10 @@ spec:
           env:
             - name: OLLAMA_HOST
               value: "0.0.0.0:11434"
+            # Log level for audit trail — inference requests logged to stdout
+            # (shipped to CloudWatch via Fluent Bit / Container Insights)
+            - name: OLLAMA_LOG_LEVEL
+              value: "INFO"
             # Redirect model storage from /root/.ollama to /data/models
             # so the container doesn't need write access to /root
             - name: OLLAMA_MODELS

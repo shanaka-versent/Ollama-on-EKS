@@ -26,3 +26,9 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "allowed_email_domains" {
+  description = "Comma-separated list of allowed email domains for signup (empty = allow all)"
+  type        = string
+  default     = ""
+}

@@ -633,3 +633,92 @@ module "bedrock_integration" {
   eks_oidc_provider_arn = module.eks.oidc_provider_arn
   tags                 = var.tags
 }
+
+data "aws_caller_identity" "current" {}
+
+# ==============================================================================
+# CLOUDTRAIL — API audit trail (High Finding #13)
+# ==============================================================================
+# Single-region trail for management events. Free for first trail.
+# S3 storage: ~$2/mo. Enables investigation of who created/deleted resources.
+
+resource "aws_cloudtrail" "main" {
+  name                       = "${var.project_name}-trail"
+  s3_bucket_name             = aws_s3_bucket.cloudtrail.id
+  is_multi_region_trail      = false
+  enable_log_file_validation = true
+
+  event_selector {
+    read_write_type           = "All"
+    include_management_events = true
+  }
+
+  depends_on = [aws_s3_bucket_policy.cloudtrail]
+  tags       = var.tags
+}
+
+resource "aws_s3_bucket" "cloudtrail" {
+  bucket        = "${var.project_name}-cloudtrail-${data.aws_caller_identity.current.account_id}"
+  force_destroy = true
+  tags          = var.tags
+}
+
+resource "aws_s3_bucket_policy" "cloudtrail" {
+  bucket = aws_s3_bucket.cloudtrail.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "AWSCloudTrailAclCheck"
+        Effect    = "Allow"
+        Principal = { Service = "cloudtrail.amazonaws.com" }
+        Action    = "s3:GetBucketAcl"
+        Resource  = aws_s3_bucket.cloudtrail.arn
+      },
+      {
+        Sid       = "AWSCloudTrailWrite"
+        Effect    = "Allow"
+        Principal = { Service = "cloudtrail.amazonaws.com" }
+        Action    = "s3:PutObject"
+        Resource  = "${aws_s3_bucket.cloudtrail.arn}/AWSLogs/${data.aws_caller_identity.current.account_id}/*"
+        Condition = {
+          StringEquals = { "s3:x-amz-acl" = "bucket-owner-full-control" }
+        }
+      },
+    ]
+  })
+}
+
+# ==============================================================================
+# CLOUDWATCH ALARMS — Proactive incident detection (High Finding #6)
+# ==============================================================================
+
+resource "aws_cloudwatch_metric_alarm" "apigw_5xx" {
+  alarm_name          = "${var.project_name}-apigw-5xx"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "5XXError"
+  namespace           = "AWS/ApiGateway"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = 5
+  alarm_description   = "API Gateway 5xx errors exceeded threshold"
+  alarm_actions       = [module.observability.sns_topic_arn]
+  treat_missing_data  = "notBreaching"
+  tags                = var.tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "cf_error_rate" {
+  alarm_name          = "${var.project_name}-cf-error-rate"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "5xxErrorRate"
+  namespace           = "AWS/CloudFront"
+  period              = 300
+  statistic           = "Average"
+  threshold           = 5
+  alarm_description   = "CloudFront 5xx error rate exceeded 5%"
+  alarm_actions       = [module.observability.sns_topic_arn]
+  treat_missing_data  = "notBreaching"
+  tags                = var.tags
+}
