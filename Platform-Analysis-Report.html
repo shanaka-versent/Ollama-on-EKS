@@ -94,9 +94,9 @@ footer{text-align:center;color:var(--muted);font-size:0.8rem;margin:40px 0 20px}
 <div class="stat-bar">
   <div style="background:var(--crit);flex:8" onclick="switchTab('critical')">8 Critical (4 Fixed, 4 Deferred)</div>
   <div style="background:var(--high);flex:14" onclick="switchTab('high')">14 High (All Fixed)</div>
-  <div style="background:var(--med);color:#000;flex:18" onclick="switchTab('medium')">18 Medium</div>
+  <div style="background:var(--med);color:#000;flex:18" onclick="switchTab('medium')">18 Medium (2 Fixed)</div>
   <div style="background:var(--low);flex:12" onclick="switchTab('low')">12 Low</div>
-  <div style="background:var(--cost);flex:7" onclick="switchTab('cost')">7 Cost Opts</div>
+  <div style="background:var(--cost);flex:7" onclick="switchTab('cost')">7 Cost Opts (2 Fixed)</div>
   <div style="background:var(--arch);flex:9" onclick="switchTab('arch')">9 Arch Improvements</div>
 </div>
 
@@ -104,9 +104,9 @@ footer{text-align:center;color:var(--muted);font-size:0.8rem;margin:40px 0 20px}
 <div class="tabs">
   <div class="tab active" data-tab="critical" onclick="switchTab('critical')">Critical (4/8 Fixed)</div>
   <div class="tab" data-tab="high" onclick="switchTab('high')">High (14/14 Fixed)</div>
-  <div class="tab" data-tab="medium" onclick="switchTab('medium')">Medium (18)</div>
+  <div class="tab" data-tab="medium" onclick="switchTab('medium')">Medium (2/18 Fixed)</div>
   <div class="tab" data-tab="low" onclick="switchTab('low')">Low (12)</div>
-  <div class="tab" data-tab="cost" onclick="switchTab('cost')">Cost Opts (7)</div>
+  <div class="tab" data-tab="cost" onclick="switchTab('cost')">Cost Opts (2/7 Fixed)</div>
   <div class="tab" data-tab="arch" onclick="switchTab('arch')">Architecture (9)</div>
   <div class="tab" data-tab="actions" onclick="switchTab('actions')">Action Plan</div>
 </div>
@@ -1087,7 +1087,7 @@ action_to_use { block {} }</code></pre></div></details>
 
 <details class="sev-med"><summary><span class="badge b-med">MED</span> 3. API Gateway Log Retention Only 30 Days</summary><div class="detail-body"><p class="file">terraform/modules/api-gateway/main.tf:311</p><p>Increase to 90 days for compliance. Add S3 export for long-term archival.</p><pre><code>retention_in_days = 90</code></pre></div></details>
 
-<details class="sev-med"><summary><span class="badge b-med">MED</span> 4. SNS Alert Topic Not Encrypted</summary><div class="detail-body"><p class="file">terraform/modules/observability/main.tf:51</p><pre><code>resource "aws_sns_topic" "alerts" {
+<details class="sev-med"><summary><span class="badge b-med">MED</span> 4. SNS Alert Topic Not Encrypted &mdash; <span class="badge b-low">FIXED</span></summary><div class="detail-body"><p class="file">terraform/modules/observability/main.tf:51</p><pre><code>resource "aws_sns_topic" "alerts" {
   name              = "${var.project_name}-alerts"
   kms_master_key_id = "alias/aws/sns"   # ADD THIS
 }</code></pre></div></details>
@@ -1300,7 +1300,7 @@ resource "aws_cloudfront_cache_policy" "short_ttl" {
 }</code></pre>
 </div></details>
 
-<details class="sev-cost"><summary><span class="badge b-cost">COST</span> 3. Add DynamoDB VPC Endpoint</summary><div class="detail-body">
+<details class="sev-cost"><summary><span class="badge b-cost">COST</span> 3. Add DynamoDB VPC Endpoint &mdash; <span class="badge b-low">FIXED</span></summary><div class="detail-body">
 <p><strong>Current:</strong> API Key Portal DynamoDB traffic routes through NAT Gateway ($0.045/GB).</p>
 <p><strong>Savings:</strong> ~$2/mo.</p>
 <pre><code># terraform/modules/vpc/main.tf
@@ -1333,7 +1333,7 @@ variable "prometheus_retention_days" {
 <p><strong>Prerequisite:</strong> Requires HPA + pod lifecycle management. More complex than GPU scale-to-zero. Defer to Phase 2.</p>
 </div></details>
 
-<details class="sev-cost"><summary><span class="badge b-cost">COST</span> 7. Disable WAF Bot Control (If Not Needed)</summary><div class="detail-body">
+<details class="sev-cost"><summary><span class="badge b-cost">COST</span> 7. Disable WAF Bot Control (If Not Needed) &mdash; <span class="badge b-low">FIXED</span></summary><div class="detail-body">
 <p><strong>Current:</strong> Bot Control variable defaults to <code>false</code> &mdash; already correct.</p>
 <p><strong>Savings:</strong> $10/mo if someone accidentally enables it. Add a comment in variables.tf documenting that it's intentionally disabled.</p>
 </div></details>
