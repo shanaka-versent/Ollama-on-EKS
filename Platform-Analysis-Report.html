@@ -92,7 +92,7 @@ footer{text-align:center;color:var(--muted);font-size:0.8rem;margin:40px 0 20px}
 
 <!-- STAT BAR (clickable) -->
 <div class="stat-bar">
-  <div style="background:var(--crit);flex:8" onclick="switchTab('critical')">8 Critical (3 Fixed, 1 Deferred)</div>
+  <div style="background:var(--crit);flex:8" onclick="switchTab('critical')">8 Critical (3 Fixed, 2 Deferred)</div>
   <div style="background:var(--high);flex:14" onclick="switchTab('high')">14 High</div>
   <div style="background:var(--med);color:#000;flex:18" onclick="switchTab('medium')">18 Medium</div>
   <div style="background:var(--low);flex:12" onclick="switchTab('low')">12 Low</div>
@@ -391,7 +391,7 @@ livenessProbe:
 </details>
 
 <details class="sev-crit">
-<summary><span class="badge b-crit">CRIT</span> 5. Single AZ System Nodes</summary>
+<summary><span class="badge b-crit">CRIT</span> 5. Single AZ System Nodes &mdash; <span class="badge b-info">DEFERRED</span></summary>
 <div class="detail-body">
 <p class="file">k8s/nodepools/system-nodepool.yaml</p>
 <p><strong>Risk:</strong> All system pods (CoreDNS, Istio, ArgoCD, Prometheus, Open WebUI) in <code>ap-southeast-2a</code>. AZ failure = complete platform outage, 30+ min RTO.</p>
@@ -463,7 +463,13 @@ topologySpreadConstraints:
         app: open-webui</code></pre>
 </div>
 </div>
-<p><strong>Cost:</strong> +$60/mo (second t3.xlarge). <strong>Benefit:</strong> 99.99% system availability.</p>
+<h4>Decision: Accepted Risk</h4>
+<div style="background:#f0f9ff;border:1px solid #0dcaf0;border-radius:8px;padding:12px;margin:12px 0">
+<p><strong>Status: Deferred</strong> &mdash; Single AZ accepted for cost reduction. Multi-AZ system nodes would add +$60/mo (second t3.xlarge always-on) which is a 20% increase on the current $288/mo DEV cost. The platform is used for internal consulting engagements with no external SLA — brief AZ outages (rare, ~1-2 per year in ap-southeast-2) are tolerable.</p>
+<p><strong>Current mitigation:</strong> GPU NodePool already spans multi-AZ (<code>2a</code> + <code>2b</code>) for spot availability. Only system pods are single-AZ. Karpenter auto-provisions a replacement system node if the current one fails (~2-3 min recovery).</p>
+<p><strong>Revisit when:</strong> Moving to production with client-facing SLA, or if AZ-a experiences an outage that impacts an engagement.</p>
+</div>
+<p><strong>Cost if implemented:</strong> +$60/mo (second t3.xlarge). <strong>Benefit:</strong> 99.99% system availability.</p>
 <p><strong>Note:</strong> Open WebUI PVC (EBS) is AZ-bound. Either: (a) use EFS for cross-AZ access, or (b) keep Open WebUI pinned to 2a and accept UI downtime during 2a outage while GPU API (in 2b) stays up.</p>
 </div>
 </details>
