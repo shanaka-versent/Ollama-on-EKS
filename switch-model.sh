@@ -35,6 +35,25 @@ OLLAMA_URL="http://localhost:11434"
 KEDA_NAMESPACE="ollama"
 KEDA_SCALEDOBJECT="ollama-autoscaler"
 
+# Safety trap: if script is interrupted (Ctrl+C, terminal close, kill),
+# unpause KEDA so it can scale to zero. Without this, KEDA stays paused
+# and the GPU node runs at $0.35-$1.90/hr until someone notices.
+KEDA_WAS_PAUSED_BY_US=false
+cleanup_on_interrupt() {
+  echo ""
+  echo -e "  ${RED}Interrupted!${NC} Ensuring KEDA is unpaused..."
+  if $KEDA_WAS_PAUSED_BY_US; then
+    kubectl annotate scaledobject "$KEDA_SCALEDOBJECT" -n "$KEDA_NAMESPACE" \
+      autoscaling.keda.sh/paused- \
+      --overwrite 2>/dev/null || true
+    echo -e "  ${GREEN}✓${NC} KEDA unpaused — will scale to zero after idle timeout"
+  fi
+  # Kill any port-forward we started
+  pkill -f "kubectl port-forward.*ollama.*11434" 2>/dev/null || true
+  exit 1
+}
+trap cleanup_on_interrupt INT TERM
+
 # ============================================================
 # Model Tiers — Hardware & Resource Requirements
 # ============================================================
@@ -179,6 +198,7 @@ pause_keda() {
   echo -e "  ${YELLOW}⏸${NC}  Pausing KEDA auto-scaler..."
   kubectl annotate scaledobject "$KEDA_SCALEDOBJECT" -n "$KEDA_NAMESPACE" \
     autoscaling.keda.sh/paused="true" --overwrite 2>/dev/null || true
+  KEDA_WAS_PAUSED_BY_US=true
   echo -e "  ${GREEN}✓${NC} KEDA paused (won't scale to zero during switch)"
 }
 

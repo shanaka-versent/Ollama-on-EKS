@@ -19,6 +19,24 @@ RED='\033[0;31m'
 BOLD='\033[1m'
 NC='\033[0m'
 
+# Safety trap: if script is interrupted (Ctrl+C, terminal close, kill),
+# unpause KEDA so it can scale to zero. Without this, KEDA stays paused
+# and the GPU node runs at $0.35-$1.90/hr until someone notices.
+KEDA_WAS_PAUSED=false
+cleanup_on_interrupt() {
+  echo ""
+  echo -e "  ${RED}Interrupted!${NC} Ensuring KEDA is unpaused..."
+  if $KEDA_WAS_PAUSED; then
+    kubectl annotate scaledobject ollama-autoscaler -n ollama \
+      autoscaling.keda.sh/paused- \
+      gpu-controller/paused-at- \
+      --overwrite 2>/dev/null || true
+    echo -e "  ${GREEN}✓${NC} KEDA unpaused — will scale to zero after idle timeout"
+  fi
+  exit 1
+}
+trap cleanup_on_interrupt INT TERM
+
 echo ""
 echo "========================================"
 echo "  Scale Up — Start Ollama GPU Node"
@@ -57,6 +75,7 @@ PAUSE_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 if kubectl annotate scaledobject ollama-autoscaler -n ollama \
   autoscaling.keda.sh/paused="true" \
   gpu-controller/paused-at="$PAUSE_TIME" --overwrite 2>/dev/null; then
+  KEDA_WAS_PAUSED=true
   echo -e "  ${GREEN}✓${NC} KEDA paused (safety check will auto-unpause after 15 min)"
 else
   echo -e "  ${YELLOW}⚠${NC} KEDA ScaledObject not found (KEDA may not be deployed yet)"
