@@ -289,7 +289,7 @@
                     ISTIO["Istio Gateway\nAmbient mTLS"]
                     OLLAMA["Ollama Pod\nv0.18.2 · NVIDIA A10G"]
                     EBS["EBS gp3-ephemeral 200GB\n6000 IOPS · 400 MB/s\nEphemeral from Snapshot"]
-                    WEBUI["Open WebUI v0.8.10\nCustom Login Portal"]
+                    WEBUI["Open WebUI v0.8.12\nCustom Login Portal"]
                     COG["Cognito User Pool\nOAuth/OIDC + TOTP MFA"]
                     MON["Prometheus + DCGM\n→ AMP → AMG (SSO)"]
                 end
@@ -469,6 +469,92 @@ Grafana: Admin → AWS Managed Grafana (AMG) URL → IAM Identity Center SSO
 <p><strong>How it works:</strong> The script pauses KEDA → patches Ollama deployment GPU/memory/CPU → Karpenter provisions the right node → loads the model → resumes KEDA. Cost stays DEV-level by default; flagship costs more only while actively in use. After 15 min idle, KEDA + Karpenter tear everything down to $0/hr regardless of tier.</p>
 <p><strong>Prereq:</strong> AWS GPU quota (<code>L-3819A6DF</code>) must be ≥ 48 vCPUs for Tier 3. Request via Service Quotas console (1-3 day approval).</p>
 </blockquote>
+<h3 id="gpu-pod-storage-lifecycle">GPU Pod &amp; Storage Lifecycle</h3>
+<div class="mermaid">flowchart TB
+    subgraph TRIGGER["Scale-Up Trigger"]
+        MANUAL["scripts/scale-up.sh<br/>(manual)"]
+        SWITCH["switch-model.sh use &lt;tier&gt;<br/>(tier change)"]
+    end
+
+    subgraph PROVISION["Node Provisioning"]
+        KEDA_UP["KEDA: replicas 0 → 1"]
+        KARP["Karpenter detects<br/>pending Ollama pod"]
+        SPOT{"Spot<br/>available?"}
+        SPOT_Y["Provision spot instance<br/>(~65% savings)"]
+        SPOT_N["Fallback: on-demand<br/>(GPUOnDemandFallback alert)"]
+        NODE["GPU Node Ready<br/>g5.xlarge (1x A10G) or<br/>g5.12xlarge (4x A10G)"]
+    end
+
+    subgraph STORAGE["EBS Storage (per pod, ephemeral)"]
+        SNAP["EBS Snapshot<br/>(region-level, pre-loaded<br/>with all 3 Qwen models)"]
+        VOL["Ephemeral Volume Created<br/>200GB gp3<br/>6000 IOPS · 400 MB/s"]
+        LAZY["Snapshot Lazy-Loading<br/>(fetched from S3 on first read,<br/>cached locally on volume)"]
+    end
+
+    subgraph POD["Ollama Pod Startup"]
+        SCHED["Pod scheduled on GPU node<br/>(nodeSelector + GPU taint toleration)"]
+        MOUNT["Volume mounted at<br/>/root/.ollama/models"]
+        LOADER["Model Loader Job<br/>(ollama pull — hits local disk)"]
+        VRAM["Model weights loaded<br/>into GPU VRAM"]
+        READY["Ollama Ready<br/>Inference serving on :11434"]
+    end
+
+    subgraph MODELS["Qwen Models on Snapshot"]
+        M1["qwen3.5:27b<br/>Tier 1 — 16GB on disk"]
+        M2["qwen3-coder:30b-a3b<br/>Tier 2 — 17GB on disk"]
+        M3["qwen3.5:122b-a10b<br/>Tier 3 — 65GB on disk"]
+    end
+
+    subgraph TEARDOWN["Scale-Down (automatic)"]
+        IDLE["15 min no requests"]
+        KEDA_DN["KEDA: replicas 1 → 0"]
+        DRAIN["Pod terminated<br/>Ephemeral volume DELETED"]
+        KARP_DN["Karpenter: node empty<br/>for 10 min → terminate"]
+        ZERO["$0/hr GPU cost"]
+    end
+
+    MANUAL --> KEDA_UP
+    SWITCH --> KEDA_UP
+    KEDA_UP --> KARP
+    KARP --> SPOT
+    SPOT -->|Yes| SPOT_Y --> NODE
+    SPOT -->|No| SPOT_N --> NODE
+
+    SNAP -->|"Create volume in<br/>same AZ as node"| VOL
+    VOL --> LAZY
+    NODE --> SCHED
+    SCHED --> MOUNT
+    LAZY --> MOUNT
+    MOUNT --> LOADER
+    LOADER --> VRAM
+    VRAM --> READY
+
+    SNAP --- MODELS
+
+    READY --> IDLE
+    IDLE --> KEDA_DN
+    KEDA_DN --> DRAIN
+    DRAIN --> KARP_DN
+    KARP_DN --> ZERO
+
+    style TRIGGER fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    style PROVISION fill:#fff3e0,stroke:#f97316,stroke-width:2px
+    style STORAGE fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style POD fill:#ede9fe,stroke:#6366f1,stroke-width:2px
+    style MODELS fill:#f0fdf4,stroke:#10b981,stroke-width:2px
+    style TEARDOWN fill:#fef2f2,stroke:#ef4444,stroke-width:2px
+    style SNAP fill:#2e7d32,color:#fff
+    style NODE fill:#f97316,color:#fff
+    style READY fill:#6366f1,color:#fff
+    style ZERO fill:#ef4444,color:#fff
+</div>
+
+<p><strong>Key points:</strong>
+- <strong>Ephemeral volumes</strong> — each Ollama pod gets a fresh EBS volume from the pre-loaded snapshot. Volume is deleted on pod termination; the snapshot preserves models permanently
+- <strong>All 3 Qwen models</strong> are pre-loaded on the snapshot (~100GB total). Only the active tier's model is loaded into GPU VRAM; others sit on disk ready for instant switching
+- <strong>Region-level snapshot</strong> — volume is created in whichever AZ Karpenter places the GPU node (enables multi-AZ spot)
+- <strong>Lazy-loading</strong> — EBS snapshots use S3-backed lazy loading. The high-throughput gp3 config (400 MB/s, 6000 IOPS) compensates for first-read latency
+- <strong>Cold start ~3 min</strong> (snapshot restore + model load to VRAM) vs 15-25 min if downloading from internet</p>
 <h3 id="single-stack-architecture">Single-Stack Architecture</h3>
 <p>One stack handles all tiers — no separate DEV/PROD overlays needed:</p>
 <ul>
