@@ -53,9 +53,11 @@ prometheus:
         cpu: "500m"
         memory: "1Gi"
 
-    # Scrape interval — 15m reduces AMP ingestion cost (~60x vs 15s)
+    # Global scrape interval — 15m for services that don't need fast scraping
+    # (kubeApiServer, coreDns). kubelet and kube-state-metrics override below.
     scrapeInterval: "15m"
-    evaluationInterval: "15m"
+    # Alert evaluation — 1m so alerts fire within minutes, not 15m
+    evaluationInterval: "1m"
 
     # Tolerate CriticalAddonsOnly taint on system nodes
     tolerations:
@@ -319,20 +321,23 @@ prometheus-node-exporter:
       effect: NoSchedule
 
 # ──────────────────────────────────────────────────────────────────────
-# Heavyweight ServiceMonitors — scrape every 1h to stay within AMP free tier
-# These generate ~100K+ series but are rarely needed for dashboards/alerts
+# ServiceMonitor overrides — balance scrape frequency vs AMP cost
 # ──────────────────────────────────────────────────────────────────────
 kubeApiServer:
   serviceMonitor:
-    interval: "1h"
+    interval: "1h"  # Rarely needed; control plane is AWS-managed
 
 kubelet:
   serviceMonitor:
-    interval: "1h"
+    # 30s — required for KEDA autoscaling. container_cpu_usage_seconds_total
+    # comes from cadvisor (kubelet). KEDA's rate(...[5m]) needs 2+ data points
+    # in the window. Zero AMP cost — container_* metrics are NOT in the
+    # writeRelabelConfigs keep regex, so they stay local to Prometheus only.
+    interval: "30s"
 
 coreDns:
   serviceMonitor:
-    interval: "1h"
+    interval: "1h"  # Rarely needed for dashboards/alerts
 
 kubeEtcd:
   enabled: false  # Not accessible on EKS managed control plane

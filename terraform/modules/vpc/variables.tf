@@ -29,6 +29,12 @@ variable "enable_nat_gateway" {
   default     = true
 }
 
+variable "enable_gpu_az_c" {
+  description = "Add private subnet in AZ c for GPU spot availability"
+  type        = bool
+  default     = false
+}
+
 variable "tags" {
   description = "Tags for resources"
   type        = map(string)

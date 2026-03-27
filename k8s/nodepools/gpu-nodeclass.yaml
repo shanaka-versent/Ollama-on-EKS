@@ -19,10 +19,11 @@ metadata:
 spec:
   # IAM role for GPU nodes (same role as system nodes, managed by EKS Auto Mode)
   role: role-eks-node-ollama-dev
-  # Subnets — same as default NodeClass (Auto Mode selected these for the cluster)
+  # Subnets — private subnets across 3 AZs for GPU spot availability
   subnetSelectorTerms:
-    - id: subnet-0dd32354ab85b57cd
-    - id: subnet-066f317903382d947
+    - id: subnet-0dd32354ab85b57cd  # ap-southeast-2a
+    - id: subnet-066f317903382d947  # ap-southeast-2b
+    - id: subnet-0187462fa039a14c6  # ap-southeast-2c
   # Security group — same as default NodeClass
   securityGroupSelectorTerms:
     - id: sg-0fb86f09fddc0fd08
