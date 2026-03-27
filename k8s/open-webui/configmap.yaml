@@ -1,0 +1,56 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: open-webui-config
+  namespace: open-webui
+  labels:
+    app: open-webui
+data:
+  # === Timeouts ===
+  # General request timeout — high for inference + cold-start model loading (~2-4 min)
+  AIOHTTP_CLIENT_TIMEOUT: "300"
+  # Model list timeout — short so WebUI loads even when Ollama is scaled to 0
+  AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST: "3"
+
+  # === Streaming ===
+  # WebSocket disabled — CloudFront VPC Origins don't support WebSocket upgrade.
+  # Socket.io uses HTTP long-polling instead. Without this, socket.io silently
+  # fails and chat falls back to SSE (triggers frontend JSON parse bug).
+  ENABLE_WEBSOCKET_SUPPORT: "false"
+
+  # === Features (air-gap compliant) ===
+  ENABLE_RAG_WEB_SEARCH: "false"
+  ENABLE_IMAGE_GENERATION: "false"
+
+  # === Telemetry ===
+  SCARF_NO_ANALYTICS: "true"
+  DO_NOT_TRACK: "true"
+
+  # === Models ===
+  # Default model shown to users (switch-model.sh updates this on tier change)
+  DEFAULT_MODELS: "qwen3.5:27b"
+  # Model filtering — shows only models the hardware can run
+  # Tier 1/2 (1 GPU): qwen3.5:27b;qwen3-coder:30b-a3b
+  # Tier 3 (4 GPUs): add qwen3.5:122b-a10b
+  # Admins see all models regardless
+  MODEL_FILTER_ENABLED: "true"
+  MODEL_FILTER_LIST: "qwen3.5:27b;qwen3-coder:30b-a3b"
+
+  # === Auth Config (Cognito integration) ===
+  # Auto-activate OAuth users — Cognito group membership is the gate
+  DEFAULT_USER_ROLE: "user"
+  # Disable local login/signup — all auth via Cognito custom portal
+  ENABLE_SIGNUP: "false"
+  ENABLE_LOGIN_FORM: "false"
+  ENABLE_PASSWORD_AUTH: "false"
+  ENABLE_OAUTH_SIGNUP: "true"
+  OAUTH_MERGE_ACCOUNTS_BY_EMAIL: "true"
+  OAUTH_PROVIDER_NAME: "Sign in to Open WebUI"
+  # Role management from Cognito groups — synced on every login
+  ENABLE_OAUTH_ROLE_MANAGEMENT: "true"
+  OAUTH_ROLES_CLAIM: "cognito:groups"
+  OAUTH_ADMIN_ROLES: "admin"
+  OAUTH_ALLOWED_ROLES: "admin,user"
+  # Admin panel restrictions
+  ENABLE_ADMIN_CHAT_ACCESS: "false"
+  ENABLE_ADMIN_EXPORT: "false"

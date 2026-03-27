@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ollama-config
+  namespace: ollama
+  labels:
+    app: ollama
+data:
+  # === Tunable Parameters ===
+  # Edit these at runtime: kubectl edit configmap ollama-config -n ollama
+  # Then restart pod: kubectl rollout restart deploy/ollama -n ollama
+
+  # How long to keep model in memory after last request
+  OLLAMA_KEEP_ALIVE: "24h"
+  # Max concurrent inference requests
+  OLLAMA_NUM_PARALLEL: "4"
+  # Max models loaded in VRAM simultaneously
+  OLLAMA_MAX_LOADED_MODELS: "1"
+  # Context window — num_parallel × context determines KV cache size
+  # qwen3.5:122b-a10b (MoE, 10B active) fits on 4x A10G with 32K context
+  OLLAMA_CONTEXT_LENGTH: "32768"
+  # Log level — INFO for audit trail (inference requests logged to stdout)
+  OLLAMA_LOG_LEVEL: "INFO"
