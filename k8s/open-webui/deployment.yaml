@@ -32,13 +32,10 @@ spec:
       # Run on system nodes (no GPU needed)
       nodeSelector:
         kubernetes.io/arch: amd64
-      # Security: run as non-root (CIS Benchmark 5.2.6)
-      # fsGroup ensures PVC is writable by UID 1000
+      # Security: hardened root — Open WebUI image requires UID 0 for
+      # internal writes to /app/backend/ (outside PVC mount). Hardened
+      # by dropping ALL capabilities and blocking privilege escalation.
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
-        runAsGroup: 1000
-        fsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -47,6 +44,7 @@ spec:
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
             capabilities:
               drop: ["ALL"]
           ports:
