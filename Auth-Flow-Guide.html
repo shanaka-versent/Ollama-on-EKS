@@ -534,7 +534,7 @@ sequenceDiagram
 flowchart LR
     A["OAuth Callback"] -->|Set-Cookie: token| B["Browser Cookie"]
     B -->|JS reads cookie| C["localStorage.token"]
-    C -->|auth: {token}| D["Socket.io Handshake"]
+    C -->|"auth: #123;token#125;"| D["Socket.io Handshake"]
     C -->|Authorization: Bearer| E["API Calls"]
     B -->|CloudFront checks cookie| F["CloudFront Function"]
 
