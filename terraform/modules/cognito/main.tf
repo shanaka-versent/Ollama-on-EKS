@@ -305,7 +305,8 @@ resource "aws_lambda_function" "pre_signup" {
 
   environment {
     variables = {
-      SNS_TOPIC_ARN = aws_sns_topic.signup_notifications.arn
+      SNS_TOPIC_ARN          = aws_sns_topic.signup_notifications.arn
+      ALLOWED_EMAIL_DOMAINS  = var.allowed_email_domains
     }
   }
 
@@ -327,6 +328,16 @@ sns = boto3.client('sns')
 def handler(event, context):
     """Pre Sign-up trigger: auto-confirm user and notify admin via SNS."""
     email = event['request']['userAttributes'].get('email', 'unknown')
+
+    # Email domain validation — restrict signups to approved domains
+    # Set ALLOWED_EMAIL_DOMAINS env var (comma-separated) to enforce.
+    # Empty = allow all domains (default, backwards compatible).
+    allowed_domains = os.environ.get('ALLOWED_EMAIL_DOMAINS', '').strip()
+    if allowed_domains:
+        domain = email.split('@')[-1].lower()
+        allowed = [d.strip().lower() for d in allowed_domains.split(',') if d.strip()]
+        if allowed and domain not in allowed:
+            raise Exception(f'Signup restricted to approved email domains')
 
     # Auto-confirm and auto-verify email
     event['response']['autoConfirmUser'] = True

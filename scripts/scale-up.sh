@@ -102,6 +102,13 @@ while true; do
     echo -e "  ${RED}✗ Timeout after 10 min. Check: kubectl get pods -n ollama${NC}"
     exit 1
   fi
+  # Refresh KEDA pause timestamp every 5 min to prevent EventBridge
+  # safety timer from unpausing KEDA mid-startup (race condition fix)
+  if (( SECONDS % 300 < 15 && SECONDS > 60 )); then
+    PAUSE_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    kubectl annotate scaledobject ollama-autoscaler -n ollama \
+      gpu-controller/paused-at="$PAUSE_TIME" --overwrite 2>/dev/null || true
+  fi
   echo -n "."
   sleep 10
 done

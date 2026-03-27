@@ -286,7 +286,14 @@ deploy_infrastructure() {
         rm -f terraform.tfvars.bak
 
         log "Running Phase 2 apply (Cognito callbacks + portal CORS)..."
-        terraform apply -auto-approve 2>&1 | tail -3
+        if ! terraform apply -auto-approve 2>&1 | tee /tmp/tf-phase2.log | tail -5; then
+            error "Phase 2 terraform apply failed."
+            error "Log: /tmp/tf-phase2.log"
+            error "To retry: cd terraform && terraform apply -auto-approve"
+            error "To rollback Phase 1: cd terraform && terraform destroy -target=module.cdn_waf -target=module.api_gateway -auto-approve"
+            cd "$REPO_DIR"
+            return 1
+        fi
         log "Phase 2 apply complete"
     else
         warn "Could not get CloudFront domain — Cognito callbacks will need manual wiring"

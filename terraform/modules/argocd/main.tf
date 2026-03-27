@@ -34,14 +34,21 @@ resource "helm_release" "argocd" {
       }
 
       server = {
-        # Disable TLS on the ArgoCD server — access via port-forward or ingress
-        extraArgs = ["--insecure"]
+        # Internal access only (kubectl port-forward). Self-signed cert from
+        # K8s secrets is sufficient — removes --insecure for TLS in-transit.
+        # extraArgs = ["--insecure"]  # REMOVED: CIS finding — no TLS
       }
 
       configs = {
         params = {
           # Allow ArgoCD to manage resources in all namespaces
           "application.namespaces" = "*"
+        }
+        rbac = {
+          # Default all authenticated users to read-only.
+          # Only ArgoCD admin (initial-admin-secret) can modify apps.
+          "policy.default" = "role:readonly"
+          "policy.csv"     = "g, admin, role:admin"
         }
       }
     })

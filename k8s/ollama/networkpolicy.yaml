@@ -39,12 +39,11 @@ spec:
         - port: 11434
           protocol: TCP
   egress:
-    # DNS resolution (kube-dns / CoreDNS)
+    # DNS resolution only — Ollama is a server (receives requests,
+    # never initiates outbound). Broad intra-cluster egress removed
+    # to limit lateral movement if container is compromised.
     - ports:
         - port: 53
           protocol: UDP
         - port: 53
           protocol: TCP
-    # Intra-cluster traffic only (no internet egress)
-    - to:
-        - namespaceSelector: {}

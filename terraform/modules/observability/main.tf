@@ -49,9 +49,10 @@ resource "helm_release" "dcgm_exporter" {
 #    Alertmanager → SNS → Email for spot failures, cost warnings, etc.
 # ──────────────────────────────────────────────────────────────────────
 resource "aws_sns_topic" "alerts" {
-  count = var.alert_email != "" ? 1 : 0
-  name  = "${var.eks_cluster_name}-alerts"
-  tags  = var.tags
+  count             = var.alert_email != "" ? 1 : 0
+  name              = "${var.eks_cluster_name}-alerts"
+  kms_master_key_id = "alias/aws/sns"
+  tags              = var.tags
 }
 
 resource "aws_sns_topic_subscription" "alert_email" {

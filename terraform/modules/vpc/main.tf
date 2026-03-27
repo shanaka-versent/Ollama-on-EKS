@@ -147,6 +147,22 @@ resource "aws_vpc_endpoint_route_table_association" "s3_private" {
   vpc_endpoint_id = aws_vpc_endpoint.s3.id
 }
 
+# DynamoDB Gateway Endpoint (free — routes DynamoDB traffic through AWS backbone)
+# API Key Portal uses DynamoDB for key metadata; bypasses NAT Gateway.
+resource "aws_vpc_endpoint" "dynamodb" {
+  vpc_id       = aws_vpc.main.id
+  service_name = "com.amazonaws.${data.aws_region.current.name}.dynamodb"
+
+  tags = merge(var.tags, {
+    Name = "vpce-dynamodb-${var.name_prefix}"
+  })
+}
+
+resource "aws_vpc_endpoint_route_table_association" "dynamodb_private" {
+  route_table_id  = aws_route_table.private.id
+  vpc_endpoint_id = aws_vpc_endpoint.dynamodb.id
+}
+
 # Additional private subnet in ap-southeast-2c for GPU spot availability.
 # Added as standalone resource (not in the count loop) to avoid CIDR
 # re-indexing that would destroy existing subnets in 2a/2b.
