@@ -92,7 +92,7 @@ footer{text-align:center;color:var(--muted);font-size:0.8rem;margin:40px 0 20px}
 
 <!-- STAT BAR (clickable) -->
 <div class="stat-bar">
-  <div style="background:var(--crit);flex:8" onclick="switchTab('critical')">8 Critical</div>
+  <div style="background:var(--crit);flex:8" onclick="switchTab('critical')">8 Critical (3 Fixed, 1 Deferred)</div>
   <div style="background:var(--high);flex:14" onclick="switchTab('high')">14 High</div>
   <div style="background:var(--med);color:#000;flex:18" onclick="switchTab('medium')">18 Medium</div>
   <div style="background:var(--low);flex:12" onclick="switchTab('low')">12 Low</div>
@@ -102,7 +102,7 @@ footer{text-align:center;color:var(--muted);font-size:0.8rem;margin:40px 0 20px}
 
 <!-- TAB BAR -->
 <div class="tabs">
-  <div class="tab active" data-tab="critical" onclick="switchTab('critical')">Critical (8)</div>
+  <div class="tab active" data-tab="critical" onclick="switchTab('critical')">Critical (3/8 Fixed)</div>
   <div class="tab" data-tab="high" onclick="switchTab('high')">High (14)</div>
   <div class="tab" data-tab="medium" onclick="switchTab('medium')">Medium (18)</div>
   <div class="tab" data-tab="low" onclick="switchTab('low')">Low (12)</div>
@@ -117,7 +117,7 @@ footer{text-align:center;color:var(--muted);font-size:0.8rem;margin:40px 0 20px}
 <div class="tab-panel active" id="panel-critical">
 
 <details class="sev-crit" open>
-<summary><span class="badge b-crit">CRIT</span> 1. Containers Run as Root (No SecurityContext)</summary>
+<summary><span class="badge b-crit">CRIT</span> 1. Containers Run as Root (No SecurityContext) &mdash; <span class="badge b-low">FIXED</span></summary>
 <div class="detail-body">
 <p class="file">k8s/ollama/deployment.yaml, k8s/open-webui/deployment.yaml, k8s/model-loader/job.yaml</p>
 <p><strong>Risk:</strong> All containers run as UID 0. Container escape = full node compromise. Fails CIS Kubernetes Benchmark 5.2.6.</p>
@@ -190,7 +190,7 @@ containers:
 </details>
 
 <details class="sev-crit">
-<summary><span class="badge b-crit">CRIT</span> 2. GitHub Actions IAM: PowerUserAccess</summary>
+<summary><span class="badge b-crit">CRIT</span> 2. GitHub Actions IAM: PowerUserAccess &mdash; <span class="badge b-low">FIXED</span></summary>
 <div class="detail-body">
 <p class="file">terraform/modules/iam/main.tf:189</p>
 <p><strong>Risk:</strong> Compromised GitHub workflow token = full AWS account access (everything except IAM user creation).</p>
@@ -321,7 +321,7 @@ spec:
 </details>
 
 <details class="sev-crit">
-<summary><span class="badge b-crit">CRIT</span> 4. Missing Startup Probe on Ollama</summary>
+<summary><span class="badge b-crit">CRIT</span> 4. Missing Startup Probe on Ollama &mdash; <span class="badge b-low">FIXED</span></summary>
 <div class="detail-body">
 <p class="file">k8s/ollama/deployment.yaml:73-86</p>
 <p><strong>Risk:</strong> Model loading takes 2-4 minutes. Liveness probe fires at ~70s, marking pod unhealthy. Kubelet kills and restarts it &mdash; infinite restart loop on every cold start.</p>
