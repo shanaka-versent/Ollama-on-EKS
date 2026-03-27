@@ -184,10 +184,69 @@ resource "aws_iam_role" "github_actions_terraform" {
 # PowerUserAccess covers all services Terraform manages (VPC, EKS, API GW,
 # CloudFront, WAF, Cognito, Lambda, S3, DynamoDB, Prometheus, Grafana, etc.)
 # but blocks IAM-admin-level actions (creating/deleting IAM users/policies).
+# Explicit deny list below blocks services this project never uses — limits
+# blast radius if the GitHub OIDC token is compromised.
 resource "aws_iam_role_policy_attachment" "github_actions_power_user" {
   count      = var.enable_github_oidc ? 1 : 0
   policy_arn = "arn:aws:iam::aws:policy/PowerUserAccess"
   role       = aws_iam_role.github_actions_terraform[0].name
+}
+
+# Explicit deny for AWS services this project never touches.
+# Deny overrides PowerUserAccess allow — prevents lateral movement
+# if the GitHub Actions OIDC token is compromised.
+resource "aws_iam_role_policy" "github_actions_deny_unused" {
+  count = var.enable_github_oidc ? 1 : 0
+  name  = "deny-unused-services"
+  role  = aws_iam_role.github_actions_terraform[0].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "DenyUnusedServices"
+        Effect = "Deny"
+        Action = [
+          "rds:*",
+          "redshift:*",
+          "kinesis:*",
+          "sqs:*",
+          "elasticache:*",
+          "es:*",
+          "opensearch:*",
+          "kafka:*",
+          "mq:*",
+          "dax:*",
+          "neptune:*",
+          "docdb:*",
+          "lightsail:*",
+          "appstream:*",
+          "workspaces:*",
+          "chime:*",
+          "connect:*",
+          "pinpoint:*",
+          "organizations:*",
+          "account:*",
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "DenyDestructiveIAMActions"
+        Effect = "Deny"
+        Action = [
+          "iam:CreateUser",
+          "iam:DeleteUser",
+          "iam:CreateGroup",
+          "iam:DeleteGroup",
+          "iam:CreateAccessKey",
+          "iam:DeleteAccessKey",
+          "iam:DeactivateMFADevice",
+          "iam:DeleteVirtualMFADevice",
+        ]
+        Resource = "*"
+      },
+    ]
+  })
 }
 
 # Terraform needs IAM permissions for creating roles, policies, and OIDC
