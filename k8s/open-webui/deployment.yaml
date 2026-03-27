@@ -65,6 +65,12 @@ spec:
               value: "300"
             - name: AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST
               value: "3"
+            # WebSocket: disabled because CloudFront VPC Origins don't support
+            # WebSocket upgrade. Socket.io falls back to HTTP long-polling, which
+            # works through VPC Origins. Without this, socket.io silently fails
+            # and chat falls back to SSE which triggers a frontend JSON parse bug.
+            - name: ENABLE_WEBSOCKET_SUPPORT
+              value: "false"
             # Disable external connections (air-gap compliant)
             - name: ENABLE_RAG_WEB_SEARCH
               value: "false"
