@@ -18,7 +18,7 @@
 #
 # Instance types:
 #   g5.xlarge   — 1x A10G (24GB) — Tier 1 (27b) / Tier 2 (coder:30b)
-#   g5.2xlarge  — 1x A10G (24GB) — Same GPU, more CPU/RAM
+#   g5.2xlarge  — 1x A10G (24GB) — Same GPU, more CPU/RAM (spot fallback)
 #   g5.12xlarge — 4x A10G (96GB) — Tier 3 flagship (122b-a10b)
 apiVersion: karpenter.sh/v1
 kind: NodePool
@@ -66,13 +66,14 @@ spec:
             - on-demand
         # Multi-AZ for spot availability — GPU pod uses ephemeral volume
         # from EBS snapshot, so it can land in any AZ. System nodes stay
-        # in ap-southeast-2a; GPU node may land in 2a or 2b depending on
-        # spot capacity. Karpenter picks the cheapest option across AZs.
+        # in ap-southeast-2a; GPU node may land in 2a, 2b, or 2c depending
+        # on spot capacity. Karpenter picks the cheapest option across AZs.
         - key: topology.kubernetes.io/zone
           operator: In
           values:
             - ap-southeast-2a
             - ap-southeast-2b
+            - ap-southeast-2c
         - key: kubernetes.io/arch
           operator: In
           values: ["amd64"]

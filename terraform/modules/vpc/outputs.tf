@@ -17,8 +17,8 @@ output "public_subnet_ids" {
 }
 
 output "private_subnet_ids" {
-  description = "List of private subnet IDs"
-  value       = aws_subnet.private[*].id
+  description = "List of private subnet IDs (includes AZ c if enabled)"
+  value       = concat(aws_subnet.private[*].id, aws_subnet.private_2c[*].id)
 }
 
 output "private_subnet_cidrs" {

@@ -146,3 +146,26 @@ resource "aws_vpc_endpoint_route_table_association" "s3_private" {
   route_table_id  = aws_route_table.private.id
   vpc_endpoint_id = aws_vpc_endpoint.s3.id
 }
+
+# Additional private subnet in ap-southeast-2c for GPU spot availability.
+# Added as standalone resource (not in the count loop) to avoid CIDR
+# re-indexing that would destroy existing subnets in 2a/2b.
+# CIDR: 10.0.4.0/24 (next available after private[0]=10.0.2.0, private[1]=10.0.3.0)
+resource "aws_subnet" "private_2c" {
+  count             = var.enable_gpu_az_c ? 1 : 0
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = cidrsubnet(var.vpc_cidr, 8, var.az_count + var.az_count)
+  availability_zone = "${data.aws_region.current.name}c"
+
+  tags = merge(var.tags, {
+    Name                                        = "subnet-private-${var.name_prefix}-${data.aws_region.current.name}c"
+    "kubernetes.io/role/internal-elb"           = "1"
+    "kubernetes.io/cluster/${var.cluster_name}" = "shared"
+  })
+}
+
+resource "aws_route_table_association" "private_2c" {
+  count          = var.enable_gpu_az_c ? 1 : 0
+  subnet_id      = aws_subnet.private_2c[0].id
+  route_table_id = aws_route_table.private.id
+}

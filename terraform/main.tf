@@ -52,6 +52,7 @@ module "vpc" {
   az_count           = var.az_count
   cluster_name       = local.cluster_name
   enable_nat_gateway = var.enable_nat_gateway
+  enable_gpu_az_c    = true
   tags               = var.tags
 }
 
