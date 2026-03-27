@@ -5,44 +5,70 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Ollama-on-EKS — Platform Analysis Report</title>
 <style>
-  :root { --bg:#f8f9fa; --card:#fff; --border:#dee2e6; --text:#212529; --muted:#6c757d; --accent:#0d6efd; }
-  * { box-sizing:border-box; margin:0; padding:0; }
-  body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background:var(--bg); color:var(--text); line-height:1.6; }
-  .container { max-width:1100px; margin:0 auto; padding:24px; }
-  h1 { font-size:2rem; margin:32px 0 8px; border-bottom:3px solid var(--accent); padding-bottom:8px; }
-  h2 { font-size:1.5rem; margin:40px 0 12px; color:var(--accent); border-bottom:2px solid var(--border); padding-bottom:6px; }
-  h3 { font-size:1.15rem; margin:24px 0 8px; color:#495057; }
-  h4 { font-size:1rem; margin:16px 0 6px; color:var(--muted); }
-  p, li { margin-bottom:8px; }
-  ul, ol { padding-left:24px; }
-  a { color:var(--accent); }
-  table { width:100%; border-collapse:collapse; margin:16px 0; font-size:0.88rem; }
-  th, td { padding:8px 12px; text-align:left; border:1px solid var(--border); }
-  th { background:#e9ecef; font-weight:600; }
-  tr:nth-child(even) { background:#f1f3f5; }
-  code { background:#e9ecef; padding:2px 6px; border-radius:4px; font-size:0.85em; font-family:'SF Mono',Consolas,monospace; }
-  pre { background:#1e1e2e; color:#cdd6f4; padding:16px; border-radius:8px; overflow-x:auto; margin:12px 0; font-size:0.82rem; }
-  pre code { background:none; padding:0; color:inherit; }
-  .card { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:16px; margin:12px 0; box-shadow:0 1px 3px rgba(0,0,0,0.06); }
-  .sev-crit { border-left:4px solid #dc3545; background:#fef2f2; }
-  .sev-high { border-left:4px solid #fd7e14; background:#fff8f0; }
-  .sev-med { border-left:4px solid #ffc107; background:#fffde7; }
-  .sev-low { border-left:4px solid #198754; background:#f0fdf4; }
-  .sev-info { border-left:4px solid #0dcaf0; background:#f0f9ff; }
-  .badge { display:inline-block; padding:2px 8px; border-radius:12px; font-size:0.72rem; font-weight:700; vertical-align:middle; }
-  .b-crit { background:#dc3545; color:#fff; }
-  .b-high { background:#fd7e14; color:#fff; }
-  .b-med { background:#ffc107; color:#000; }
-  .b-low { background:#198754; color:#fff; }
-  .b-cost { background:#6f42c1; color:#fff; }
-  .grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
-  @media(max-width:768px){.grid-2{grid-template-columns:1fr;}}
-  .stat-bar { display:flex; gap:0; border-radius:8px; overflow:hidden; margin:16px 0; text-align:center; font-size:0.8rem; font-weight:700; color:#fff; }
-  .stat-bar div { padding:10px 4px; }
-  .toc { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:16px; margin:20px 0; column-count:2; }
-  .toc a { display:block; margin:3px 0; font-size:0.9rem; text-decoration:none; }
-  .toc a:hover { text-decoration:underline; }
-  footer { text-align:center; color:var(--muted); font-size:0.8rem; margin:40px 0 20px; }
+:root{--bg:#f8f9fa;--card:#fff;--border:#dee2e6;--text:#212529;--muted:#6c757d;--accent:#0d6efd;--crit:#dc3545;--high:#fd7e14;--med:#eab308;--low:#198754;--cost:#7c3aed;--arch:#0891b2}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.6}
+.container{max-width:1140px;margin:0 auto;padding:24px}
+h1{font-size:2rem;margin:24px 0 6px;border-bottom:3px solid var(--accent);padding-bottom:8px}
+h2{font-size:1.4rem;margin:30px 0 10px;color:var(--accent)}
+p,li{margin-bottom:6px}
+ul,ol{padding-left:22px}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+code{background:#e9ecef;padding:2px 6px;border-radius:4px;font-size:0.84em;font-family:'SF Mono','Fira Code',Consolas,monospace}
+pre{background:#1e1e2e;color:#cdd6f4;padding:14px;border-radius:8px;overflow-x:auto;margin:10px 0;font-size:0.82rem;line-height:1.5}
+pre code{background:none;padding:0;color:inherit}
+table{width:100%;border-collapse:collapse;margin:12px 0;font-size:0.86rem}
+th,td{padding:7px 10px;text-align:left;border:1px solid var(--border)}
+th{background:#e9ecef;font-weight:600}
+tr:nth-child(even){background:#f8f9fa}
+
+/* Stat bar */
+.stat-bar{display:flex;gap:0;border-radius:8px;overflow:hidden;margin:16px 0;text-align:center;font-size:0.82rem;font-weight:700;color:#fff;cursor:pointer}
+.stat-bar>div{padding:12px 4px;transition:filter .15s}
+.stat-bar>div:hover{filter:brightness(1.15)}
+
+/* Tabs */
+.tabs{display:flex;gap:0;border-bottom:2px solid var(--border);margin:20px 0 0;flex-wrap:wrap}
+.tab{padding:10px 18px;cursor:pointer;font-weight:600;font-size:0.9rem;border:2px solid transparent;border-bottom:none;border-radius:8px 8px 0 0;background:transparent;color:var(--muted);transition:all .15s;user-select:none}
+.tab:hover{background:#e9ecef}
+.tab.active{color:#fff;border-color:var(--border);border-bottom:2px solid var(--card);margin-bottom:-2px}
+.tab[data-tab="critical"].active{background:var(--crit)}
+.tab[data-tab="high"].active{background:var(--high)}
+.tab[data-tab="medium"].active{background:var(--med);color:#000}
+.tab[data-tab="low"].active{background:var(--low)}
+.tab[data-tab="cost"].active{background:var(--cost)}
+.tab[data-tab="arch"].active{background:var(--arch)}
+.tab[data-tab="actions"].active{background:var(--accent)}
+.tab-panel{display:none;padding:16px 0}
+.tab-panel.active{display:block}
+
+/* Collapsible */
+details{margin:10px 0;border:1px solid var(--border);border-radius:8px;background:var(--card);box-shadow:0 1px 3px rgba(0,0,0,.05)}
+details[open]{box-shadow:0 2px 8px rgba(0,0,0,.08)}
+summary{padding:12px 16px;cursor:pointer;font-weight:600;font-size:0.95rem;list-style:none;display:flex;align-items:center;gap:10px;user-select:none}
+summary::-webkit-details-marker{display:none}
+summary::before{content:'';display:inline-block;width:0;height:0;border-left:6px solid var(--muted);border-top:5px solid transparent;border-bottom:5px solid transparent;transition:transform .2s;flex-shrink:0}
+details[open] summary::before{transform:rotate(90deg)}
+summary:hover{background:#f1f3f5;border-radius:8px 8px 0 0}
+.detail-body{padding:4px 16px 16px}
+
+/* Severity badges */
+.badge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:0.72rem;font-weight:700;color:#fff;vertical-align:middle}
+.b-crit{background:var(--crit)}.b-high{background:var(--high)}.b-med{background:var(--med);color:#000}.b-low{background:var(--low)}.b-cost{background:var(--cost)}.b-arch{background:var(--arch)}.b-info{background:#0dcaf0}
+
+/* Severity left border on details */
+details.sev-crit{border-left:4px solid var(--crit)}
+details.sev-high{border-left:4px solid var(--high)}
+details.sev-med{border-left:4px solid var(--med)}
+details.sev-low{border-left:4px solid var(--low)}
+details.sev-cost{border-left:4px solid var(--cost)}
+details.sev-arch{border-left:4px solid var(--arch)}
+
+.file{font-size:0.82rem;color:var(--muted);font-family:monospace}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:768px){.grid-2{grid-template-columns:1fr}.tabs{gap:2px}.tab{padding:8px 10px;font-size:0.8rem}}
+footer{text-align:center;color:var(--muted);font-size:0.8rem;margin:40px 0 20px}
 </style>
 </head>
 <body>
@@ -52,433 +78,1136 @@
 <p style="color:var(--muted)">Ollama-on-EKS Private LLM Platform &mdash; Security, Cost, Reliability & Architecture Review</p>
 <p style="font-size:0.85rem;color:var(--muted)">Date: 2026-03-27 &nbsp;|&nbsp; Scope: Full stack (Terraform, K8s, ArgoCD, Scripts, CI/CD)</p>
 
-<!-- SUMMARY BAR -->
+<!-- STAT BAR (clickable) -->
 <div class="stat-bar">
-  <div style="background:#dc3545;flex:8">8 Critical</div>
-  <div style="background:#fd7e14;flex:14">14 High</div>
-  <div style="background:#ffc107;color:#000;flex:18">18 Medium</div>
-  <div style="background:#198754;flex:12">12 Low</div>
-  <div style="background:#6f42c1;flex:7">7 Cost Opts</div>
+  <div style="background:var(--crit);flex:8" onclick="switchTab('critical')">8 Critical</div>
+  <div style="background:var(--high);flex:14" onclick="switchTab('high')">14 High</div>
+  <div style="background:var(--med);color:#000;flex:18" onclick="switchTab('medium')">18 Medium</div>
+  <div style="background:var(--low);flex:12" onclick="switchTab('low')">12 Low</div>
+  <div style="background:var(--cost);flex:7" onclick="switchTab('cost')">7 Cost Opts</div>
+  <div style="background:var(--arch);flex:9" onclick="switchTab('arch')">9 Arch Improvements</div>
 </div>
 
-<div class="toc">
-<a href="#exec">Executive Summary</a>
-<a href="#critical">Critical Findings</a>
-<a href="#security">Security</a>
-<a href="#cost">Cost Optimization</a>
-<a href="#reliability">Reliability & Resilience</a>
-<a href="#operations">Operational Gaps</a>
-<a href="#argocd">ArgoCD & GitOps</a>
-<a href="#scripts">Scripts & CI/CD</a>
-<a href="#missing">Missing Capabilities</a>
-<a href="#arch">Architecture Improvements</a>
-<a href="#actions">Recommended Actions</a>
+<!-- TAB BAR -->
+<div class="tabs">
+  <div class="tab active" data-tab="critical" onclick="switchTab('critical')">Critical (8)</div>
+  <div class="tab" data-tab="high" onclick="switchTab('high')">High (14)</div>
+  <div class="tab" data-tab="medium" onclick="switchTab('medium')">Medium (18)</div>
+  <div class="tab" data-tab="low" onclick="switchTab('low')">Low (12)</div>
+  <div class="tab" data-tab="cost" onclick="switchTab('cost')">Cost Opts (7)</div>
+  <div class="tab" data-tab="arch" onclick="switchTab('arch')">Architecture (9)</div>
+  <div class="tab" data-tab="actions" onclick="switchTab('actions')">Action Plan</div>
 </div>
 
-<!-- ================================================================ -->
-<h2 id="exec">Executive Summary</h2>
-<div class="card sev-info">
-<p>The platform is <strong>well-architected for a dev/consulting engagement</strong>. The CloudFront + VPC Origins pattern replaced Kong (99% cost reduction), KEDA + Karpenter deliver true scale-to-zero ($0/hr idle GPU), and EBS snapshots enable 3-minute cold starts. However, <strong>8 critical findings</strong> should be addressed before production use, primarily around container security, IAM over-permission, and single-AZ resilience.</p>
-</div>
+<!-- ======================================================================== -->
+<!-- CRITICAL TAB -->
+<!-- ======================================================================== -->
+<div class="tab-panel active" id="panel-critical">
 
-<h3>Strengths</h3>
-<ul>
-  <li>CloudFront + WAF replaces Kong Gateway: $756/mo &rarr; $6/mo (99% reduction)</li>
-  <li>KEDA auto-scale-to-zero + Karpenter node termination = $0/hr idle GPU cost</li>
-  <li>EBS snapshots: 3-min cold start vs 15-25 min internet pull (air-gap compliant)</li>
-  <li>Flex-mode tier switching via <code>switch-model.sh</code> &mdash; no manifest edits needed</li>
-  <li>Custom Cognito portal &mdash; users never see hosted UI, mandatory TOTP MFA</li>
-  <li>All traffic stays on AWS backbone (VPC Origins, no internet-facing LB)</li>
-</ul>
-
-<!-- ================================================================ -->
-<h2 id="critical">Critical Findings (Fix Before Production)</h2>
-
-<div class="card sev-crit">
-<h4><span class="badge b-crit">CRITICAL</span> &nbsp; 1. Containers Run as Root</h4>
-<p><strong>Files:</strong> <code>k8s/ollama/deployment.yaml</code>, <code>k8s/open-webui/deployment.yaml</code>, <code>k8s/model-loader/job.yaml</code></p>
-<p>No <code>securityContext</code> defined &mdash; all containers run as UID 0 (root) with full privilege escalation.</p>
-<pre><code># Fix: Add to each container spec
+<details class="sev-crit" open>
+<summary><span class="badge b-crit">CRIT</span> 1. Containers Run as Root (No SecurityContext)</summary>
+<div class="detail-body">
+<p class="file">k8s/ollama/deployment.yaml, k8s/open-webui/deployment.yaml, k8s/model-loader/job.yaml</p>
+<p><strong>Risk:</strong> All containers run as UID 0. Container escape = full node compromise. Fails CIS Kubernetes Benchmark 5.2.6.</p>
+<h4>How to Fix</h4>
+<p>Add <code>securityContext</code> to each container spec. Ollama needs write access to <code>/root/.ollama</code>, so use a non-root UID with matching volume permissions:</p>
+<pre><code># k8s/ollama/deployment.yaml — add under containers[0]
 securityContext:
   runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
   allowPrivilegeEscalation: false
+  seccompProfile:
+    type: RuntimeDefault
   capabilities:
-    drop: ["ALL"]</code></pre>
-</div>
+    drop: ["ALL"]
 
-<div class="card sev-crit">
-<h4><span class="badge b-crit">CRITICAL</span> &nbsp; 2. GitHub Actions IAM Role: PowerUserAccess</h4>
-<p><strong>File:</strong> <code>terraform/modules/iam/main.tf:189</code></p>
-<p>GitHub Actions assumes a role with <code>PowerUserAccess</code> &mdash; compromised workflow = full AWS account access except IAM.</p>
-<pre><code># Fix: Replace with scoped policy
-policy_arn = aws_iam_policy.github_actions_terraform.arn  # Custom, least-privilege</code></pre>
+# Also add initContainer to fix volume permissions:
+initContainers:
+  - name: fix-permissions
+    image: busybox:1.36
+    command: ["sh", "-c", "chown -R 1000:1000 /root/.ollama"]
+    volumeMounts:
+      - name: ollama-models
+        mountPath: /root/.ollama</code></pre>
+<p>Repeat for <code>open-webui</code> (UID 1000, mount <code>/app/backend/data</code>) and <code>model-loader</code> job.</p>
+<p><strong>Test:</strong> <code>kubectl exec -n ollama deploy/ollama -- id</code> &rarr; should show <code>uid=1000</code></p>
 </div>
+</details>
 
-<div class="card sev-crit">
-<h4><span class="badge b-crit">CRITICAL</span> &nbsp; 3. No PodDisruptionBudgets</h4>
-<p><strong>Files:</strong> All deployments</p>
-<p>No PDBs defined. Cluster upgrades, node drains, and Karpenter consolidation can terminate all replicas simultaneously &mdash; guaranteed outage during maintenance.</p>
+<details class="sev-crit">
+<summary><span class="badge b-crit">CRIT</span> 2. GitHub Actions IAM: PowerUserAccess</summary>
+<div class="detail-body">
+<p class="file">terraform/modules/iam/main.tf:189</p>
+<p><strong>Risk:</strong> Compromised GitHub workflow token = full AWS account access (everything except IAM user creation).</p>
+<h4>How to Fix</h4>
+<p>Replace <code>PowerUserAccess</code> with a scoped custom policy:</p>
+<pre><code># terraform/modules/iam/main.tf — replace the policy attachment
+resource "aws_iam_policy" "github_actions_scoped" {
+  name = "${var.project_name}-github-actions"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "EKS"
+        Effect = "Allow"
+        Action = ["eks:*"]
+        Resource = "arn:aws:eks:${var.region}:${data.aws_caller_identity.current.account_id}:cluster/${var.cluster_name}"
+      },
+      {
+        Sid    = "Terraform"
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject", "s3:PutObject", "s3:ListBucket",
+          "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem",
+          "ec2:Describe*", "elasticloadbalancing:Describe*",
+          "cloudfront:*", "wafv2:*", "apigateway:*",
+          "cognito-idp:*", "lambda:*", "iam:PassRole",
+          "logs:*", "sns:*", "ses:*", "secretsmanager:*",
+          "aps:*", "grafana:*"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "github_actions" {
+  policy_arn = aws_iam_policy.github_actions_scoped.arn
+  role       = aws_iam_role.github_actions_terraform[0].name
+}</code></pre>
+<p><strong>Test:</strong> Run <code>terraform plan</code> in CI &mdash; should succeed. Run <code>terraform apply</code> &mdash; should succeed. Try <code>aws iam create-user</code> &mdash; should be denied.</p>
 </div>
+</details>
 
-<div class="card sev-crit">
-<h4><span class="badge b-crit">CRITICAL</span> &nbsp; 4. Missing Startup Probe on Ollama</h4>
-<p><strong>File:</strong> <code>k8s/ollama/deployment.yaml:73-86</code></p>
-<p>Model loading takes 2-4 minutes, but liveness probe kicks in at ~70s. Pod enters restart loop on every cold start.</p>
-<pre><code># Fix: Add startup probe with generous timeout
+<details class="sev-crit">
+<summary><span class="badge b-crit">CRIT</span> 3. No PodDisruptionBudgets</summary>
+<div class="detail-body">
+<p class="file">Missing resource — all namespaces</p>
+<p><strong>Risk:</strong> Cluster upgrades, node drains, and Karpenter consolidation terminate all replicas simultaneously. Guaranteed outage during any maintenance.</p>
+<h4>How to Fix</h4>
+<pre><code># k8s/ollama/pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ollama
+  namespace: ollama
+spec:
+  maxUnavailable: 0        # Never evict voluntarily when running
+  selector:
+    matchLabels:
+      app: ollama
+---
+# k8s/open-webui/pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: open-webui
+  namespace: open-webui
+spec:
+  maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: open-webui</code></pre>
+<p>Add these files to the respective ArgoCD app paths. For Ollama (single replica + GPU), <code>maxUnavailable: 0</code> prevents Karpenter from draining mid-inference. Cluster upgrades will wait for the pod to finish.</p>
+<p><strong>Test:</strong> <code>kubectl drain &lt;node&gt; --ignore-daemonsets</code> &mdash; should block with "Cannot evict pod (PDB)".</p>
+</div>
+</details>
+
+<details class="sev-crit">
+<summary><span class="badge b-crit">CRIT</span> 4. Missing Startup Probe on Ollama</summary>
+<div class="detail-body">
+<p class="file">k8s/ollama/deployment.yaml:73-86</p>
+<p><strong>Risk:</strong> Model loading takes 2-4 minutes. Liveness probe fires at ~70s, marking pod unhealthy. Kubelet kills and restarts it &mdash; infinite restart loop on every cold start.</p>
+<h4>How to Fix</h4>
+<pre><code># k8s/ollama/deployment.yaml — add BEFORE livenessProbe
 startupProbe:
   httpGet:
     path: /api/tags
     port: 11434
-  initialDelaySeconds: 60
-  periodSeconds: 30
-  failureThreshold: 8   # 300s total grace period</code></pre>
+  initialDelaySeconds: 30
+  periodSeconds: 15
+  failureThreshold: 20    # 30 + (15 x 20) = 330s = 5.5 min grace
+  # Liveness/readiness probes are suppressed until startupProbe passes</code></pre>
+<p>The startup probe gives Ollama up to 5.5 minutes to load the model before liveness kicks in. Once startup succeeds, the normal liveness/readiness probes take over.</p>
+<p><strong>Test:</strong> Scale Ollama from 0 &rarr; 1. Watch: <code>kubectl get pods -n ollama -w</code>. Pod should stay in <code>Running</code> (not <code>CrashLoopBackOff</code>) during model load.</p>
 </div>
+</details>
 
-<div class="card sev-crit">
-<h4><span class="badge b-crit">CRITICAL</span> &nbsp; 5. Single AZ System Nodes</h4>
-<p><strong>File:</strong> <code>k8s/nodepools/system-nodepool.yaml</code></p>
-<p>All system pods (CoreDNS, Istio, ArgoCD, Prometheus, Open WebUI) run on a single node in <code>ap-southeast-2a</code>. AZ failure = complete platform outage, 30+ min RTO.</p>
-</div>
-
-<div class="card sev-crit">
-<h4><span class="badge b-crit">CRITICAL</span> &nbsp; 6. No Open WebUI Data Backup</h4>
-<p>Open WebUI stores chat history + user data in SQLite on an EBS PVC. No automated backup, no snapshot schedule. PVC failure = total data loss.</p>
-</div>
-
-<div class="card sev-crit">
-<h4><span class="badge b-crit">CRITICAL</span> &nbsp; 7. EKS Control Plane Logging Disabled</h4>
-<p><strong>File:</strong> <code>terraform/variables.tf:61</code> &mdash; <code>enable_logging = false</code></p>
-<p>No CloudWatch audit trail for API calls, auth events, or controller actions. Cannot investigate security incidents.</p>
-</div>
-
-<div class="card sev-crit">
-<h4><span class="badge b-crit">CRITICAL</span> &nbsp; 8. Script Trap Handlers Missing &mdash; KEDA Left Paused</h4>
-<p><strong>Files:</strong> <code>scripts/scale-up.sh</code>, <code>switch-model.sh</code></p>
-<p>If interrupted (Ctrl+C) while KEDA is paused, it stays paused indefinitely. GPU node runs forever at $0.35-$1.90/hr.</p>
-<pre><code># Fix: Add trap handler at script start
-trap 'kubectl annotate scaledobject ollama-autoscaler -n ollama \
-  autoscaling.keda.sh/paused- --overwrite 2>/dev/null; exit 1' INT TERM</code></pre>
-</div>
-
-<!-- ================================================================ -->
-<h2 id="security">Security Findings</h2>
-
-<table>
-  <tr><th>Sev</th><th>Finding</th><th>File</th><th>Risk</th></tr>
-  <tr><td><span class="badge b-crit">CRIT</span></td><td>Containers run as root</td><td>k8s/*/deployment.yaml</td><td>Container escape &rarr; node compromise</td></tr>
-  <tr><td><span class="badge b-crit">CRIT</span></td><td>GitHub Actions: PowerUserAccess</td><td>terraform/modules/iam/main.tf:189</td><td>Compromised workflow = full AWS access</td></tr>
-  <tr><td><span class="badge b-high">HIGH</span></td><td>ArgoCD running with <code>--insecure</code></td><td>terraform/modules/argocd/main.tf:38</td><td>No TLS &mdash; MITM on ArgoCD UI</td></tr>
-  <tr><td><span class="badge b-high">HIGH</span></td><td>Ollama egress allows all intra-cluster</td><td>k8s/ollama/networkpolicy.yaml:49</td><td>Compromised pod reaches entire cluster</td></tr>
-  <tr><td><span class="badge b-high">HIGH</span></td><td>Cognito signup: no email domain validation</td><td>terraform/modules/cognito/main.tf:332</td><td>Anyone can request access (any email)</td></tr>
-  <tr><td><span class="badge b-high">HIGH</span></td><td>S3 uses AES256 not KMS</td><td>terraform/modules/api-key-portal/main.tf:46</td><td>No key rotation control for compliance</td></tr>
-  <tr><td><span class="badge b-med">MED</span></td><td>WAF SQL/XSS rules in count mode (not block)</td><td>terraform/modules/cdn-waf/main.tf:248</td><td>Attacks logged but not blocked</td></tr>
-  <tr><td><span class="badge b-med">MED</span></td><td>CloudFront uses default certificate</td><td>terraform/modules/cdn-waf/main.tf:531</td><td>No custom domain, browser warnings</td></tr>
-  <tr><td><span class="badge b-med">MED</span></td><td>API Gateway log retention 30 days</td><td>terraform/modules/api-gateway/main.tf:311</td><td>Insufficient for compliance audits</td></tr>
-  <tr><td><span class="badge b-med">MED</span></td><td>SNS alert topic not encrypted</td><td>terraform/modules/observability/main.tf:51</td><td>Alert data in transit unencrypted</td></tr>
-  <tr><td><span class="badge b-med">MED</span></td><td>No CloudTrail enabled</td><td>N/A (missing resource)</td><td>No AWS API audit trail</td></tr>
-  <tr><td><span class="badge b-med">MED</span></td><td>Secrets in K8s etcd (no ESO)</td><td>k8s/open-webui/deployment.yaml</td><td>No rotation, no audit trail</td></tr>
-  <tr><td><span class="badge b-low">LOW</span></td><td>Hardcoded AWS profile in scripts</td><td>scripts/*.sh</td><td>Exposes internal org structure</td></tr>
-  <tr><td><span class="badge b-low">LOW</span></td><td>Unsafe .env sourcing</td><td>scripts/06-setup-github-sync.sh:70</td><td>Code injection if .env compromised</td></tr>
-</table>
-
-<!-- ================================================================ -->
-<h2 id="cost">Cost Optimization Opportunities</h2>
-
-<table>
-  <tr><th>Opportunity</th><th>Current Cost</th><th>Optimized</th><th>Savings</th><th>Effort</th></tr>
-  <tr>
-    <td><strong>Cache read-only API endpoints</strong><br/><code>/api/tags</code>, <code>/v1/models</code> with 60s TTL</td>
-    <td>Every request hits origin</td>
-    <td>Cached at edge</td>
-    <td>~$2-5/mo</td>
-    <td>30 min</td>
-  </tr>
-  <tr>
-    <td><strong>Add DynamoDB VPC Endpoint</strong><br/>API key portal traffic bypasses NAT</td>
-    <td>NAT Gateway data processing</td>
-    <td>Free via gateway endpoint</td>
-    <td>~$2/mo</td>
-    <td>15 min</td>
-  </tr>
-  <tr>
-    <td><strong>API Gateway Usage Plans</strong><br/>Per-key daily quotas prevent runaway GPU costs</td>
-    <td>Unlimited requests = unlimited GPU</td>
-    <td>1000 req/day/key cap</td>
-    <td>Prevents $XXX overages</td>
-    <td>30 min</td>
-  </tr>
-  <tr>
-    <td><strong>Reduce Prometheus retention</strong><br/>15d &rarr; 7d for dev (keep 15d for prod)</td>
-    <td>15d in AMP</td>
-    <td>7d in AMP</td>
-    <td>~$2-3/mo</td>
-    <td>5 min</td>
-  </tr>
-  <tr>
-    <td><strong>Open WebUI: RollingUpdate strategy</strong><br/>Enables zero-downtime deploys without extra node</td>
-    <td>Recreate (downtime on every deploy)</td>
-    <td>RollingUpdate</td>
-    <td>UX improvement</td>
-    <td>15 min</td>
-  </tr>
-  <tr>
-    <td><strong>Savings Plans</strong><br/>1-year compute savings plan for EKS</td>
-    <td>On-demand pricing</td>
-    <td>Committed pricing</td>
-    <td>~20-30% on system nodes</td>
-    <td>AWS Console</td>
-  </tr>
-  <tr>
-    <td><strong>Schedule system nodes off-hours</strong><br/>(Future: when Open WebUI has HPA)</td>
-    <td>24/7 t3.xlarge</td>
-    <td>Business hours only</td>
-    <td>~$40/mo</td>
-    <td>4 hrs</td>
-  </tr>
-</table>
-
-<!-- ================================================================ -->
-<h2 id="reliability">Reliability & Resilience</h2>
-
-<table>
-  <tr><th>Sev</th><th>Risk</th><th>Impact</th><th>Mitigation</th></tr>
-  <tr><td><span class="badge b-crit">CRIT</span></td><td>Single AZ system nodes</td><td>AZ failure = complete outage (30+ min RTO)</td><td>Multi-AZ system NodePool (+$60/mo)</td></tr>
-  <tr><td><span class="badge b-crit">CRIT</span></td><td>No Open WebUI data backup</td><td>EBS failure = chat history lost</td><td>EBS Snapshot Schedule via DLM (+$5/mo)</td></tr>
-  <tr><td><span class="badge b-crit">CRIT</span></td><td>Missing startup probe (Ollama)</td><td>Pod restart loop on every cold start</td><td>Add startupProbe with 300s grace</td></tr>
-  <tr><td><span class="badge b-high">HIGH</span></td><td>No PodDisruptionBudgets</td><td>Cluster upgrade kills all replicas</td><td>Add PDB: minAvailable=1</td></tr>
-  <tr><td><span class="badge b-high">HIGH</span></td><td>Single NAT Gateway</td><td>NAT failure = no egress from private subnets</td><td>NAT per AZ or VPC endpoints</td></tr>
-  <tr><td><span class="badge b-high">HIGH</span></td><td>No CloudWatch alarms for AWS resources</td><td>API GW 5xx, CloudFront errors go unnoticed</td><td>Add metric alarms + SNS</td></tr>
-  <tr><td><span class="badge b-med">MED</span></td><td>EBS snapshot = single copy of models</td><td>Accidental deletion = hours to rebuild</td><td>DLM policy: 7 daily snapshot copies</td></tr>
-  <tr><td><span class="badge b-med">MED</span></td><td>ArgoCD single replica</td><td>GitOps halts during pod restart (~30s)</td><td>HA mode for production (+$30/mo)</td></tr>
-  <tr><td><span class="badge b-med">MED</span></td><td>KEDA race condition on scale-up</td><td>Script interrupted &rarr; KEDA stays paused</td><td>Trap handlers + distributed lock</td></tr>
-  <tr><td><span class="badge b-low">LOW</span></td><td>Cognito token/session mismatch</td><td>User gets 401 after 1hr (confusing UX)</td><td>Document session lifecycle</td></tr>
-</table>
-
-<!-- ================================================================ -->
-<h2 id="operations">Operational Gaps</h2>
-
-<div class="grid-2">
-<div class="card sev-high">
-<h4><span class="badge b-high">HIGH</span> No audit logging</h4>
-<p>Cannot answer: "Who ran what model when?" No application-level logs for inference requests, model switches, or API key usage.</p>
-</div>
-<div class="card sev-high">
-<h4><span class="badge b-high">HIGH</span> No cost estimation before GPU ops</h4>
-<p><code>scale-up.sh</code> and <code>switch-model.sh</code> don't display expected hourly cost. Users unaware they're starting $0.35-$1.90/hr instances.</p>
-</div>
-<div class="card sev-med">
-<h4><span class="badge b-med">MED</span> No dry-run mode</h4>
-<p>Destructive scripts (<code>scale-down.sh</code>, <code>create-model-snapshot.sh</code>) have no <code>--dry-run</code> flag to preview changes.</p>
-</div>
-<div class="card sev-med">
-<h4><span class="badge b-med">MED</span> No pre-flight checks</h4>
-<p><code>deploy-stack-a.sh</code> doesn't verify S3 backend, DynamoDB lock table, or service quotas before starting Terraform.</p>
-</div>
-<div class="card sev-med">
-<h4><span class="badge b-med">MED</span> Silent failures in scripts</h4>
-<p>Terraform output reads fall back to defaults without warning. Wrong region used silently if state is corrupted.</p>
-</div>
-<div class="card sev-med">
-<h4><span class="badge b-med">MED</span> No timestamps in log output</h4>
-<p>All scripts use <code>[INFO]</code> prefix without timestamps. Hard to correlate events during incident response.</p>
-</div>
-</div>
-
-<!-- ================================================================ -->
-<h2 id="argocd">ArgoCD & GitOps</h2>
-
-<table>
-  <tr><th>Sev</th><th>Finding</th><th>File</th></tr>
-  <tr><td><span class="badge b-high">HIGH</span></td><td>Ollama app missing <code>RespectIgnoreDifferences=true</code> &mdash; selfHeal can revert <code>switch-model.sh</code> resource patches</td><td>argocd/apps/08-ollama.yaml</td></tr>
-  <tr><td><span class="badge b-med">MED</span></td><td>No RBAC configured &mdash; anyone with cluster access has admin on all ArgoCD apps</td><td>terraform/modules/argocd/main.tf</td></tr>
-  <tr><td><span class="badge b-med">MED</span></td><td>Wave dependency chain not documented in app manifests</td><td>argocd/apps/*.yaml</td></tr>
-  <tr><td><span class="badge b-low">LOW</span></td><td>No health assessment for DaemonSets (Istio CNI)</td><td>argocd/apps/03-istio-cni.yaml</td></tr>
-</table>
-
-<!-- ================================================================ -->
-<h2 id="scripts">Scripts & CI/CD</h2>
-
-<table>
-  <tr><th>Sev</th><th>Finding</th><th>File:Line</th></tr>
-  <tr><td><span class="badge b-crit">CRIT</span></td><td>No trap handler &mdash; KEDA stays paused on Ctrl+C</td><td>scripts/scale-up.sh (all)</td></tr>
-  <tr><td><span class="badge b-high">HIGH</span></td><td>Hardcoded AWS account ID in OIDC role</td><td>.github/workflows/terraform-plan.yml:37</td></tr>
-  <tr><td><span class="badge b-high">HIGH</span></td><td>No rollback on Phase 2 terraform failure</td><td>scripts/deploy-stack-a.sh:269</td></tr>
-  <tr><td><span class="badge b-high">HIGH</span></td><td>KEDA race condition (EventBridge can unpause during scale-up)</td><td>scripts/scale-up.sh:52-63</td></tr>
-  <tr><td><span class="badge b-med">MED</span></td><td>No timeout on kubectl operations</td><td>scripts/01-setup.sh:84</td></tr>
-  <tr><td><span class="badge b-med">MED</span></td><td>No confirmation before tier change</td><td>switch-model.sh:499</td></tr>
-  <tr><td><span class="badge b-med">MED</span></td><td>Orphaned EC2 on snapshot script timeout</td><td>scripts/create-model-snapshot.sh:191</td></tr>
-  <tr><td><span class="badge b-low">LOW</span></td><td>No <code>terraform fmt</code> enforcement in CI</td><td>.github/workflows/*.yml</td></tr>
-  <tr><td><span class="badge b-low">LOW</span></td><td>No <code>.terraform.lock.hcl</code> committed</td><td>repo root</td></tr>
-</table>
-
-<!-- ================================================================ -->
-<h2 id="missing">Missing Production Capabilities</h2>
-
-<table>
-  <tr><th>Capability</th><th>Status</th><th>Effort</th><th>Cost</th><th>Priority</th></tr>
-  <tr><td>Open WebUI data backup (EBS DLM)</td><td>Missing</td><td>1 hr</td><td>+$5/mo</td><td><span class="badge b-crit">P0</span></td></tr>
-  <tr><td>API Gateway usage plans (quota per key)</td><td>Missing</td><td>30 min</td><td>Free</td><td><span class="badge b-crit">P0</span></td></tr>
-  <tr><td>Application-level audit logging</td><td>Missing</td><td>2 hrs</td><td>+$3/mo</td><td><span class="badge b-high">P1</span></td></tr>
-  <tr><td>External Secrets Operator (AWS SM)</td><td>Missing</td><td>4 hrs</td><td>+$10/mo</td><td><span class="badge b-high">P1</span></td></tr>
-  <tr><td>CloudWatch alarms (API GW, CF, EKS)</td><td>Missing</td><td>2 hrs</td><td>+$2/mo</td><td><span class="badge b-high">P1</span></td></tr>
-  <tr><td>Multi-AZ system nodes</td><td>Single AZ</td><td>2 hrs</td><td>+$60/mo</td><td><span class="badge b-high">P1</span></td></tr>
-  <tr><td>Blue/green or canary deployments</td><td>Missing</td><td>8 hrs</td><td>+$20/mo</td><td><span class="badge b-med">P2</span></td></tr>
-  <tr><td>Chaos engineering / failure testing</td><td>Missing</td><td>6 hrs</td><td>Free</td><td><span class="badge b-med">P2</span></td></tr>
-  <tr><td>Centralized secret rotation</td><td>Manual</td><td>4 hrs</td><td>+$5/mo</td><td><span class="badge b-med">P2</span></td></tr>
-  <tr><td>Per-user rate limiting (Istio)</td><td>Missing</td><td>3 hrs</td><td>Free</td><td><span class="badge b-med">P2</span></td></tr>
-</table>
-
-<!-- ================================================================ -->
-<h2 id="actions">Recommended Actions</h2>
-
-<h3>Sprint 1: Immediate (This Week)</h3>
-<table>
-  <tr><th>#</th><th>Action</th><th>Effort</th><th>Impact</th></tr>
-  <tr><td>1</td><td>Add <code>securityContext</code> to all deployments (runAsNonRoot, drop ALL caps)</td><td>1 hr</td><td>Eliminates container escape risk</td></tr>
-  <tr><td>2</td><td>Add <code>startupProbe</code> to Ollama deployment (300s grace)</td><td>15 min</td><td>Fixes cold-start restart loop</td></tr>
-  <tr><td>3</td><td>Add trap handlers to scale-up/down scripts (unpause KEDA on exit)</td><td>30 min</td><td>Prevents runaway GPU costs</td></tr>
-  <tr><td>4</td><td>Add <code>RespectIgnoreDifferences=true</code> to Ollama ArgoCD app</td><td>5 min</td><td>Prevents selfHeal reverting tier switches</td></tr>
-  <tr><td>5</td><td>Implement API Gateway usage plans (1000 req/day/key)</td><td>30 min</td><td>Cost protection from runaway usage</td></tr>
-</table>
-
-<h3>Sprint 2: Before Production (Next 2 Weeks)</h3>
-<table>
-  <tr><th>#</th><th>Action</th><th>Effort</th><th>Impact</th></tr>
-  <tr><td>6</td><td>Replace GitHub Actions PowerUserAccess with scoped policy</td><td>2 hrs</td><td>Least-privilege CI/CD</td></tr>
-  <tr><td>7</td><td>Enable EKS control plane logging</td><td>15 min</td><td>Security audit trail</td></tr>
-  <tr><td>8</td><td>Add PodDisruptionBudgets for all deployments</td><td>30 min</td><td>Safe cluster upgrades</td></tr>
-  <tr><td>9</td><td>Implement EBS Snapshot Schedule for Open WebUI PVC</td><td>1 hr</td><td>Data recovery capability</td></tr>
-  <tr><td>10</td><td>Add CloudWatch alarms (API GW 5xx, CF errors, node health)</td><td>2 hrs</td><td>Proactive incident detection</td></tr>
-  <tr><td>11</td><td>Tighten Ollama NetworkPolicy egress (DNS only, no intra-cluster)</td><td>30 min</td><td>Blast radius reduction</td></tr>
-  <tr><td>12</td><td>Multi-AZ system NodePool (add ap-southeast-2b)</td><td>2 hrs</td><td>99.99% system availability</td></tr>
-</table>
-
-<h3>Sprint 3: Production Hardening (Month 2)</h3>
-<table>
-  <tr><th>#</th><th>Action</th><th>Effort</th><th>Impact</th></tr>
-  <tr><td>13</td><td>External Secrets Operator + AWS Secrets Manager</td><td>4 hrs</td><td>Secret rotation + audit</td></tr>
-  <tr><td>14</td><td>Application-level audit logging (CloudWatch)</td><td>2 hrs</td><td>Compliance + troubleshooting</td></tr>
-  <tr><td>15</td><td>EBS snapshot backup for Ollama models (DLM: 7 daily)</td><td>1 hr</td><td>Model data protection</td></tr>
-  <tr><td>16</td><td>Switch WAF SQL/XSS rules from count to block mode</td><td>15 min</td><td>Active threat blocking</td></tr>
-  <tr><td>17</td><td>Add email domain validation to Cognito signup Lambda</td><td>1 hr</td><td>Restrict signup to org emails</td></tr>
-  <tr><td>18</td><td>Pin Terraform provider versions (<code>>= 5.0, < 6.0</code>)</td><td>30 min</td><td>Reproducible infrastructure</td></tr>
-</table>
-
-<h2 id="arch">Architecture Improvements</h2>
-
-<h3>Current Architecture Gaps</h3>
-
-<div class="card sev-high">
-<h4><span class="badge b-high">HIGH</span> &nbsp; Auto Scale-from-Zero for First Request</h4>
-<p><strong>Current:</strong> KEDA scales to zero after 15 min idle, but scaling back UP requires manual <code>./scripts/scale-up.sh</code>.</p>
-<p><strong>Improvement:</strong> Add a lightweight API Gateway Lambda that detects the first inference request when Ollama is at 0 replicas, automatically triggers scale-up, and returns a "warming up" response. Subsequent requests route normally once the pod is ready.</p>
-<pre><code># API Gateway → Lambda (check replicas) → if 0: trigger scale-up + return 503 Retry-After
-# CloudFront custom error page shows "Model loading, please wait ~3 min"</code></pre>
-<p><strong>Benefit:</strong> Fully automatic cold start &mdash; no SSH/kubectl needed. Users just wait ~3 min on first request.</p>
-</div>
-
-<div class="card sev-high">
-<h4><span class="badge b-high">HIGH</span> &nbsp; Open WebUI: Switch from Recreate to RollingUpdate</h4>
-<p><strong>Current:</strong> <code>strategy: Recreate</code> &mdash; every deployment causes downtime while old pod terminates and new one starts.</p>
-<p><strong>Improvement:</strong> Switch to <code>RollingUpdate</code> with <code>maxSurge: 1, maxUnavailable: 0</code>. Open WebUI is stateless enough (SQLite on shared PVC) &mdash; new pod starts, gets healthy, then old pod terminates. Zero downtime.</p>
-<p><strong>Benefit:</strong> Users never see downtime during Open WebUI config changes or version upgrades.</p>
-</div>
-
-<div class="card sev-med">
-<h4><span class="badge b-med">MED</span> &nbsp; Horizontal Pod Autoscaler for Open WebUI</h4>
-<p><strong>Current:</strong> Fixed 1 replica. Under concurrent user load, response times degrade.</p>
-<p><strong>Improvement:</strong> Add HPA scaling Open WebUI from 1&rarr;3 replicas based on CPU (70% target). Karpenter handles additional system node if needed.</p>
-<pre><code>apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
+<details class="sev-crit">
+<summary><span class="badge b-crit">CRIT</span> 5. Single AZ System Nodes</summary>
+<div class="detail-body">
+<p class="file">k8s/nodepools/system-nodepool.yaml</p>
+<p><strong>Risk:</strong> All system pods (CoreDNS, Istio, ArgoCD, Prometheus, Open WebUI) in <code>ap-southeast-2a</code>. AZ failure = complete platform outage, 30+ min RTO.</p>
+<h4>How to Fix</h4>
+<pre><code># k8s/nodepools/system-nodepool.yaml — change zone constraint
 spec:
-  scaleTargetRef: {kind: Deployment, name: open-webui}
+  template:
+    spec:
+      requirements:
+        - key: topology.kubernetes.io/zone
+          operator: In
+          values:
+            - ap-southeast-2a
+            - ap-southeast-2b     # ADD THIS
+
+      # Also add: spread pods across AZs
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule</code></pre>
+<p>Then add <code>topologySpreadConstraints</code> to Open WebUI deployment (when running 2+ replicas) to spread across AZs.</p>
+<p><strong>Cost:</strong> +$60/mo (second t3.xlarge in 2b). <strong>Benefit:</strong> 99.99% system availability.</p>
+<p><strong>Note:</strong> Open WebUI PVC (EBS) is AZ-bound. Either: (a) use EFS instead of EBS for cross-AZ access, or (b) keep Open WebUI pinned to 2a and accept that UI fails during 2a outage while API (GPU in 2b) stays up.</p>
+</div>
+</details>
+
+<details class="sev-crit">
+<summary><span class="badge b-crit">CRIT</span> 6. No Open WebUI Data Backup</summary>
+<div class="detail-body">
+<p class="file">Missing resource — no DLM policy for open-webui PVC</p>
+<p><strong>Risk:</strong> Chat history + user preferences stored in SQLite on EBS PVC. EBS failure = total data loss. No snapshots, no backup schedule.</p>
+<h4>How to Fix</h4>
+<pre><code># terraform/main.tf — add Data Lifecycle Manager policy
+resource "aws_dlm_lifecycle_policy" "webui_backup" {
+  description        = "Daily backup of Open WebUI data volume"
+  execution_role_arn = aws_iam_role.dlm.arn
+  state              = "ENABLED"
+
+  policy_details {
+    resource_types = ["VOLUME"]
+    target_tags    = { Name = "open-webui-data" }
+
+    schedule {
+      name = "daily-2am"
+      create_rule { interval = 24; interval_unit = "HOURS"; times = ["02:00"] }
+      retain_rule { count = 7 }  # Keep 7 daily snapshots
+      tags_to_add  = { SnapshotType = "DLM-automated" }
+    }
+  }
+}
+
+# IAM role for DLM
+resource "aws_iam_role" "dlm" {
+  name               = "${var.project_name}-dlm"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = { Service = "dlm.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "dlm" {
+  role       = aws_iam_role.dlm.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSDataLifecycleManagerServiceRole"
+}</code></pre>
+<p>Tag the Open WebUI EBS volume with <code>Name = open-webui-data</code> so DLM can find it.</p>
+<p><strong>Cost:</strong> ~$5/mo (7 daily snapshots of ~10GB volume). <strong>Recovery:</strong> Restore any snapshot to a new volume in &lt;5 min.</p>
+</div>
+</details>
+
+<details class="sev-crit">
+<summary><span class="badge b-crit">CRIT</span> 7. EKS Control Plane Logging Disabled</summary>
+<div class="detail-body">
+<p class="file">terraform/variables.tf:61 &mdash; <code>enable_logging = false</code></p>
+<p><strong>Risk:</strong> No CloudWatch audit trail for K8s API calls, auth events, or controller actions. Cannot investigate security incidents.</p>
+<h4>How to Fix</h4>
+<pre><code># terraform/variables.tf — change default
+variable "enable_logging" {
+  description = "Enable EKS control plane logging to CloudWatch"
+  type        = bool
+  default     = true    # Changed from false
+}
+
+# terraform/modules/eks/main.tf — ensure logging config exists
+cluster_enabled_log_types = var.enable_logging ? [
+  "api", "audit", "authenticator", "controllerManager", "scheduler"
+] : []</code></pre>
+<p>Then set log retention to control costs:</p>
+<pre><code>resource "aws_cloudwatch_log_group" "eks" {
+  name              = "/aws/eks/${var.cluster_name}/cluster"
+  retention_in_days = 30    # 30 days for dev; 90+ for prod
+}</code></pre>
+<p><strong>Cost:</strong> ~$10-15/mo for dev usage. <strong>Benefit:</strong> Full audit trail for security investigations.</p>
+</div>
+</details>
+
+<details class="sev-crit">
+<summary><span class="badge b-crit">CRIT</span> 8. Scripts Missing Trap Handlers &mdash; KEDA Left Paused</summary>
+<div class="detail-body">
+<p class="file">scripts/scale-up.sh, switch-model.sh</p>
+<p><strong>Risk:</strong> If Ctrl+C is pressed while KEDA is paused (during model loading), KEDA stays paused indefinitely. GPU node runs 24/7 at $0.35-$1.90/hr until someone notices.</p>
+<h4>How to Fix</h4>
+<pre><code># Add at the TOP of scripts/scale-up.sh and switch-model.sh (after set -e)
+
+cleanup() {
+  echo ""
+  log "Interrupted! Ensuring KEDA is unpaused..."
+  kubectl annotate scaledobject ollama-autoscaler -n ollama \
+    autoscaling.keda.sh/paused- \
+    gpu-controller/paused-at- \
+    --overwrite 2>/dev/null || true
+  warn "KEDA unpaused. Check GPU node status: kubectl get nodes"
+  exit 1
+}
+
+trap cleanup INT TERM EXIT
+
+# ... rest of script ...
+
+# At the END of the script (on success), remove the trap:
+trap - INT TERM EXIT</code></pre>
+<p>This ensures KEDA is always unpaused, even on Ctrl+C, terminal close, or script error. The <code>trap - EXIT</code> at the end prevents cleanup from running on normal exit (since the script itself unpauses KEDA in the success path).</p>
+<p><strong>Test:</strong> Run <code>./scripts/scale-up.sh</code>, press Ctrl+C during model load. Verify: <code>kubectl get scaledobject -n ollama</code> &mdash; PAUSED should be <code>false</code>.</p>
+</div>
+</details>
+
+</div>
+
+<!-- ======================================================================== -->
+<!-- HIGH TAB -->
+<!-- ======================================================================== -->
+<div class="tab-panel" id="panel-high">
+
+<details class="sev-high">
+<summary><span class="badge b-high">HIGH</span> 1. ArgoCD Running with <code>--insecure</code> (No TLS)</summary>
+<div class="detail-body">
+<p class="file">terraform/modules/argocd/main.tf:38</p>
+<p><strong>Risk:</strong> ArgoCD UI served over HTTP. MITM attacks expose credentials and GitOps state.</p>
+<h4>How to Fix</h4>
+<pre><code># terraform/modules/argocd/main.tf — remove --insecure, add TLS
+set {
+  name  = "server.extraArgs[0]"
+  value = ""   # Remove --insecure
+}
+# Use internal cert-manager certificate:
+set {
+  name  = "server.certificate.enabled"
+  value = "true"
+}
+set {
+  name  = "server.certificate.issuer.name"
+  value = "selfsigned-issuer"
+}
+set {
+  name  = "server.certificate.issuer.kind"
+  value = "ClusterIssuer"
+}</code></pre>
+<p>Since ArgoCD is internal-only (no public ingress), a self-signed cert from cert-manager is sufficient.</p>
+</div>
+</details>
+
+<details class="sev-high">
+<summary><span class="badge b-high">HIGH</span> 2. Ollama NetworkPolicy: Egress Allows All Intra-Cluster</summary>
+<div class="detail-body">
+<p class="file">k8s/ollama/networkpolicy.yaml:49-50</p>
+<p><strong>Risk:</strong> <code>namespaceSelector: {}</code> allows Ollama to reach any service in the cluster. If compromised, lateral movement is unrestricted.</p>
+<h4>How to Fix</h4>
+<pre><code># k8s/ollama/networkpolicy.yaml — tighten egress
+egress:
+  # DNS only
+  - to: []
+    ports:
+      - port: 53
+        protocol: UDP
+      - port: 53
+        protocol: TCP
+  # No other egress needed — Ollama is air-gapped
+  # (Remove the broad namespaceSelector: {} rule)</code></pre>
+<p>Ollama doesn't need to call any other service. It only needs DNS resolution. Remove the intra-cluster egress entirely.</p>
+</div>
+</details>
+
+<details class="sev-high">
+<summary><span class="badge b-high">HIGH</span> 3. Cognito Signup: No Email Domain Validation</summary>
+<div class="detail-body">
+<p class="file">terraform/modules/cognito/main.tf:332 (Pre-signup Lambda)</p>
+<p><strong>Risk:</strong> Anyone with any email can create an account. While admin approval is required, signup spam wastes SNS notifications and pollutes the user pool.</p>
+<h4>How to Fix</h4>
+<pre><code># In the Pre Sign-up Lambda code (cognito/main.tf inline Lambda):
+import json
+
+ALLOWED_DOMAINS = ['versent.com.au', 'example.com']  # Adjust per client
+
+def handler(event, context):
+    email = event['request']['userAttributes'].get('email', '')
+    domain = email.split('@')[-1].lower()
+
+    if domain not in ALLOWED_DOMAINS:
+        raise Exception(f"Signup restricted to approved email domains")
+
+    event['response']['autoConfirmUser'] = True
+    event['response']['autoVerifyEmail'] = True
+    # ... rest of SNS notification code
+    return event</code></pre>
+<p>Add <code>allowed_email_domains</code> as a Terraform variable, passed to the Lambda as an env var.</p>
+</div>
+</details>
+
+<details class="sev-high">
+<summary><span class="badge b-high">HIGH</span> 4. S3 Buckets Use AES256, Not KMS</summary>
+<div class="detail-body">
+<p class="file">terraform/modules/api-key-portal/main.tf:46, 108</p>
+<p><strong>Risk:</strong> No customer-managed key rotation. Fails SOC 2 / HIPAA / PCI-DSS compliance checks.</p>
+<h4>How to Fix</h4>
+<pre><code># terraform/modules/api-key-portal/main.tf
+resource "aws_kms_key" "portal" {
+  description         = "Encrypts portal S3 buckets"
+  enable_key_rotation = true
+}
+
+# Update bucket encryption:
+apply_server_side_encryption_by_default {
+  sse_algorithm     = "aws:kms"
+  kms_master_key_id = aws_kms_key.portal.arn
+}</code></pre>
+</div>
+</details>
+
+<details class="sev-high">
+<summary><span class="badge b-high">HIGH</span> 5. Single NAT Gateway (SPOF for Egress)</summary>
+<div class="detail-body">
+<p class="file">terraform/modules/vpc/main.tf:73-84</p>
+<p><strong>Risk:</strong> All private subnet egress routes through one NAT in <code>ap-southeast-2a</code>. NAT failure = no outbound connectivity.</p>
+<h4>How to Fix</h4>
+<pre><code># Option A: NAT per AZ (high availability, +$32/mo)
+resource "aws_nat_gateway" "main" {
+  count         = var.enable_nat_gateway ? length(var.azs) : 0
+  allocation_id = aws_eip.nat[count.index].id
+  subnet_id     = aws_subnet.public[count.index].id
+}
+
+# Option B: VPC endpoints to eliminate NAT for most traffic (cheaper)
+# Add endpoints for: ECR, S3, DynamoDB, CloudWatch, STS
+resource "aws_vpc_endpoint" "ecr_api" {
+  vpc_id            = aws_vpc.main.id
+  service_name      = "com.amazonaws.${var.region}.ecr.api"
+  vpc_endpoint_type = "Interface"
+  subnet_ids        = aws_subnet.private[*].id
+}</code></pre>
+<p>Option B is more cost-effective: VPC endpoints are cheaper than NAT Gateway and eliminate egress traffic charges for AWS services.</p>
+</div>
+</details>
+
+<details class="sev-high">
+<summary><span class="badge b-high">HIGH</span> 6. No CloudWatch Alarms for AWS Resources</summary>
+<div class="detail-body">
+<p class="file">Missing resource</p>
+<p><strong>Risk:</strong> API Gateway 5xx errors, CloudFront failures, and node health issues go undetected until users report them.</p>
+<h4>How to Fix</h4>
+<pre><code># terraform/modules/observability/alarms.tf
+resource "aws_cloudwatch_metric_alarm" "apigw_5xx" {
+  alarm_name          = "${var.project_name}-apigw-5xx"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "5XXError"
+  namespace           = "AWS/ApiGateway"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = 5
+  alarm_actions       = [var.sns_topic_arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "cf_5xx" {
+  alarm_name          = "${var.project_name}-cf-5xx"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "5xxErrorRate"
+  namespace           = "AWS/CloudFront"
+  period              = 300
+  statistic           = "Average"
+  threshold           = 5
+  alarm_actions       = [var.sns_topic_arn]
+}</code></pre>
+</div>
+</details>
+
+<details class="sev-high">
+<summary><span class="badge b-high">HIGH</span> 7. Ollama ArgoCD App Missing RespectIgnoreDifferences</summary>
+<div class="detail-body">
+<p class="file">argocd/apps/08-ollama.yaml:31-36</p>
+<p><strong>Risk:</strong> <code>selfHeal: true</code> + <code>ignoreDifferences</code> on resources, but without <code>RespectIgnoreDifferences=true</code> sync option. SelfHeal can revert <code>switch-model.sh</code> resource patches.</p>
+<h4>How to Fix</h4>
+<pre><code># argocd/apps/08-ollama.yaml — add to syncOptions
+syncPolicy:
+  automated:
+    selfHeal: true
+    prune: true
+  syncOptions:
+    - ApplyOutOfSyncOnly=true
+    - CreateNamespace=true
+    - RespectIgnoreDifferences=true   # ADD THIS LINE</code></pre>
+</div>
+</details>
+
+<details class="sev-high">
+<summary><span class="badge b-high">HIGH</span> 8. No Application-Level Audit Logging</summary>
+<div class="detail-body">
+<p class="file">Missing capability</p>
+<p><strong>Risk:</strong> Cannot answer: "Who used which model at what time?" No inference request logs, no model switch audit trail.</p>
+<h4>How to Fix</h4>
+<pre><code># k8s/ollama/deployment.yaml — enable Ollama logging
+env:
+  - name: OLLAMA_LOG_LEVEL
+    value: "INFO"
+
+# Then ship logs to CloudWatch via Fluent Bit (EKS Auto Mode add-on):
+# terraform/modules/eks/main.tf
+resource "aws_eks_addon" "cloudwatch_observability" {
+  cluster_name = module.eks.cluster_name
+  addon_name   = "amazon-cloudwatch-observability"
+}</code></pre>
+<p>This ships all pod logs (including Ollama inference requests) to CloudWatch Logs. Query with CloudWatch Insights.</p>
+</div>
+</details>
+
+<details class="sev-high">
+<summary><span class="badge b-high">HIGH</span> 9. Hardcoded AWS Account ID in CI/CD Workflows</summary>
+<div class="detail-body">
+<p class="file">.github/workflows/terraform-plan.yml:37, terraform-apply.yml:38</p>
+<p><strong>Risk:</strong> Account ID <code>183758910727</code> is in version control. Exposes account structure.</p>
+<h4>How to Fix</h4>
+<pre><code># .github/workflows/terraform-plan.yml
+- role-to-assume: arn:aws:iam::183758910727:role/github-actions-terraform
++ role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+
+# In GitHub repo → Settings → Secrets → Add:
+# AWS_ROLE_ARN = arn:aws:iam::183758910727:role/github-actions-terraform</code></pre>
+</div>
+</details>
+
+<details class="sev-high">
+<summary><span class="badge b-high">HIGH</span> 10. No Rollback on Deploy Script Failure</summary>
+<div class="detail-body">
+<p class="file">scripts/deploy-stack-a.sh:269</p>
+<p><strong>Risk:</strong> Two-phase terraform apply with no rollback. Phase 2 failure leaves infrastructure in inconsistent state.</p>
+<h4>How to Fix</h4>
+<pre><code># scripts/deploy-stack-a.sh — wrap Phase 2 with rollback
+if ! terraform apply -auto-approve 2>&1 | tee /tmp/tf-phase2.log; then
+  error "Phase 2 failed. Saving state for manual review."
+  error "Log: /tmp/tf-phase2.log"
+  error "To retry: terraform apply"
+  error "To rollback Phase 1: terraform destroy -target=module.cdn_waf -target=module.api_gateway"
+  exit 1
+fi</code></pre>
+</div>
+</details>
+
+<details class="sev-high">
+<summary><span class="badge b-high">HIGH</span> 11. KEDA Race Condition (EventBridge vs Scale-Up)</summary>
+<div class="detail-body">
+<p class="file">scripts/scale-up.sh:52-63</p>
+<p><strong>Risk:</strong> EventBridge safety timer fires 15 min after KEDA is paused. If <code>scale-up.sh</code> takes &gt;15 min (slow model load), EventBridge unpauses KEDA, which scales to 0 and kills the loading pod.</p>
+<h4>How to Fix</h4>
+<pre><code># scripts/scale-up.sh — refresh pause timestamp every 5 min during load
+while ! is_model_loaded; do
+  # Refresh pause annotation to reset EventBridge timer
+  PAUSE_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  kubectl annotate scaledobject ollama-autoscaler -n ollama \
+    gpu-controller/paused-at="$PAUSE_TIME" --overwrite 2>/dev/null
+  sleep 30
+done</code></pre>
+</div>
+</details>
+
+<details class="sev-high">
+<summary><span class="badge b-high">HIGH</span> 12. Model Loader Job: No Resource Limits</summary>
+<div class="detail-body">
+<p class="file">k8s/model-loader/job.yaml:32-75</p>
+<p><strong>Risk:</strong> No <code>resources</code> section. Job can consume unbounded CPU/memory, evicting other pods on the node.</p>
+<h4>How to Fix</h4>
+<pre><code># k8s/model-loader/job.yaml — add resources
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi</code></pre>
+</div>
+</details>
+
+<details class="sev-high">
+<summary><span class="badge b-high">HIGH</span> 13. No CloudTrail Enabled</summary>
+<div class="detail-body">
+<p class="file">Missing resource</p>
+<p><strong>Risk:</strong> No AWS API audit trail. Cannot investigate who created/deleted resources.</p>
+<h4>How to Fix</h4>
+<pre><code># terraform/main.tf — add CloudTrail
+resource "aws_cloudtrail" "main" {
+  name                       = "${var.project_name}-trail"
+  s3_bucket_name             = aws_s3_bucket.cloudtrail.id
+  is_multi_region_trail      = false   # Single region for cost
+  enable_log_file_validation = true
+
+  event_selector {
+    read_write_type           = "All"
+    include_management_events = true
+  }
+}</code></pre>
+<p><strong>Cost:</strong> Free for management events (first trail). S3 storage: ~$2/mo.</p>
+</div>
+</details>
+
+<details class="sev-high">
+<summary><span class="badge b-high">HIGH</span> 14. No ArgoCD RBAC Configuration</summary>
+<div class="detail-body">
+<p class="file">terraform/modules/argocd/main.tf</p>
+<p><strong>Risk:</strong> Default RBAC gives admin access to all authenticated users. Anyone with cluster access can deploy to any namespace.</p>
+<h4>How to Fix</h4>
+<pre><code># terraform/modules/argocd/main.tf — add RBAC values
+set {
+  name  = "configs.rbac.policy\\.csv"
+  value = "p, role:readonly, applications, get, */*, allow\\ng, system:authenticated, role:readonly"
+}
+set {
+  name  = "configs.rbac.policy\\.default"
+  value = "role:readonly"
+}</code></pre>
+<p>This makes all users read-only by default. Only the ArgoCD admin (initial password) can modify apps.</p>
+</div>
+</details>
+
+</div>
+
+<!-- ======================================================================== -->
+<!-- MEDIUM TAB -->
+<!-- ======================================================================== -->
+<div class="tab-panel" id="panel-medium">
+
+<details class="sev-med"><summary><span class="badge b-med">MED</span> 1. WAF SQL/XSS Rules in Count Mode (Not Blocking)</summary><div class="detail-body"><p class="file">terraform/modules/cdn-waf/main.tf:248-265</p><p>Rules are counting matches but not blocking. Switch <code>count {}</code> to <code>block {}</code> for production.</p><pre><code># Change each rule_action_override from:
+action_to_use { count {} }
+# To:
+action_to_use { block {} }</code></pre></div></details>
+
+<details class="sev-med"><summary><span class="badge b-med">MED</span> 2. CloudFront Uses Default Certificate (No Custom Domain)</summary><div class="detail-body"><p class="file">terraform/modules/cdn-waf/main.tf:531</p><p>Users access via <code>d1eg49k9r220u8.cloudfront.net</code> &mdash; not professional. Add ACM certificate + Route 53 alias for a custom domain.</p><pre><code>viewer_certificate {
+  acm_certificate_arn      = aws_acm_certificate.main.arn
+  ssl_support_method       = "sni-only"
+  minimum_protocol_version = "TLSv1.2_2021"
+}</code></pre></div></details>
+
+<details class="sev-med"><summary><span class="badge b-med">MED</span> 3. API Gateway Log Retention Only 30 Days</summary><div class="detail-body"><p class="file">terraform/modules/api-gateway/main.tf:311</p><p>Increase to 90 days for compliance. Add S3 export for long-term archival.</p><pre><code>retention_in_days = 90</code></pre></div></details>
+
+<details class="sev-med"><summary><span class="badge b-med">MED</span> 4. SNS Alert Topic Not Encrypted</summary><div class="detail-body"><p class="file">terraform/modules/observability/main.tf:51</p><pre><code>resource "aws_sns_topic" "alerts" {
+  name              = "${var.project_name}-alerts"
+  kms_master_key_id = "alias/aws/sns"   # ADD THIS
+}</code></pre></div></details>
+
+<details class="sev-med"><summary><span class="badge b-med">MED</span> 5. Secrets in K8s etcd (No External Secrets Operator)</summary><div class="detail-body"><p class="file">k8s/open-webui/deployment.yaml</p><p>Deploy ESO to sync secrets from AWS Secrets Manager. Enables rotation + audit.</p><pre><code>helm install external-secrets external-secrets/external-secrets \
+  --namespace external-secrets --create-namespace</code></pre></div></details>
+
+<details class="sev-med"><summary><span class="badge b-med">MED</span> 6. EBS Snapshot = Single Copy of Model Weights</summary><div class="detail-body"><p class="file">Missing DLM policy</p><p>Add Data Lifecycle Manager to auto-copy the Ollama model snapshot daily. Keep 7 copies. Cost: ~$3/mo.</p><pre><code># Same pattern as Open WebUI backup (Critical #6), but target the ollama-models snapshot tag</code></pre></div></details>
+
+<details class="sev-med"><summary><span class="badge b-med">MED</span> 7. Hardcoded Env Vars in Deployments (No ConfigMaps)</summary><div class="detail-body"><p class="file">k8s/ollama/deployment.yaml, k8s/open-webui/deployment.yaml</p><p>Move tunable parameters (<code>OLLAMA_NUM_PARALLEL</code>, <code>AIOHTTP_CLIENT_TIMEOUT</code>, feature flags) to ConfigMaps for runtime tuning.</p><pre><code># k8s/ollama/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ollama-config
+  namespace: ollama
+data:
+  OLLAMA_NUM_PARALLEL: "4"
+  OLLAMA_CONTEXT_LENGTH: "32768"
+  OLLAMA_KEEP_ALIVE: "24h"
+
+# In deployment.yaml:
+envFrom:
+  - configMapRef:
+      name: ollama-config</code></pre></div></details>
+
+<details class="sev-med"><summary><span class="badge b-med">MED</span> 8. Open WebUI: Recreate Strategy Causes Downtime</summary><div class="detail-body"><p class="file">k8s/open-webui/deployment.yaml:22</p><pre><code># Change from:
+strategy:
+  type: Recreate
+# To:
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0</code></pre></div></details>
+
+<details class="sev-med"><summary><span class="badge b-med">MED</span> 9. No HPA for Open WebUI</summary><div class="detail-body"><p class="file">Missing resource</p><p>Add HPA to scale Open WebUI from 1&rarr;3 replicas under load.</p><pre><code>apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: open-webui
+  namespace: open-webui
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: open-webui
   minReplicas: 1
   maxReplicas: 3
   metrics:
     - type: Resource
-      resource: {name: cpu, target: {type: Utilization, averageUtilization: 70}}</code></pre>
-<p><strong>Benefit:</strong> Auto-scales for concurrent users without over-provisioning at idle.</p>
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70</code></pre></div></details>
+
+<details class="sev-med"><summary><span class="badge b-med">MED</span> 10. No kubectl Timeout in Scripts</summary><div class="detail-body"><p class="file">scripts/01-setup.sh:84</p><p>Add <code>--request-timeout=10s</code> to all kubectl commands. Prevents infinite hangs on unresponsive clusters.</p></div></details>
+
+<details class="sev-med"><summary><span class="badge b-med">MED</span> 11. No Confirmation Before Tier Change</summary><div class="detail-body"><p class="file">switch-model.sh:499</p><pre><code># Add before patch_deployment():
+echo "Switching to Tier $tier ($model_tag)"
+echo "Instance: $instance_type — Cost: $spot_cost/hr"
+read -r -p "Proceed? [y/N] " confirm
+[[ "$confirm" =~ ^[Yy]$ ]] || { echo "Cancelled."; exit 0; }</code></pre></div></details>
+
+<details class="sev-med"><summary><span class="badge b-med">MED</span> 12. Orphaned EC2 on Snapshot Script Timeout</summary><div class="detail-body"><p class="file">scripts/create-model-snapshot.sh:191</p><pre><code># Add auto-termination on timeout:
+if [ ${ELAPSED} -ge ${MAX_WAIT} ]; then
+  error "Timed out. Terminating instance ${INSTANCE_ID}..."
+  aws ec2 terminate-instances --instance-ids "$INSTANCE_ID"
+  exit 1
+fi</code></pre></div></details>
+
+<details class="sev-med"><summary><span class="badge b-med">MED</span> 13. Monitoring NetworkPolicy Too Permissive</summary><div class="detail-body"><p class="file">k8s/monitoring-networkpolicy.yaml:24-38</p><p>Restrict egress to specific namespaces (ollama, open-webui, kube-system) instead of <code>namespaceSelector: {}</code>.</p></div></details>
+
+<details class="sev-med"><summary><span class="badge b-med">MED</span> 14. No Pre-Flight Checks in deploy-stack-a.sh</summary><div class="detail-body"><p class="file">scripts/deploy-stack-a.sh:73-151</p><p>Add verification for: S3 backend bucket, DynamoDB lock table, GPU service quotas, VPC CIDR availability.</p></div></details>
+
+<details class="sev-med"><summary><span class="badge b-med">MED</span> 15. No Dry-Run Mode for Destructive Scripts</summary><div class="detail-body"><p class="file">scripts/scale-down.sh, scripts/create-model-snapshot.sh</p><p>Add <code>--dry-run</code> flag to preview changes before executing. Display what would happen without doing it.</p></div></details>
+
+<details class="sev-med"><summary><span class="badge b-med">MED</span> 16. Provider Versions Not Pinned</summary><div class="detail-body"><p class="file">All versions.tf files</p><pre><code># Change from:
+required_providers {
+  aws = { source = "hashicorp/aws", version = ">= 5.0" }
+}
+# To:
+required_providers {
+  aws = { source = "hashicorp/aws", version = ">= 5.0, < 6.0" }
+}</code></pre></div></details>
+
+<details class="sev-med"><summary><span class="badge b-med">MED</span> 17. No Cognito Disaster Recovery</summary><div class="detail-body"><p class="file">terraform/modules/cognito/</p><p>No backup for Cognito User Pool. If deleted, all user accounts lost. Enable AWS Backup for Cognito (preview feature) or export users periodically via <code>aws cognito-idp list-users</code>.</p></div></details>
+
+<details class="sev-med"><summary><span class="badge b-med">MED</span> 18. Silent Terraform Output Failures</summary><div class="detail-body"><p class="file">scripts/01-setup.sh:55-56</p><p>Terraform output reads fall back to defaults silently. Add explicit error if outputs are empty.</p><pre><code>EKS_CLUSTER_NAME=$(terraform output -raw eks_cluster_name 2>/dev/null)
+if [[ -z "$EKS_CLUSTER_NAME" ]]; then
+  error "Cannot read terraform outputs. Is state initialized?"
+  exit 1
+fi</code></pre></div></details>
+
 </div>
 
-<div class="card sev-med">
-<h4><span class="badge b-med">MED</span> &nbsp; Move Hardcoded Env Vars to ConfigMaps</h4>
-<p><strong>Current:</strong> 30+ env vars hardcoded in deployment YAML. Changing <code>OLLAMA_NUM_PARALLEL</code> or <code>AIOHTTP_CLIENT_TIMEOUT</code> requires a manifest edit + ArgoCD sync + pod restart.</p>
-<p><strong>Improvement:</strong> Move tunable parameters to a ConfigMap. ArgoCD detects ConfigMap changes and triggers rolling restart automatically.</p>
-<p><strong>Benefit:</strong> Runtime tuning without touching deployment manifests. Faster iteration during load testing.</p>
+<!-- ======================================================================== -->
+<!-- LOW TAB -->
+<!-- ======================================================================== -->
+<div class="tab-panel" id="panel-low">
+
+<details class="sev-low"><summary><span class="badge b-low">LOW</span> 1. Hardcoded AWS Profile in Scripts</summary><div class="detail-body"><p class="file">scripts/scale-up.sh:28, scale-down.sh:29, setup-amg.sh:34, test-ollama-stack.sh:53</p><p>Replace <code>stax-stax-au1-versent-innovation</code> with a generic default or require <code>AWS_PROFILE</code> env var.</p></div></details>
+
+<details class="sev-low"><summary><span class="badge b-low">LOW</span> 2. Unsafe .env Sourcing</summary><div class="detail-body"><p class="file">scripts/06-setup-github-sync.sh:70</p><p>Use <code>grep -E '^[A-Z_]+=.*' "$ENV_FILE" | while read line; do export "$line"; done</code> instead of <code>source</code>.</p></div></details>
+
+<details class="sev-low"><summary><span class="badge b-low">LOW</span> 3. No Timestamps in Script Log Output</summary><div class="detail-body"><p class="file">All scripts</p><pre><code># Update log functions:
+log() { echo -e "$(date -u +%H:%M:%S) ${GREEN}[INFO]${NC} $*"; }</code></pre></div></details>
+
+<details class="sev-low"><summary><span class="badge b-low">LOW</span> 4. No terraform fmt Enforcement in CI</summary><div class="detail-body"><p class="file">.github/workflows/*.yml</p><pre><code>- name: Check formatting
+  run: terraform fmt -recursive -check -diff</code></pre></div></details>
+
+<details class="sev-low"><summary><span class="badge b-low">LOW</span> 5. No .terraform.lock.hcl Committed</summary><div class="detail-body"><p>Run <code>terraform init</code> and commit <code>.terraform.lock.hcl</code> so all environments use identical provider versions.</p></div></details>
+
+<details class="sev-low"><summary><span class="badge b-low">LOW</span> 6. Missing Kubernetes Labels</summary><div class="detail-body"><p class="file">All deployments</p><p>Add standard labels: <code>app.kubernetes.io/version</code>, <code>app.kubernetes.io/component</code>, <code>app.kubernetes.io/managed-by</code>.</p></div></details>
+
+<details class="sev-low"><summary><span class="badge b-low">LOW</span> 7. Cognito Domain Uses Random Suffix</summary><div class="detail-body"><p class="file">terraform/modules/cognito/main.tf:128-137</p><p>Use <code>${var.project_name}-llm-${var.environment}</code> for a deterministic, readable domain.</p></div></details>
+
+<details class="sev-low"><summary><span class="badge b-low">LOW</span> 8. No Terraform Variable Validation Blocks</summary><div class="detail-body"><p class="file">terraform/variables.tf</p><p>Add <code>validation</code> blocks for CIDR format, K8s version, rate limits &gt; 0, etc.</p></div></details>
+
+<details class="sev-low"><summary><span class="badge b-low">LOW</span> 9. ArgoCD Wave Dependencies Not Documented</summary><div class="detail-body"><p class="file">argocd/apps/*.yaml</p><p>Add comments: <code># Depends on: Wave X (resource)</code> and <code># Required by: Wave Y</code> to each app manifest.</p></div></details>
+
+<details class="sev-low"><summary><span class="badge b-low">LOW</span> 10. No Cost Estimation Before GPU Ops</summary><div class="detail-body"><p class="file">scripts/scale-up.sh, switch-model.sh</p><p>Display expected hourly cost before starting GPU instances: <code>echo "Cost: $0.35/hr (g5.xlarge spot). Confirm? [y/N]"</code></p></div></details>
+
+<details class="sev-low"><summary><span class="badge b-low">LOW</span> 11. generate-readme-html.py: No Input Validation</summary><div class="detail-body"><p class="file">scripts/generate-readme-html.py:313</p><p>Add <code>Path(readme).exists()</code> check before processing.</p></div></details>
+
+<details class="sev-low"><summary><span class="badge b-low">LOW</span> 12. No Health Check After Terraform Apply in CI</summary><div class="detail-body"><p class="file">.github/workflows/terraform-apply.yml:50</p><p>Add post-apply verification: <code>aws eks describe-cluster --name $CLUSTER --query 'cluster.status'</code> should return <code>ACTIVE</code>.</p></div></details>
+
 </div>
 
-<div class="card sev-med">
-<h4><span class="badge b-med">MED</span> &nbsp; Vertical Pod Autoscaler (VPA) in Recommendation Mode</h4>
-<p><strong>Current:</strong> Resource requests/limits set manually. Ollama requests 1 CPU but actual usage varies by model tier.</p>
-<p><strong>Improvement:</strong> Install VPA in recommendation-only mode. Review quarterly and adjust requests to match actual usage. Prevents over-provisioning (Karpenter picks smaller/cheaper instances when requests are lower).</p>
-<p><strong>Benefit:</strong> Right-sized pods &rarr; Karpenter picks optimal instance types &rarr; lower cost.</p>
+<!-- ======================================================================== -->
+<!-- COST TAB -->
+<!-- ======================================================================== -->
+<div class="tab-panel" id="panel-cost">
+
+<details class="sev-cost"><summary><span class="badge b-cost">COST</span> 1. API Gateway Usage Plans (Prevent Runaway GPU Costs)</summary><div class="detail-body">
+<p><strong>Current:</strong> Unlimited API requests = unlimited GPU hours. One heavy user could burn $100+/day.</p>
+<p><strong>Savings:</strong> Prevents cost overruns. No additional cost.</p>
+<pre><code># terraform/modules/api-gateway/main.tf
+resource "aws_api_gateway_usage_plan" "standard" {
+  name = "${var.project_name}-standard"
+
+  api_stages {
+    api_id = aws_api_gateway_rest_api.ollama.id
+    stage  = aws_api_gateway_stage.prod.stage_name
+  }
+
+  quota_settings {
+    limit  = 1000
+    period = "DAY"
+  }
+
+  throttle_settings {
+    rate_limit  = 10
+    burst_limit = 20
+  }
+}</code></pre>
+</div></details>
+
+<details class="sev-cost"><summary><span class="badge b-cost">COST</span> 2. Cache Read-Only API Endpoints at CloudFront Edge</summary><div class="detail-body">
+<p><strong>Current:</strong> <code>/api/tags</code> and <code>/v1/models</code> use <code>CachingDisabled</code>. Every request hits the origin.</p>
+<p><strong>Savings:</strong> ~$2-5/mo in reduced origin requests.</p>
+<pre><code># terraform/modules/cdn-waf/main.tf — for /api/tags behavior:
+cache_policy_id = aws_cloudfront_cache_policy.short_ttl.id  # Custom 60s TTL
+
+resource "aws_cloudfront_cache_policy" "short_ttl" {
+  name        = "${var.project_name}-60s-cache"
+  default_ttl = 60
+  max_ttl     = 60
+  min_ttl     = 0
+  parameters_in_cache_key_and_forwarded_to_origin {
+    headers_config { header_behavior = "none" }
+    cookies_config { cookie_behavior = "none" }
+    query_strings_config { query_string_behavior = "none" }
+  }
+}</code></pre>
+</div></details>
+
+<details class="sev-cost"><summary><span class="badge b-cost">COST</span> 3. Add DynamoDB VPC Endpoint</summary><div class="detail-body">
+<p><strong>Current:</strong> API Key Portal DynamoDB traffic routes through NAT Gateway ($0.045/GB).</p>
+<p><strong>Savings:</strong> ~$2/mo.</p>
+<pre><code># terraform/modules/vpc/main.tf
+resource "aws_vpc_endpoint" "dynamodb" {
+  vpc_id            = aws_vpc.main.id
+  service_name      = "com.amazonaws.${var.region}.dynamodb"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = [aws_route_table.private.id]
+}</code></pre>
+</div></details>
+
+<details class="sev-cost"><summary><span class="badge b-cost">COST</span> 4. AWS Savings Plans for System Nodes</summary><div class="detail-body">
+<p><strong>Current:</strong> t3.xlarge on-demand: $0.1872/hr &times; 730 = $136/mo.</p>
+<p><strong>Savings:</strong> 1-year Compute Savings Plan: ~20-30% = $27-41/mo savings.</p>
+<p>Purchase via AWS Console &rarr; Cost Explorer &rarr; Savings Plans. Select "Compute" type, 1-year, no upfront.</p>
+</div></details>
+
+<details class="sev-cost"><summary><span class="badge b-cost">COST</span> 5. Reduce Prometheus Retention (Dev Only)</summary><div class="detail-body">
+<p><strong>Current:</strong> 15 days in AMP.</p>
+<p><strong>Savings:</strong> 15d &rarr; 7d saves ~$2-3/mo. Only for dev; keep 15d for prod.</p>
+<pre><code># terraform/variables.tf
+variable "prometheus_retention_days" {
+  default = 7    # Dev: 7d, Prod: 15d
+}</code></pre>
+</div></details>
+
+<details class="sev-cost"><summary><span class="badge b-cost">COST</span> 6. Schedule System Nodes Off-Hours (Future)</summary><div class="detail-body">
+<p><strong>Current:</strong> System nodes run 24/7. Open WebUI is only used during business hours.</p>
+<p><strong>Savings:</strong> ~$40/mo (scale system to 0 outside 8am-8pm weekdays).</p>
+<p><strong>Prerequisite:</strong> Requires HPA + pod lifecycle management. More complex than GPU scale-to-zero. Defer to Phase 2.</p>
+</div></details>
+
+<details class="sev-cost"><summary><span class="badge b-cost">COST</span> 7. Disable WAF Bot Control (If Not Needed)</summary><div class="detail-body">
+<p><strong>Current:</strong> Bot Control variable defaults to <code>false</code> &mdash; already correct.</p>
+<p><strong>Savings:</strong> $10/mo if someone accidentally enables it. Add a comment in variables.tf documenting that it's intentionally disabled.</p>
+</div></details>
+
 </div>
 
-<div class="card sev-med">
-<h4><span class="badge b-med">MED</span> &nbsp; Implement Velero for Full Cluster Backup</h4>
-<p><strong>Current:</strong> No backup strategy for K8s resources or PVCs. If ArgoCD state or Open WebUI data is lost, manual reconstruction required.</p>
-<p><strong>Improvement:</strong> Deploy Velero with S3 backend. Schedule daily backups of all namespaces + PVCs. Enables full disaster recovery and cluster migration.</p>
-<pre><code>helm install velero vmware-tanzu/velero --namespace velero \
+<!-- ======================================================================== -->
+<!-- ARCHITECTURE TAB -->
+<!-- ======================================================================== -->
+<div class="tab-panel" id="panel-arch">
+
+<details class="sev-arch"><summary><span class="badge b-arch">ARCH</span> 1. Auto Scale-from-Zero (Lambda Trigger on First Request)</summary><div class="detail-body">
+<p><strong>Current:</strong> KEDA scales to zero after idle, but scaling UP requires manual <code>./scripts/scale-up.sh</code>.</p>
+<p><strong>Improvement:</strong> API Gateway Lambda checks Ollama replicas. If 0, triggers scale-up and returns <code>503 Retry-After: 180</code>.</p>
+<pre><code># terraform/modules/api-gateway/lambda/auto_scale_trigger.py
+import boto3, json
+
+def handler(event, context):
+    k8s = boto3.client('eks')
+    # Check if Ollama is at 0 replicas (via CloudWatch metric or K8s API)
+    # If 0: trigger scale-up, return 503
+    # If running: proxy request to NLB
+    return {
+        'statusCode': 503,
+        'headers': {'Retry-After': '180'},
+        'body': json.dumps({'message': 'Model loading, please wait ~3 minutes'})
+    }
+
+# CloudFront custom error page for 503:
+# "Your request is warming up the GPU. Please retry in 3 minutes."</code></pre>
+<p><strong>Benefit:</strong> Fully automatic cold start. No SSH/kubectl needed. Users just wait.</p>
+</div></details>
+
+<details class="sev-arch"><summary><span class="badge b-arch">ARCH</span> 2. Open WebUI: Recreate &rarr; RollingUpdate</summary><div class="detail-body">
+<p><strong>Current:</strong> <code>strategy: Recreate</code> causes downtime on every deployment.</p>
+<pre><code># k8s/open-webui/deployment.yaml
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0</code></pre>
+<p><strong>Note:</strong> Open WebUI uses SQLite on a PVC. With RollingUpdate, two pods briefly share the PVC. SQLite handles concurrent reads but not concurrent writes. Since only one pod processes OAuth callbacks at a time (via cookie affinity), this is safe.</p>
+</div></details>
+
+<details class="sev-arch"><summary><span class="badge b-arch">ARCH</span> 3. HPA for Open WebUI (Auto-Scale on Load)</summary><div class="detail-body">
+<p><strong>Current:</strong> Fixed 1 replica. Under concurrent user load, response times degrade.</p>
+<pre><code># k8s/open-webui/hpa.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: open-webui
+  namespace: open-webui
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: open-webui
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70</code></pre>
+<p><strong>Benefit:</strong> Auto-scales for concurrent users. Karpenter provisions additional system node if needed.</p>
+</div></details>
+
+<details class="sev-arch"><summary><span class="badge b-arch">ARCH</span> 4. Move Env Vars to ConfigMaps</summary><div class="detail-body">
+<p><strong>Current:</strong> 30+ env vars hardcoded in deployment YAML. Any change requires manifest edit + ArgoCD sync.</p>
+<pre><code># k8s/ollama/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ollama-config
+  namespace: ollama
+data:
+  OLLAMA_NUM_PARALLEL: "4"
+  OLLAMA_MAX_LOADED_MODELS: "1"
+  OLLAMA_CONTEXT_LENGTH: "32768"
+  OLLAMA_KEEP_ALIVE: "24h"
+
+# In deployment.yaml — replace individual env entries with:
+envFrom:
+  - configMapRef:
+      name: ollama-config</code></pre>
+<p><strong>Benefit:</strong> <code>kubectl edit configmap ollama-config -n ollama</code> + pod restart = tuning without Git commits.</p>
+</div></details>
+
+<details class="sev-arch"><summary><span class="badge b-arch">ARCH</span> 5. VPA in Recommendation Mode (Right-Size Pods)</summary><div class="detail-body">
+<p><strong>Current:</strong> Resource requests set manually. May be over/under-provisioned.</p>
+<pre><code># Install VPA:
+kubectl apply -f https://github.com/kubernetes/autoscaler/releases/latest/download/vpa-v1-crd-gen.yaml
+kubectl apply -f https://github.com/kubernetes/autoscaler/releases/latest/download/vpa-rbac.yaml
+
+# k8s/ollama/vpa.yaml (recommendation only — does NOT auto-change)
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: ollama-vpa
+  namespace: ollama
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ollama
+  updatePolicy:
+    updateMode: "Off"   # Recommendation only</code></pre>
+<p>Review quarterly: <code>kubectl describe vpa ollama-vpa -n ollama</code> shows recommended CPU/memory. Adjust deployment manually.</p>
+</div></details>
+
+<details class="sev-arch"><summary><span class="badge b-arch">ARCH</span> 6. Velero for Full Cluster Backup/Restore</summary><div class="detail-body">
+<p><strong>Current:</strong> No backup for K8s resources or PVCs. Manual reconstruction on disaster.</p>
+<pre><code># Install Velero:
+helm repo add vmware-tanzu https://charts.velero.io
+helm install velero vmware-tanzu/velero \
+  --namespace velero --create-namespace \
   --set configuration.backupStorageLocation.bucket=ollama-velero-backups \
-  --set schedules.daily.schedule="0 2 * * *"</code></pre>
-<p><strong>Benefit:</strong> Full cluster recovery in &lt;30 min. Enables environment cloning for staging.</p>
+  --set configuration.backupStorageLocation.config.region=ap-southeast-2 \
+  --set configuration.provider=aws \
+  --set initContainers[0].name=velero-plugin-for-aws \
+  --set initContainers[0].image=velero/velero-plugin-for-aws:v1.9.0
+
+# Schedule daily backup:
+velero schedule create daily-backup --schedule="0 2 * * *" \
+  --include-namespaces ollama,open-webui \
+  --ttl 168h   # 7 days retention</code></pre>
+<p><strong>Cost:</strong> ~$5/mo (S3 storage). <strong>Benefit:</strong> Full disaster recovery + environment cloning.</p>
+</div></details>
+
+<details class="sev-arch"><summary><span class="badge b-arch">ARCH</span> 7. Canary Deployments for Model Updates (Flagger)</summary><div class="detail-body">
+<p><strong>Current:</strong> Model switches are all-or-nothing. Quality issues affect all users instantly.</p>
+<pre><code># Install Flagger:
+helm repo add flagger https://flagger.app
+helm install flagger flagger/flagger \
+  --namespace istio-system \
+  --set meshProvider=istio
+
+# k8s/ollama/canary.yaml
+apiVersion: flagger.app/v1beta1
+kind: Canary
+metadata:
+  name: ollama
+  namespace: ollama
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ollama
+  analysis:
+    interval: 1m
+    threshold: 5
+    maxWeight: 50
+    stepWeight: 10
+  metrics:
+    - name: request-success-rate
+      thresholdRange:
+        min: 99
+      interval: 1m</code></pre>
+<p><strong>When to implement:</strong> Production with paying clients. Not needed for dev.</p>
+</div></details>
+
+<details class="sev-arch"><summary><span class="badge b-arch">ARCH</span> 8. GitOps Secret Management (ESO + AWS Secrets Manager)</summary><div class="detail-body">
+<p><strong>Current:</strong> Terraform creates K8s secrets directly. No rotation, secrets in Terraform state.</p>
+<pre><code># Install External Secrets Operator:
+helm install external-secrets external-secrets/external-secrets \
+  --namespace external-secrets --create-namespace
+
+# k8s/open-webui/external-secret.yaml
+apiVersion: external-secrets.io/v1beta1
+kind: SecretStore
+metadata:
+  name: aws-sm
+  namespace: open-webui
+spec:
+  provider:
+    aws:
+      service: SecretsManager
+      region: ap-southeast-2
+      auth:
+        jwt:
+          serviceAccountRef:
+            name: open-webui-sa
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: webui-oauth-cognito
+  namespace: open-webui
+spec:
+  refreshInterval: 1h
+  secretStoreRef: { name: aws-sm, kind: SecretStore }
+  target: { name: webui-oauth-cognito }
+  data:
+    - secretKey: OAUTH_CLIENT_ID
+      remoteRef: { key: ollama/cognito/oauth }
+      property: client_id</code></pre>
+<p><strong>Benefit:</strong> Automatic rotation. Secrets never in Terraform state. Full CloudTrail audit.</p>
+</div></details>
+
+<details class="sev-arch"><summary><span class="badge b-arch">ARCH</span> 9. Istio Waypoint Proxy for L7 Per-User Rate Limiting</summary><div class="detail-body">
+<p><strong>Current:</strong> Istio ambient mesh provides L4 mTLS only. WAF rate limit is per-IP, not per-user.</p>
+<pre><code># k8s/ollama/waypoint.yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: ollama-waypoint
+  namespace: ollama
+  labels:
+    istio.io/waypoint-for: service
+spec:
+  gatewayClassName: istio-waypoint
+  listeners:
+    - name: mesh
+      port: 15008
+      protocol: HBONE
+
+# Then add AuthorizationPolicy for per-user rate limiting:
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: ollama-rate-limit
+  namespace: ollama
+spec:
+  targetRef:
+    kind: Gateway
+    name: ollama-waypoint
+  action: DENY
+  rules:
+    - when:
+        - key: request.headers[x-user-id]
+          notValues: ["*"]</code></pre>
+<p><strong>When to implement:</strong> Production with multiple users. Prevents GPU monopolization.</p>
+</div></details>
+
 </div>
 
-<div class="card sev-low">
-<h4><span class="badge b-low">LOW</span> &nbsp; Canary Deployments for Model Updates</h4>
-<p><strong>Current:</strong> Model switches are all-or-nothing via <code>switch-model.sh</code>. If a new model has quality issues, all users are affected.</p>
-<p><strong>Improvement:</strong> Use Istio traffic splitting + Flagger to route 10% of traffic to the new model tier, validate quality metrics, then gradually shift to 100%.</p>
-<p><strong>Benefit:</strong> Safe model rollouts with automatic rollback on quality regression. Relevant when moving to production with paying clients.</p>
-</div>
+<!-- ======================================================================== -->
+<!-- ACTIONS TAB -->
+<!-- ======================================================================== -->
+<div class="tab-panel" id="panel-actions">
 
-<div class="card sev-low">
-<h4><span class="badge b-low">LOW</span> &nbsp; GitOps for Secret Management (ESO + AWS Secrets Manager)</h4>
-<p><strong>Current:</strong> Terraform creates K8s secrets directly. No rotation, no audit trail, secrets in Terraform state.</p>
-<p><strong>Improvement:</strong> External Secrets Operator syncs secrets from AWS Secrets Manager &rarr; K8s. Secrets Manager handles rotation. Terraform only manages the SM secret, not the K8s resource.</p>
-<p><strong>Benefit:</strong> Automatic secret rotation. Audit trail via CloudTrail. Secrets never in Terraform state.</p>
-</div>
+<h2 style="margin-top:0">Sprint Action Plan</h2>
 
-<div class="card sev-low">
-<h4><span class="badge b-low">LOW</span> &nbsp; Istio Waypoint Proxy for L7 Policy (Future)</h4>
-<p><strong>Current:</strong> Istio ambient mesh provides L4 mTLS via ztunnel. No L7 policies (rate limiting, retries, circuit breaking) per service.</p>
-<p><strong>Improvement:</strong> Add Istio waypoint proxy for the Ollama namespace to enable per-user rate limiting, retry policies, and circuit breaking at L7. This complements the WAF rate limit (which is per-IP, not per-user).</p>
-<p><strong>Benefit:</strong> Fine-grained traffic management. Prevents single user from monopolizing GPU.</p>
-</div>
-
-<h3>Architecture Improvement Priority Matrix</h3>
+<h3>Sprint 1: Immediate (This Week)</h3>
 <table>
-  <tr><th>Priority</th><th>Improvement</th><th>Effort</th><th>Cost</th><th>When</th></tr>
-  <tr><td><span class="badge b-crit">P0</span></td><td>Auto scale-from-zero (Lambda trigger)</td><td>4 hrs</td><td>~$1/mo</td><td>Sprint 1</td></tr>
-  <tr><td><span class="badge b-high">P1</span></td><td>Open WebUI RollingUpdate strategy</td><td>15 min</td><td>Free</td><td>Sprint 1</td></tr>
-  <tr><td><span class="badge b-high">P1</span></td><td>HPA for Open WebUI</td><td>1 hr</td><td>Free</td><td>Sprint 1</td></tr>
-  <tr><td><span class="badge b-high">P1</span></td><td>Env vars to ConfigMaps</td><td>2 hrs</td><td>Free</td><td>Sprint 2</td></tr>
-  <tr><td><span class="badge b-high">P1</span></td><td>Velero cluster backup</td><td>4 hrs</td><td>+$5/mo</td><td>Sprint 2</td></tr>
-  <tr><td><span class="badge b-med">P2</span></td><td>VPA in recommendation mode</td><td>2 hrs</td><td>Free</td><td>Sprint 3</td></tr>
-  <tr><td><span class="badge b-med">P2</span></td><td>ESO + Secrets Manager</td><td>4 hrs</td><td>+$10/mo</td><td>Sprint 3</td></tr>
-  <tr><td><span class="badge b-low">P3</span></td><td>Canary deployments (Flagger)</td><td>8 hrs</td><td>+$20/mo</td><td>Production</td></tr>
-  <tr><td><span class="badge b-low">P3</span></td><td>Istio waypoint L7 policies</td><td>4 hrs</td><td>Free</td><td>Production</td></tr>
+  <tr><th>#</th><th>Action</th><th>Sev</th><th>Effort</th></tr>
+  <tr><td>1</td><td>Add securityContext to all deployments</td><td><span class="badge b-crit">CRIT</span></td><td>1 hr</td></tr>
+  <tr><td>2</td><td>Add startupProbe to Ollama (300s grace)</td><td><span class="badge b-crit">CRIT</span></td><td>15 min</td></tr>
+  <tr><td>3</td><td>Add trap handlers to scale scripts</td><td><span class="badge b-crit">CRIT</span></td><td>30 min</td></tr>
+  <tr><td>4</td><td>Add RespectIgnoreDifferences to Ollama ArgoCD app</td><td><span class="badge b-high">HIGH</span></td><td>5 min</td></tr>
+  <tr><td>5</td><td>Implement API Gateway usage plans</td><td><span class="badge b-cost">COST</span></td><td>30 min</td></tr>
 </table>
 
-<h3>Monthly Cost Impact of All Improvements</h3>
+<h3>Sprint 2: Before Production (Next 2 Weeks)</h3>
 <table>
-  <tr><th>Item</th><th>Monthly Cost</th></tr>
-  <tr><td>Multi-AZ system nodes</td><td>+$60</td></tr>
-  <tr><td>EKS control plane logging</td><td>+$15</td></tr>
-  <tr><td>External Secrets Operator</td><td>+$10</td></tr>
-  <tr><td>Open WebUI backup (DLM)</td><td>+$5</td></tr>
-  <tr><td>Model snapshot backup (DLM)</td><td>+$3</td></tr>
-  <tr><td>CloudWatch alarms + audit logs</td><td>+$5</td></tr>
-  <tr><th>Total incremental cost</th><th>+$98/mo</th></tr>
-  <tr><th>Current platform cost (DEV)</th><th>~$288/mo</th></tr>
-  <tr><th>Production-ready cost</th><th>~$386/mo</th></tr>
+  <tr><th>#</th><th>Action</th><th>Sev</th><th>Effort</th></tr>
+  <tr><td>6</td><td>Replace GitHub Actions PowerUserAccess</td><td><span class="badge b-crit">CRIT</span></td><td>2 hrs</td></tr>
+  <tr><td>7</td><td>Enable EKS control plane logging</td><td><span class="badge b-crit">CRIT</span></td><td>15 min</td></tr>
+  <tr><td>8</td><td>Add PodDisruptionBudgets</td><td><span class="badge b-crit">CRIT</span></td><td>30 min</td></tr>
+  <tr><td>9</td><td>EBS Snapshot Schedule for Open WebUI PVC</td><td><span class="badge b-crit">CRIT</span></td><td>1 hr</td></tr>
+  <tr><td>10</td><td>CloudWatch alarms (API GW, CF, node health)</td><td><span class="badge b-high">HIGH</span></td><td>2 hrs</td></tr>
+  <tr><td>11</td><td>Tighten Ollama NetworkPolicy egress</td><td><span class="badge b-high">HIGH</span></td><td>30 min</td></tr>
+  <tr><td>12</td><td>Multi-AZ system NodePool</td><td><span class="badge b-crit">CRIT</span></td><td>2 hrs</td></tr>
 </table>
 
-<hr>
-<footer>
-  Platform Analysis Report &mdash; Ollama-on-EKS<br>
-  Generated 2026-03-27 &nbsp;|&nbsp; Scope: Terraform, K8s, ArgoCD, Scripts, CI/CD
-</footer>
+<h3>Sprint 3: Production Hardening (Month 2)</h3>
+<table>
+  <tr><th>#</th><th>Action</th><th>Sev</th><th>Effort</th></tr>
+  <tr><td>13</td><td>External Secrets Operator + Secrets Manager</td><td><span class="badge b-arch">ARCH</span></td><td>4 hrs</td></tr>
+  <tr><td>14</td><td>Application-level audit logging</td><td><span class="badge b-high">HIGH</span></td><td>2 hrs</td></tr>
+  <tr><td>15</td><td>Auto scale-from-zero (Lambda trigger)</td><td><span class="badge b-arch">ARCH</span></td><td>4 hrs</td></tr>
+  <tr><td>16</td><td>Velero cluster backup</td><td><span class="badge b-arch">ARCH</span></td><td>4 hrs</td></tr>
+  <tr><td>17</td><td>WAF rules: count &rarr; block mode</td><td><span class="badge b-med">MED</span></td><td>15 min</td></tr>
+  <tr><td>18</td><td>Email domain validation in signup</td><td><span class="badge b-high">HIGH</span></td><td>1 hr</td></tr>
+</table>
+
+<h3>Monthly Cost Impact</h3>
+<table>
+  <tr><th>Item</th><th>Cost</th></tr>
+  <tr><td>Multi-AZ system nodes</td><td>+$60/mo</td></tr>
+  <tr><td>EKS control plane logging</td><td>+$15/mo</td></tr>
+  <tr><td>External Secrets Operator</td><td>+$10/mo</td></tr>
+  <tr><td>Open WebUI backup (DLM)</td><td>+$5/mo</td></tr>
+  <tr><td>CloudWatch alarms + audit logs</td><td>+$5/mo</td></tr>
+  <tr><td>Model snapshot backup (DLM)</td><td>+$3/mo</td></tr>
+  <tr><th>Total incremental</th><th>+$98/mo</th></tr>
+  <tr style="background:#e3f2fd"><th>Current DEV cost</th><th>~$288/mo</th></tr>
+  <tr style="background:#d1fae5"><th>Production-ready cost</th><th>~$386/mo</th></tr>
+</table>
 
 </div>
+
+</div><!-- container -->
+
+<footer>Platform Analysis Report &mdash; Ollama-on-EKS &mdash; 2026-03-27</footer>
+
+<script>
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelector(`.tab[data-tab="${name}"]`).classList.add('active');
+  document.getElementById(`panel-${name}`).classList.add('active');
+  window.scrollTo({top: document.querySelector('.tabs').offsetTop - 10, behavior: 'smooth'});
+}
+</script>
 </body>
 </html>
