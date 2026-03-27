@@ -92,7 +92,7 @@ footer{text-align:center;color:var(--muted);font-size:0.8rem;margin:40px 0 20px}
 
 <!-- STAT BAR (clickable) -->
 <div class="stat-bar">
-  <div style="background:var(--crit);flex:8" onclick="switchTab('critical')">8 Critical (3 Fixed, 4 Deferred)</div>
+  <div style="background:var(--crit);flex:8" onclick="switchTab('critical')">8 Critical (4 Fixed, 4 Deferred)</div>
   <div style="background:var(--high);flex:14" onclick="switchTab('high')">14 High</div>
   <div style="background:var(--med);color:#000;flex:18" onclick="switchTab('medium')">18 Medium</div>
   <div style="background:var(--low);flex:12" onclick="switchTab('low')">12 Low</div>
@@ -102,7 +102,7 @@ footer{text-align:center;color:var(--muted);font-size:0.8rem;margin:40px 0 20px}
 
 <!-- TAB BAR -->
 <div class="tabs">
-  <div class="tab active" data-tab="critical" onclick="switchTab('critical')">Critical (3/8 Fixed)</div>
+  <div class="tab active" data-tab="critical" onclick="switchTab('critical')">Critical (4/8 Fixed)</div>
   <div class="tab" data-tab="high" onclick="switchTab('high')">High (14)</div>
   <div class="tab" data-tab="medium" onclick="switchTab('medium')">Medium (18)</div>
   <div class="tab" data-tab="low" onclick="switchTab('low')">Low (12)</div>
@@ -612,7 +612,7 @@ resource "aws_cloudwatch_log_group" "eks" {
 </details>
 
 <details class="sev-crit">
-<summary><span class="badge b-crit">CRIT</span> 8. Scripts Missing Trap Handlers &mdash; KEDA Left Paused</summary>
+<summary><span class="badge b-crit">CRIT</span> 8. Scripts Missing Trap Handlers &mdash; <span class="badge b-low">FIXED</span> &mdash; KEDA Left Paused</summary>
 <div class="detail-body">
 <p class="file">scripts/scale-up.sh, switch-model.sh</p>
 <p><strong>Risk:</strong> If Ctrl+C is pressed while KEDA is paused (during model loading), KEDA stays paused indefinitely. GPU node runs 24/7 at $0.35-$1.90/hr until someone notices.</p>
