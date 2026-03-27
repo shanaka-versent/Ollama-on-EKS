@@ -1175,7 +1175,7 @@ required_providers {
 
 <details class="sev-med"><summary><span class="badge b-med">MED</span> 17. No Cognito Disaster Recovery</summary><div class="detail-body"><p class="file">terraform/modules/cognito/</p><p>No backup for Cognito User Pool. If deleted, all user accounts lost. Enable AWS Backup for Cognito (preview feature) or export users periodically via <code>aws cognito-idp list-users</code>.</p></div></details>
 
-<details class="sev-med"><summary><span class="badge b-med">MED</span> 18. Silent Terraform Output Failures</summary><div class="detail-body"><p class="file">scripts/01-setup.sh:55-56</p><p>Terraform output reads fall back to defaults silently. Add explicit error if outputs are empty.</p><pre><code>EKS_CLUSTER_NAME=$(terraform output -raw eks_cluster_name 2>/dev/null)
+<details class="sev-med"><summary><span class="badge b-med">MED</span> 18. Silent Terraform Output Failures &mdash; <span class="badge b-low">FIXED</span></summary><div class="detail-body"><p class="file">scripts/01-setup.sh:55-56</p><p>Terraform output reads fall back to defaults silently. Add explicit error if outputs are empty.</p><pre><code>EKS_CLUSTER_NAME=$(terraform output -raw eks_cluster_name 2>/dev/null)
 if [[ -z "$EKS_CLUSTER_NAME" ]]; then
   error "Cannot read terraform outputs. Is state initialized?"
   exit 1
