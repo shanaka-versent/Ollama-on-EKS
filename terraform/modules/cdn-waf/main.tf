@@ -60,6 +60,7 @@ resource "aws_cloudfront_function" "auth_redirect" {
           uri.startsWith('/static/') ||
           uri.startsWith('/api/') ||
           uri.startsWith('/v1/') ||
+          uri.startsWith('/ws/') ||
           uri.startsWith('/portal/') ||
           uri.startsWith('/auth/') ||
           uri === '/favicon.ico' ||
