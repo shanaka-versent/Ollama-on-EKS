@@ -258,7 +258,7 @@ resource "aws_iam_policy"
 </details>
 
 <details class="sev-crit">
-<summary><span class="badge b-crit">CRIT</span> 3. No PodDisruptionBudgets</summary>
+<summary><span class="badge b-crit">CRIT</span> 3. No PodDisruptionBudgets &mdash; <span class="badge b-info">DEFERRED</span></summary>
 <div class="detail-body">
 <p class="file">Missing resource — all namespaces</p>
 <p><strong>Risk:</strong> Cluster upgrades, node drains, and Karpenter consolidation terminate all replicas simultaneously. Guaranteed outage during any maintenance.</p>
@@ -269,44 +269,54 @@ flowchart LR
         DRAIN1["kubectl drain node"] --> KILL1["Ollama pod KILLED"]
         KILL1 --> DOWN1["Service DOWN<br/>mid-inference"]
     end
-    subgraph AFTER["With PDB"]
+    subgraph AFTER["With PDB (maxUnavailable: 0)"]
         DRAIN2["kubectl drain node"] --> BLOCK2["PDB blocks eviction"]
-        BLOCK2 --> WAIT2["Drain waits for<br/>inference to finish"]
-        WAIT2 --> SAFE2["Graceful shutdown"]
+        BLOCK2 --> HANG["Drain HANGS FOREVER<br/>(single replica, no room<br/>to evict safely)"]
     end
     style BEFORE fill:#fef2f2,stroke:#dc3545,stroke-width:2px
-    style AFTER fill:#f0fdf4,stroke:#198754,stroke-width:2px
+    style AFTER fill:#fff8f0,stroke:#fd7e14,stroke-width:2px
     style DOWN1 fill:#dc3545,color:#fff
-    style SAFE2 fill:#198754,color:#fff
+    style HANG fill:#fd7e14,color:#fff
+</div>
+<p class="diagram-label">PDB with maxUnavailable: 0 on single-replica deployments blocks drain forever — creates a different problem</p>
+
+<h4>Why This Is Deferred</h4>
+<p>PDB with <code>maxUnavailable: 0</code> on single-replica deployments <strong>conflicts with 2 existing mechanisms:</strong></p>
+
+<table>
+<tr><th>Component</th><th>Conflict?</th><th>Detail</th></tr>
+<tr><td>KEDA scale-to-zero</td><td style="color:var(--low)">No</td><td>KEDA changes replica count (scaling), not eviction. PDB doesn't apply.</td></tr>
+<tr><td>switch-model.sh</td><td style="color:var(--low)">No</td><td>Patches deployment spec &rarr; triggers rollout. Rollouts are not evictions.</td></tr>
+<tr><td>ArgoCD selfHeal/sync</td><td style="color:var(--low)">No</td><td>Updates deployment spec &rarr; rollout. Not an eviction.</td></tr>
+<tr><td>Spot instance reclaim</td><td style="color:var(--low)">No</td><td>AWS force-terminates the instance. PDB only applies to <em>voluntary</em> evictions.</td></tr>
+<tr><td>Karpenter GPU consolidation</td><td style="color:var(--low)">No</td><td>Uses <code>WhenEmpty</code> &mdash; only fires when Ollama is already at 0 replicas (no pods to evict).</td></tr>
+<tr><td style="font-weight:700">Karpenter system node consolidation</td><td style="color:var(--crit);font-weight:700">YES</td><td>System NodePool uses <code>WhenEmptyOrUnderutilized</code>. Karpenter wants to move pods to a smaller node, but PDB blocks eviction of the single replica <strong>forever</strong>. Node can never be consolidated.</td></tr>
+<tr><td style="font-weight:700">EKS node upgrades (kubectl drain)</td><td style="color:var(--crit);font-weight:700">YES</td><td><code>kubectl drain</code> tries to evict pods. With 1 replica + <code>maxUnavailable: 0</code>, drain <strong>hangs forever</strong>. Node upgrade stalls.</td></tr>
+</table>
+
+<h4>Decision: Accepted Risk</h4>
+<div style="background:#f0f9ff;border:1px solid #0dcaf0;border-radius:8px;padding:12px;margin:12px 0">
+<p><strong>Status: Deferred</strong> &mdash; Brief outages during maintenance are acceptable for the current dev/consulting phase. Cluster updates are infrequent (monthly at most). The team accepts 2-3 minutes of downtime during planned node drains.</p>
+<p><strong>Revisit when:</strong> Moving to production with SLA requirements, or when Open WebUI runs 2+ replicas via HPA (at which point <code>maxUnavailable: 1</code> works correctly with multi-replica).</p>
 </div>
 
-<h4>New files to create:</h4>
-<pre><code># k8s/ollama/pdb.yaml (NEW FILE)
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: ollama
-  namespace: ollama
-spec:
-  maxUnavailable: 0        # Never evict voluntarily
-  selector:
-    matchLabels:
-      app: ollama
-
----
-# k8s/open-webui/pdb.yaml (NEW FILE)
+<h4>What Would Work (Future)</h4>
+<ul>
+<li><strong>Ollama:</strong> Skip PDB entirely. GPU workload tolerates spot interruptions (2-3 min). KEDA + Karpenter manage its lifecycle.</li>
+<li><strong>Open WebUI with HPA (2+ replicas):</strong> PDB <code>maxUnavailable: 1</code> allows drains while keeping at least 1 replica running.</li>
+</ul>
+<pre><code># Only implement after HPA is enabled (Architecture item #3):
+# k8s/open-webui/pdb.yaml
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: open-webui
   namespace: open-webui
 spec:
-  maxUnavailable: 0
-  selector:
-    matchLabels:
+  maxUnavailable: 1       # Allow drain (evict 1 at a time)
+  selector:               # But HPA keeps minReplicas: 2
+    matchLabels:           # so 1 replica always serves traffic
       app: open-webui</code></pre>
-<p>Add these files to the respective ArgoCD app paths (<code>k8s/ollama/</code> and <code>k8s/open-webui/</code>). ArgoCD auto-syncs them.</p>
-<p><strong>Test:</strong> <code>kubectl drain &lt;node&gt; --ignore-daemonsets</code> &mdash; should block with "Cannot evict pod (PDB)".</p>
 </div>
 </details>
 
