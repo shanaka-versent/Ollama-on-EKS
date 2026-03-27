@@ -107,6 +107,17 @@ spec:
               mountPath: /data/models
             - name: tmp-home
               mountPath: /tmp/ollama-home
+          # Startup probe: suppresses liveness + readiness until model is loaded.
+          # Model loading from EBS snapshot takes 2-4 minutes. Without this,
+          # liveness kills the pod at ~120s → infinite CrashLoopBackOff.
+          # Grace period: 30 + (15 × 20) = 330s = 5.5 min.
+          startupProbe:
+            httpGet:
+              path: /api/tags
+              port: 11434
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 20
           readinessProbe:
             httpGet:
               path: /api/tags
