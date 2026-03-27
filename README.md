@@ -458,7 +458,7 @@ The switch process: pause KEDA → patch GPU/memory/CPU → wait for Karpenter n
 
 ### Open WebUI (Browser-Based Chat Interface)
 
-Open WebUI (v0.8.10) provides a ChatGPT-like interface for Ollama. Deployed on EKS system nodes (no GPU needed), air-gapped via NetworkPolicy. Accessible via CloudFront — no port-forwarding needed.
+Open WebUI (v0.8.12) provides a ChatGPT-like interface for Ollama. Deployed on EKS system nodes (no GPU needed), air-gapped via NetworkPolicy. Accessible via CloudFront — no port-forwarding needed.
 
 **Authentication:** All login is handled by a **custom login portal** (auth_proxy Lambda + login.html SPA) backed by **AWS Cognito** (OAuth/OIDC). Users **never** see the Cognito hosted UI. Local login and password management are completely disabled (`ENABLE_PASSWORD_AUTH=false`). Users authenticate via the custom portal with **mandatory TOTP MFA** (authenticator app). Roles are synced from Cognito groups on every login (`ENABLE_OAUTH_ROLE_MANAGEMENT=true`) — Cognito is the source of truth, any local role changes are overwritten on next login.
 
@@ -466,7 +466,9 @@ Open WebUI (v0.8.10) provides a ChatGPT-like interface for Ollama. Deployed on E
 
 **Access URL:** `https://<CLOUDFRONT_DOMAIN>` — dynamically injected from Terraform output. The CloudFront domain is stored in the `webui-oauth-cognito` K8s secret, and Open WebUI reads it via `$(CLOUDFRONT_DOMAIN)` env var substitution (no hardcoded URLs in deployment YAML)
 
-**Auto-redirect:** A CloudFront Function intercepts all viewer requests at the edge. Unauthenticated users (no `token` cookie) are automatically redirected to the custom login page at `/auth/login.html` — they never see a landing page or the Cognito hosted UI. Authenticated users pass through to the Open WebUI dashboard. OAuth callback, static asset, API, auth, and portal paths are excluded from the redirect.
+**Auto-redirect:** A CloudFront Function intercepts all viewer requests at the edge. Unauthenticated users (no `token` cookie) are automatically redirected to the custom login page at `/auth/login.html` — they never see a landing page or the Cognito hosted UI. Authenticated users pass through to the Open WebUI dashboard. OAuth callback, static asset, API, WebSocket/socket.io, auth, and portal paths are excluded from the redirect.
+
+**Real-time streaming:** Open WebUI uses socket.io for real-time chat streaming. WebSocket transport is **disabled** (`ENABLE_WEBSOCKET_SUPPORT=false`) because CloudFront VPC Origins don't support WebSocket protocol upgrade. Socket.io uses HTTP long-polling instead, which works reliably through VPC Origins. Without this, socket.io silently fails and chat falls back to an SSE path with a known frontend JSON parse bug.
 
 **Static asset caching:** SvelteKit bundles (`/_app/*`) and static files (`/static/*`) are cached at CloudFront edge locations using the `CachingOptimized` policy, eliminating the CloudFront → NLB → Istio → Pod round-trip for every JS/CSS/image file. This reduces page load time from ~10s to <1s after the first request.
 
@@ -864,7 +866,7 @@ flowchart LR
 | Layer | Protection |
 |-------|-----------|
 | **CloudFront + WAF** | Rate limiting (2000/5min), IP allowlist, geo-blocking (AU/US), SQL/XSS rules, DDoS protection (Shield Standard) |
-| **CloudFront Function** | Edge-level auth redirect — unauthenticated requests (no `token` cookie) are 302'd to `/auth/login.html` (custom portal); excludes OAuth, API, static asset, auth, and portal paths |
+| **CloudFront Function** | Edge-level auth redirect — unauthenticated requests (no `token` cookie) are 302'd to `/auth/login.html` (custom portal); excludes OAuth, API, static asset, `/ws/*` (socket.io), auth, and portal paths |
 | **Origin Lockdown** | CloudFront sends a shared secret via `Referer` header; API Gateway resource policy denies requests without it — blocks direct API Gateway access |
 | **API Gateway + API Key** | x-api-key header required (native usage plans + API keys, managed via Console), REST API with VPC Link — no public NLB exposure |
 | **CloudFront VPC Origin** | Private connectivity from CloudFront to internal NLB — no internet-facing load balancer |
