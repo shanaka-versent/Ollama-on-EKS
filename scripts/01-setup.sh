@@ -53,11 +53,18 @@ configure_kubectl() {
     fi
 
     EKS_CLUSTER_NAME=$(terraform -chdir="$TERRAFORM_DIR" output -raw eks_cluster_name 2>/dev/null || echo "")
-    AWS_REGION=$(terraform -chdir="$TERRAFORM_DIR" output -raw region 2>/dev/null || echo "ap-southeast-2")
+    AWS_REGION=$(terraform -chdir="$TERRAFORM_DIR" output -raw region 2>/dev/null || echo "")
 
     if [[ -z "$EKS_CLUSTER_NAME" ]]; then
         error "Could not read eks_cluster_name from Terraform outputs."
         error "Is the cluster fully deployed? Check: terraform -chdir=terraform output"
+        exit 1
+    fi
+
+    if [[ -z "$AWS_REGION" ]]; then
+        error "Could not read region from Terraform outputs."
+        error "Refusing to fall back to a default — wrong region would misconfigure kubectl."
+        error "Check: terraform -chdir=terraform output region"
         exit 1
     fi
 
@@ -178,8 +185,17 @@ show_summary() {
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
 
-    CLOUDFRONT=$(terraform -chdir="$TERRAFORM_DIR" output -raw cloudfront_domain 2>/dev/null || echo "pending")
+    CLOUDFRONT=$(terraform -chdir="$TERRAFORM_DIR" output -raw cloudfront_domain 2>/dev/null || echo "")
     API_KEY_ID=$(terraform -chdir="$TERRAFORM_DIR" output -raw api_key_id 2>/dev/null || echo "")
+
+    if [[ -z "$CLOUDFRONT" ]]; then
+        warn "Could not read cloudfront_domain — CDN may not be deployed yet"
+        CLOUDFRONT="<not-available>"
+    fi
+    if [[ -z "$API_KEY_ID" ]]; then
+        warn "Could not read api_key_id — API Gateway may not be deployed yet"
+        API_KEY_ID="<not-available>"
+    fi
     MODEL=$(grep '^ollama_model' "$TERRAFORM_DIR/terraform.tfvars" | sed 's/.*= *"//;s/".*//')
 
     echo "  CloudFront endpoint: https://${CLOUDFRONT}"

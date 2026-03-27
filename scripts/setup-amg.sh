@@ -32,7 +32,11 @@ echo "========================================"
 echo ""
 
 export AWS_PROFILE="${AWS_PROFILE:-stax-stax-au1-versent-innovation}"
-REGION=$(terraform -chdir="$ROOT_DIR/terraform" output -raw region 2>/dev/null || echo "ap-southeast-2")
+REGION=$(terraform -chdir="$ROOT_DIR/terraform" output -raw region 2>/dev/null || echo "")
+if [[ -z "$REGION" ]]; then
+  echo "ERROR: Could not read region from Terraform outputs. Run: terraform -chdir=terraform output"
+  exit 1
+fi
 
 # Get workspace IDs from Terraform
 AMG_ID=$(terraform -chdir="$ROOT_DIR/terraform" output -raw managed_grafana_url 2>/dev/null | grep -o 'g-[a-z0-9]*' || true)

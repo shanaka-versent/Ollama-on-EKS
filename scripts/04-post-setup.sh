@@ -43,7 +43,11 @@ read_terraform_outputs() {
     CLOUDFRONT_DOMAIN=$(terraform -chdir="$TERRAFORM_DIR" output -raw cloudfront_domain 2>/dev/null || echo "N/A")
     API_ENDPOINT=$(terraform -chdir="$TERRAFORM_DIR" output -raw api_gateway_endpoint 2>/dev/null || echo "N/A")
     API_KEY_ID=$(terraform -chdir="$TERRAFORM_DIR" output -raw api_key_id 2>/dev/null || echo "N/A")
-    REGION=$(terraform -chdir="$TERRAFORM_DIR" output -raw region 2>/dev/null || echo "ap-southeast-2")
+    REGION=$(terraform -chdir="$TERRAFORM_DIR" output -raw region 2>/dev/null || echo "")
+    if [[ -z "$REGION" ]]; then
+        error "Could not read region from Terraform outputs. Check: terraform -chdir=terraform output"
+        exit 1
+    fi
 
     echo ""
     log "Infrastructure Details:"
