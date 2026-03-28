@@ -499,6 +499,15 @@ cmd_use() {
   local cur_gpu
   cur_gpu=$(echo "$current_res" | cut -d'|' -f1)
   local needs_patch=true
+  local cold_start=false
+
+  # Check if Ollama is at 0 replicas (KEDA scaled to zero)
+  local current_replicas
+  current_replicas=$(kubectl get deployment ollama -n "$NAMESPACE" -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "0")
+  if [[ "$current_replicas" == "0" ]]; then
+    cold_start=true
+    echo -e "  ${YELLOW}⚠${NC}  Ollama at 0 replicas (KEDA scaled to zero) — cold start"
+  fi
 
   if [[ "$cur_gpu" == "$gpu_limit" ]]; then
     echo -e "  ${GREEN}✓${NC} Deployment already has ${gpu_limit} GPU — skipping patch"
@@ -519,8 +528,15 @@ cmd_use() {
     patch_deployment "$gpu_limit" "$mem_limit" "$mem_req" "$cpu_limit" "$cpu_req"
     echo ""
 
-    # ── Step 5: Wait for rollout ──
-    echo -e "${BOLD}[5/7] Waiting for rollout${NC}"
+    # If cold start, scale to 1 after patching (pod doesn't exist yet)
+    if $cold_start; then
+      echo -e "${BOLD}[5/7] Scaling from zero + waiting for rollout${NC}"
+      echo -e "  ${YELLOW}⟳${NC}  Scaling Ollama to 1 replica..."
+      kubectl scale deployment ollama -n "$NAMESPACE" --replicas=1
+      echo -e "  ${GREEN}✓${NC} Scaled to 1 — Karpenter provisioning ${required_instance}..."
+    else
+      echo -e "${BOLD}[5/7] Waiting for rollout${NC}"
+    fi
     wait_for_rollout
 
     # Update pod reference after rollout
@@ -531,8 +547,22 @@ cmd_use() {
     pkill -f "kubectl port-forward.*ollama.*11434" 2>/dev/null || true
     sleep 2
   else
-    echo -e "${BOLD}[4/7] Patch — skipped${NC}"
-    echo -e "${BOLD}[5/7] Rollout — skipped${NC}"
+    # Even if no patch needed, scale up if at zero
+    if $cold_start; then
+      echo -e "${BOLD}[4/7] Scaling from zero${NC}"
+      kubectl scale deployment ollama -n "$NAMESPACE" --replicas=1
+      echo -e "  ${GREEN}✓${NC} Scaled to 1 — Karpenter provisioning..."
+      echo ""
+      echo -e "${BOLD}[5/7] Waiting for rollout${NC}"
+      wait_for_rollout
+      OLLAMA_POD=""
+      get_pod
+      pkill -f "kubectl port-forward.*ollama.*11434" 2>/dev/null || true
+      sleep 2
+    else
+      echo -e "${BOLD}[4/7] Patch — skipped${NC}"
+      echo -e "${BOLD}[5/7] Rollout — skipped${NC}"
+    fi
   fi
   echo ""
 
