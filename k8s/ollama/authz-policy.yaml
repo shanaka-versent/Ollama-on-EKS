@@ -1,0 +1,36 @@
+# Ollama Istio AuthorizationPolicy — Ingress Identity Verification
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# ztunnel enforces this policy (unlike K8s NetworkPolicy which ztunnel bypasses).
+# Controls WHO can call Ollama — mesh traffic is identity-verified via SPIFFE.
+# Non-mesh traffic (kubelet probes) allowed from VPC CIDR.
+#
+# NOTE: This does NOT control egress. Ollama's outbound traffic is not
+# controllable by AuthorizationPolicy in ambient L4 mode. Egress relies
+# on K8s NetworkPolicy (partially effective) + VPC-level controls.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: ollama-ingress-policy
+  namespace: ollama
+spec:
+  selector:
+    matchLabels:
+      app: ollama
+  action: ALLOW
+  rules:
+    # Mesh-enrolled sources: ztunnel verifies SPIFFE identity
+    - from:
+        - source:
+            namespaces:
+              - istio-ingress   # Istio Gateway (routes API + WebUI traffic)
+              - open-webui      # Open WebUI (inference calls on :11434)
+              - ollama          # Model loader job (same namespace)
+              - monitoring      # Prometheus scraping
+    # Non-mesh sources: kubelet health probes (liveness/readiness/startup)
+    # come from node IPs within the VPC, not through ztunnel.
+    # Without this rule, probes are denied and pod enters CrashLoopBackOff.
+    - from:
+        - source:
+            ipBlocks:
+              - 10.0.0.0/16    # VPC CIDR — covers all node IPs

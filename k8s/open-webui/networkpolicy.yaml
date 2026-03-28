@@ -2,7 +2,12 @@
 # @author Shanaka Jayasundera - shanakaj@gmail.com
 #
 # Ingress: from istio-system (for gateway routing) + within namespace
-# Egress: DNS + Ollama service only — no internet access
+# Egress: DNS + Ollama :11434 + Cognito/AWS :443 (OAuth token exchange)
+#
+# NOTE: In namespaces with Istio ambient mesh (ztunnel), K8s NetworkPolicy
+# egress rules may not be fully enforced. This policy documents the INTENDED
+# network boundaries. Istio AuthorizationPolicy (authz-policy.yaml) provides
+# ztunnel-enforced ingress control as a complementary layer.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -47,11 +52,17 @@ spec:
           protocol: UDP
         - port: 53
           protocol: TCP
-    # Ollama API only
+    # Ollama API (inference + model listing)
     - to:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: ollama
       ports:
         - port: 11434
+          protocol: TCP
+    # AWS Cognito (OAuth token exchange, OIDC discovery, JWKS)
+    # Open WebUI calls cognito-idp.*.amazonaws.com:443 on every login.
+    # This is auth metadata only — no prompts or user data leave the VPC.
+    - ports:
+        - port: 443
           protocol: TCP

@@ -1,0 +1,33 @@
+# Open WebUI Istio AuthorizationPolicy — Ingress Identity Verification
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# ztunnel enforces this policy (unlike K8s NetworkPolicy which ztunnel bypasses).
+# Controls WHO can call Open WebUI — mesh traffic is identity-verified via SPIFFE.
+# Non-mesh traffic (kubelet probes) allowed from VPC CIDR.
+#
+# NOTE: This does NOT control egress. Open WebUI's outbound HTTPS calls to
+# Cognito (:443 for OAuth) are not controllable by AuthorizationPolicy in
+# ambient L4 mode. Egress control requires a waypoint proxy or VPC-level controls.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: open-webui-ingress-policy
+  namespace: open-webui
+spec:
+  selector:
+    matchLabels:
+      app: open-webui
+  action: ALLOW
+  rules:
+    # Mesh-enrolled sources: ztunnel verifies SPIFFE identity
+    - from:
+        - source:
+            namespaces:
+              - istio-ingress   # Istio Gateway (routes browser traffic)
+              - open-webui      # Within namespace (port-forward, probes)
+              - monitoring      # Prometheus scraping
+    # Non-mesh sources: kubelet health probes from node IPs
+    - from:
+        - source:
+            ipBlocks:
+              - 10.0.0.0/16    # VPC CIDR — covers all node IPs
