@@ -1729,8 +1729,8 @@ kubectl get nodes -l workload-type=gpu-inference
 <td>Not internet-facing — only reachable via VPC Link and VPC Origin</td>
 </tr>
 <tr>
-<td><strong>Istio Ambient</strong></td>
-<td>Automatic L4 mTLS between all pods</td>
+<td><strong>Istio Ambient + AuthorizationPolicy</strong></td>
+<td>Automatic L4 mTLS between all pods. Istio AuthorizationPolicy (ztunnel-enforced) restricts ingress to Ollama and Open WebUI — only allowed namespaces + VPC CIDR (kubelet probes). <strong>Note:</strong> K8s NetworkPolicy egress is bypassed by ztunnel in ambient mesh; AuthorizationPolicy provides the enforced layer</td>
 </tr>
 <tr>
 <td><strong>Ollama Service</strong></td>
@@ -1738,7 +1738,7 @@ kubectl get nodes -l workload-type=gpu-inference
 </tr>
 <tr>
 <td><strong>NetworkPolicy</strong></td>
-<td>Air-gap enforced: ingress from <code>istio-system</code> and <code>istio-ingress</code> on port 11434; egress DNS + intra-cluster only</td>
+<td>Air-gap enforced (defense-in-depth): Ollama egress DNS-only; Open WebUI egress DNS + Ollama :11434 + Cognito :443. Ingress from istio-system/istio-ingress/open-webui on port 11434</td>
 </tr>
 <tr>
 <td><strong>AWS VPC</strong></td>
@@ -1759,6 +1759,42 @@ kubectl get nodes -l workload-type=gpu-inference
 <tr>
 <td><strong>GPU Controller Lambda</strong></td>
 <td>GPU start/stop/status via K8s API (portal + CLI scripts). EKS access scoped to <code>ollama</code> namespace (RBAC for deployments, scales, KEDA ScaledObjects). Bearer token is short-lived (60s STS presigned URL). Stop always unpauses KEDA. EventBridge safety check auto-unpauses KEDA after 15-min grace period to prevent runaway GPU cost</td>
+</tr>
+<tr>
+<td><strong>Container Hardening</strong></td>
+<td>Ollama: non-root UID 1000, drop ALL caps, seccomp RuntimeDefault. Open WebUI: hardened-root (UID 0 required by image), drop ALL caps, no privilege escalation. Model Loader: non-root UID 100</td>
+</tr>
+<tr>
+<td><strong>Istio AuthorizationPolicy</strong></td>
+<td>ztunnel-enforced ingress control: Ollama accepts traffic from istio-ingress, open-webui, ollama, monitoring namespaces + VPC CIDR only. All other sources denied</td>
+</tr>
+<tr>
+<td><strong>CloudTrail</strong></td>
+<td>Single-region API audit trail (management events) → S3 bucket. Enables investigation of who created/deleted resources</td>
+</tr>
+<tr>
+<td><strong>CloudWatch Alarms</strong></td>
+<td>API Gateway 5xx + CloudFront error rate → SNS email alert. Proactive incident detection</td>
+</tr>
+<tr>
+<td><strong>GitHub Actions IAM</strong></td>
+<td>PowerUserAccess + explicit deny for 20 unused services (RDS, Redshift, Kinesis, SQS, etc.) + deny destructive IAM actions (CreateUser, CreateAccessKey). OIDC federation (no long-lived credentials)</td>
+</tr>
+<tr>
+<td><strong>ArgoCD</strong></td>
+<td>TLS enabled (self-signed internal), RBAC default readonly, admin via admin group</td>
+</tr>
+<tr>
+<td><strong>S3 Encryption</strong></td>
+<td>Portal + login buckets use <code>aws:kms</code> (not AES256). Key rotation via AWS-managed KMS</td>
+</tr>
+<tr>
+<td><strong>SNS Encryption</strong></td>
+<td>Alert topic encrypted with <code>alias/aws/sns</code> KMS key</td>
+</tr>
+<tr>
+<td><strong>Cognito Signup Validation</strong></td>
+<td>Pre Sign-up Lambda validates email domain (<code>ALLOWED_EMAIL_DOMAINS</code> env var). Empty = allow all (default)</td>
 </tr>
 <tr>
 <td><strong>IRSA</strong></td>
@@ -1919,7 +1955,7 @@ aws apigateway update-api-key --api-key $OLD_KEY_ID --patch-operations op=replac
     dev.tfvars                     # DEV environment variables (Tier 1, g5.xlarge)
     prod.tfvars                    # PROD environment variables (Tier 3, g5.12xlarge)
   modules/
-    vpc/                           # VPC, subnets, NAT, IGW
+    vpc/                           # VPC, subnets, NAT, IGW, VPC endpoints (S3 + DynamoDB gateways)
     iam/                           # Cluster + node IAM roles, IRSA
     eks/                           # EKS cluster (Auto Mode), custom Karpenter NodePools, addons
     argocd/                        # ArgoCD Helm + root Application
@@ -1934,11 +1970,11 @@ aws apigateway update-api-key --api-key $OLD_KEY_ID --patch-operations op=replac
     bedrock-integration/           # Stack B: VPC endpoint + IRSA for Bedrock
 
 k8s/
-  ollama/                          # Deployment (ephemeral snapshot volume), Service, NetworkPolicy, StorageClasses, VolumeSnapshot, GPU controller RBAC
-  model-loader/                    # Job to pull models
+  ollama/                          # Deployment (ephemeral snapshot volume), Service, NetworkPolicy, AuthorizationPolicy, ConfigMap, StorageClasses, VolumeSnapshot, GPU controller RBAC
+  model-loader/                    # Job to pull models (non-root, resource limits)
   nodepools/                       # Custom Karpenter NodePools: system (t3.xlarge on-demand, single AZ) + GPU (g5 spot, multi-AZ 2a+2b), NodeClasses (eks.amazonaws.com/v1)
   cert-manager/                    # ClusterIssuer + Certificate
-  open-webui/                      # Open WebUI — Cognito auth, model locked to admins
+  open-webui/                      # Open WebUI — Cognito auth, model locked, ConfigMap, AuthorizationPolicy
   keda/                            # KEDA ScaledObject for auto-scale-to-zero (15-min idle → scale Ollama to 0)
   namespaces.yaml                  # Namespace manifests with ambient mesh labels
   gateway.yaml                     # Istio Gateway
@@ -1953,7 +1989,7 @@ scripts/
   generate-readme-html.py          # README.md → README.html converter
   01-setup.sh                      # Post-terraform cluster setup
   04-post-setup.sh                 # NLB discovery + endpoint verification
-  scale-up.sh / scale-down.sh      # GPU node scaling helpers
+  scale-up.sh / scale-down.sh      # GPU node scaling (spot check, ConfigMap pre-flight, KEDA trap handlers)
   setup-amg.sh                     # AMG data source + dashboard setup (run once after first deploy)
   test-ollama-stack.sh             # Integration tests
 
@@ -1985,12 +2021,27 @@ switch-model.sh                    # Model tier switching with GPU hardware vali
 <tr>
 <td>Pod stuck in <code>Pending</code></td>
 <td><code>kubectl describe pod -n ollama</code></td>
-<td>GPU node not ready — wait for Karpenter to provision</td>
+<td>GPU node not ready — wait for Karpenter to provision (~2-3 min)</td>
+</tr>
+<tr>
+<td><code>CreateContainerConfigError</code></td>
+<td><code>kubectl describe pod</code> → ConfigMap not found</td>
+<td>ConfigMap not synced yet — run <code>kubectl apply -f k8s/ollama/configmap.yaml</code> (or <code>scale-up.sh</code> does this automatically)</td>
 </tr>
 <tr>
 <td><code>Insufficient nvidia.com/gpu</code></td>
 <td>NVIDIA device plugin not ready</td>
 <td><code>kubectl get ds -n kube-system</code> — wait for DaemonSet rollout</td>
+</tr>
+<tr>
+<td><code>CrashLoopBackOff</code> on cold start</td>
+<td>Liveness probe kills pod during model load</td>
+<td>Startup probe should handle this (5.5 min grace). If missing, check <code>k8s/ollama/deployment.yaml</code></td>
+</tr>
+<tr>
+<td>SSE JSON parse error in browser</td>
+<td><code>Unexpected token 'd', "data: {"id"...</code></td>
+<td><code>ENABLE_WEBSOCKET_SUPPORT</code> must be <code>false</code> (CloudFront VPC Origins don't support WebSocket). Check ConfigMap</td>
 </tr>
 <tr>
 <td>Model pull fails</td>
@@ -2000,11 +2051,11 @@ switch-model.sh                    # Model tier switching with GPU hardware vali
 <tr>
 <td>Air-gap test fails</td>
 <td><code>curl</code> from pod reaches internet</td>
-<td>Check <code>k8s/ollama/networkpolicy.yaml</code> — should block all egress except DNS</td>
+<td>K8s NetworkPolicy may be bypassed by Istio ztunnel. Check AuthorizationPolicy for ingress control</td>
 </tr>
 <tr>
 <td>NLB not provisioning</td>
-<td><code>kubectl get gateway -n istio-system</code></td>
+<td><code>kubectl get gateway -n istio-ingress</code></td>
 <td>Check LB Controller logs</td>
 </tr>
 <tr>
@@ -2018,9 +2069,19 @@ switch-model.sh                    # Model tier switching with GPU hardware vali
 <td>Karpenter auto-provisions replacement — ~2-3 min recovery</td>
 </tr>
 <tr>
+<td>KEDA stays paused</td>
+<td><code>kubectl get scaledobject -n ollama</code> PAUSED=true</td>
+<td>Trap handlers should prevent this. Manual fix: <code>kubectl annotate scaledobject ollama-autoscaler -n ollama autoscaling.keda.sh/paused-</code></td>
+</tr>
+<tr>
 <td>Ollama returns 500</td>
 <td>Model failed to load</td>
-<td>Check <code>OLLAMA_CONTEXT_LENGTH</code> is set to <code>32768</code></td>
+<td>Check <code>OLLAMA_CONTEXT_LENGTH</code> is set to <code>32768</code> in ConfigMap</td>
+</tr>
+<tr>
+<td>No spot capacity</td>
+<td><code>scale-up.sh</code> shows no spot</td>
+<td>Script will prompt to use on-demand. Check quotas: <code>aws service-quotas get-service-quota --service-code ec2 --quota-code L-3819A6DF</code></td>
 </tr>
 </tbody>
 </table>
@@ -2101,9 +2162,11 @@ terraform destroy
 <h2 id="companion-documents">Companion Documents</h2>
 <ul>
 <li><strong>Ollama-EKS-Report.html</strong> — Full visual report with architecture diagrams, cost tables, and implementation details</li>
+<li><strong>Auth-Flow-Guide.html</strong> — Interactive auth flow guide with 9 Mermaid diagrams (Cognito, OAuth, MFA, signup, password reset)</li>
+<li><strong>Platform-Analysis-Report.html</strong> — Security/cost/reliability analysis with 59 findings, tabbed UI, before/after comparisons</li>
 <li><strong>RECOMMENDATIONS-Ollama-EKS-Improvements.md</strong> — Detailed recommendations for each improvement area</li>
 <li><strong>CLAUDE.md</strong> — Project context file for Claude Code implementation</li>
-<li><strong>switch-model.sh</strong> — Model tier switching script with GPU hardware validation (blocks Tier 3 on DEV, shows PROD switch instructions)</li>
+<li><strong>switch-model.sh</strong> — Model tier switching script with GPU hardware validation and KEDA trap handler</li>
 </ul>
 <hr />
 <h2 id="more-information">More Information</h2>
