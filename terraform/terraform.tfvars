@@ -52,8 +52,8 @@ auto_pull_model          = true
 enable_bedrock = false
 
 # NLB (created by Istio Gateway via ArgoCD — set after first deploy)
-nlb_arn      = "arn:aws:elasticloadbalancing:ap-southeast-2:183758910727:loadbalancer/net/k8s-istioing-ollamaga-ef079990b5/43efeee80c644bf1"
-nlb_dns_name = "k8s-istioing-ollamaga-ef079990b5-43efeee80c644bf1.elb.ap-southeast-2.amazonaws.com"
+nlb_arn      = ""
+nlb_dns_name = ""
 
 # CloudFront + WAF + API Gateway
 # Client → CloudFront (WAF) → API Gateway → VPC Link → NLB → Istio → Ollama
@@ -65,7 +65,7 @@ waf_geo_countries     = ["AU", "US"]
 waf_enable_bot_control = false
 
 # CloudFront domain (set after first apply — used by Cognito callback URLs)
-cloudfront_domain = "d1eg49k9r220u8.cloudfront.net"
+cloudfront_domain = ""
 
 # Cognito Authentication (Open WebUI)
 # Cognito handles all user management: signup, login, MFA, role assignment.
