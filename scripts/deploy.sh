@@ -1,5 +1,5 @@
 #!/bin/bash
-# Deploy Stack A — Fully Air-Gapped Ollama on EKS
+# Deploy — Fully Air-Gapped Ollama on EKS
 # @author Shanaka Jayasundera - shanakaj@gmail.com
 #
 # End-to-end deployment of the air-gapped LLM inference platform:
@@ -8,16 +8,16 @@
 #   Phase 3: Cluster setup — configure kubectl, wait for ArgoCD waves
 #   Phase 4: Verification — air-gap compliance checks
 #
-# Stack A means:
+# This stack is fully air-gapped:
 #   - All inference runs on local Ollama/Qwen (zero external API calls)
 #   - No Bedrock VPC endpoints, no external model providers
 #   - NetworkPolicies enforce air-gap on every namespace
 #   - Prompts and source code never leave the AWS account
 #
 # Usage:
-#   ./scripts/deploy-stack-a.sh                # Full deployment
-#   ./scripts/deploy-stack-a.sh --plan-only    # Terraform plan only (no apply)
-#   ./scripts/deploy-stack-a.sh --skip-infra   # Skip Terraform (cluster already exists)
+#   ./scripts/deploy.sh                # Full deployment
+#   ./scripts/deploy.sh --plan-only    # Terraform plan only (no apply)
+#   ./scripts/deploy.sh --skip-infra   # Skip Terraform (cluster already exists)
 #
 # Prerequisites:
 #   - AWS CLI configured (aws sts get-caller-identity works)
@@ -109,9 +109,9 @@ check_prerequisites() {
     log "AWS Account: ${ACCOUNT_ID}"
     log "Identity:    ${CALLER_ARN}"
 
-    # Verify Stack A config
+    # Verify air-gapped config
     echo ""
-    log "Verifying Stack A configuration..."
+    log "Verifying air-gapped configuration..."
 
     REGION=$(grep '^region' "$TERRAFORM_DIR/terraform.tfvars" | sed 's/.*= *"//;s/".*//')
     BEDROCK=$(grep '^enable_bedrock' "$TERRAFORM_DIR/terraform.tfvars" | sed 's/.*= *//' || echo "false")
@@ -122,8 +122,8 @@ check_prerequisites() {
     log "Default model:  ${MODEL}"
 
     if [[ "$BEDROCK" == "true" ]]; then
-        error "enable_bedrock=true in terraform.tfvars — this is Stack B, not Stack A."
-        error "Set enable_bedrock=false for Stack A (air-gapped)."
+        error "enable_bedrock=true in terraform.tfvars — not supported in this repo."
+        error "Set enable_bedrock=false (air-gapped). For hybrid/Bedrock, use the Hybrid-LLM repo."
         exit 1
     fi
 
@@ -160,7 +160,7 @@ check_prerequisites() {
     rm -f "$TERRAFORM_DIR/terraform.tfvars.bak"
     log "Stale values cleared — will be auto-discovered during deployment"
 
-    log "Stack A configuration verified"
+    log "Air-gapped configuration verified"
 }
 
 # ==============================================================================
@@ -673,7 +673,7 @@ setup_grafana_dashboards() {
 # Phase 4: Verification
 # ==============================================================================
 verify_deployment() {
-    step "Phase 4: Verifying Stack A deployment"
+    step "Phase 4: Verifying deployment"
 
     cd "$TERRAFORM_DIR"
 
@@ -695,7 +695,7 @@ verify_deployment() {
     cd "$REPO_DIR"
 
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN}  Stack A (Air-Gapped) Deployment Complete${NC}"
+    echo -e "${GREEN}  Air-Gapped Deployment Complete${NC}"
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     echo "  CloudFront endpoint: https://${CLOUDFRONT_DOMAIN}"
@@ -740,10 +740,10 @@ verify_deployment() {
 # ==============================================================================
 echo ""
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${CYAN}  Ollama on EKS — Stack A (Air-Gapped) Deployment${NC}"
+echo -e "${CYAN}  Ollama on EKS — Air-Gapped Deployment${NC}"
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
-echo "  Stack:  A — Fully Air-Gapped (Local LLM Only)"
+echo "  Stack:  Air-Gapped (Local LLM Only)"
 echo "  Model:  qwen3.5:122b-a10b (Tier 3 Flagship)"
 echo "  Region: ap-southeast-2 (Sydney)"
 echo ""

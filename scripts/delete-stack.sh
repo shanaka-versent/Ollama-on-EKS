@@ -524,6 +524,18 @@ terraform_destroy() {
         fi
     done
 
+    # Reset terraform.tfvars values that are discovered at deploy-time.
+    # These become stale after destroy and MUST be empty for a clean recreate.
+    # deploy.sh will re-discover them automatically.
+    if [ "$success" = "true" ]; then
+        log "Resetting deploy-time values in terraform.tfvars for clean recreate..."
+        sed -i.bak 's|^nlb_arn .*=.*|nlb_arn      = ""|' "$TERRAFORM_DIR/terraform.tfvars"
+        sed -i.bak 's|^nlb_dns_name .*=.*|nlb_dns_name = ""|' "$TERRAFORM_DIR/terraform.tfvars"
+        sed -i.bak 's|^cloudfront_domain = .*|cloudfront_domain = ""|' "$TERRAFORM_DIR/terraform.tfvars"
+        rm -f "$TERRAFORM_DIR/terraform.tfvars.bak"
+        log "terraform.tfvars reset — ready for clean recreate"
+    fi
+
     cd "$REPO_DIR"
 
     if [ "$success" != "true" ]; then

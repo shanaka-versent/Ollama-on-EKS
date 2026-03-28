@@ -35,7 +35,7 @@ read_terraform_outputs() {
     log "Reading Terraform outputs..."
 
     if [[ ! -d "${TERRAFORM_DIR}/.terraform" ]]; then
-        error "Terraform not initialized. Run deploy-stack-a.sh first."
+        error "Terraform not initialized. Run deploy.sh first."
         exit 1
     fi
 

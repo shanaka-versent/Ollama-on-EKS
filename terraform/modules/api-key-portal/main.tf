@@ -20,8 +20,9 @@ data "aws_caller_identity" "current" {}
 # ==============================================================================
 
 resource "aws_s3_bucket" "portal" {
-  bucket = "${var.project_name}-api-key-portal-${data.aws_caller_identity.current.account_id}"
-  tags   = var.tags
+  bucket        = "${var.project_name}-api-key-portal-${data.aws_caller_identity.current.account_id}"
+  force_destroy = true
+  tags          = var.tags
 }
 
 resource "aws_s3_bucket_public_access_block" "portal" {
@@ -90,8 +91,9 @@ resource "aws_s3_object" "index_html" {
 # ==============================================================================
 
 resource "aws_s3_bucket" "login" {
-  bucket = "${var.project_name}-login-portal-${data.aws_caller_identity.current.account_id}"
-  tags   = var.tags
+  bucket        = "${var.project_name}-login-portal-${data.aws_caller_identity.current.account_id}"
+  force_destroy = true
+  tags          = var.tags
 }
 
 resource "aws_s3_bucket_public_access_block" "login" {

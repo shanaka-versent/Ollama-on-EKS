@@ -173,6 +173,28 @@ if ! kubectl cluster-info &>/dev/null 2>&1; then
     echo ""
 else
     # ===========================================================================
+    # Step 2b: Scale down GPU workloads (release GPU nodes before destroy)
+    # ===========================================================================
+    log "Step 2b: Scaling down GPU workloads..."
+
+    if kubectl get deployment ollama -n ollama &>/dev/null 2>&1; then
+        kubectl scale deployment ollama -n ollama --replicas=0 2>/dev/null || true
+        log "  Ollama scaled to 0"
+    fi
+
+    if kubectl get nodepool gpu-ollama &>/dev/null 2>&1; then
+        kubectl delete nodepool gpu-ollama --timeout=60s 2>/dev/null || true
+        log "  GPU NodePool deleted — GPU nodes will terminate"
+    fi
+
+    # Delete cert-manager resources (CRDs with finalizers can block namespace deletion)
+    log "  Cleaning up cert-manager resources..."
+    kubectl delete certificates --all-namespaces --all --timeout=30s 2>/dev/null || true
+    kubectl delete clusterissuers --all --timeout=30s 2>/dev/null || true
+
+    sleep 10
+    echo ""
+    # ===========================================================================
     # Step 3: Delete ArgoCD Applications (removes Istio, Ollama, Gateway, etc.)
     # ===========================================================================
 
@@ -181,6 +203,10 @@ else
     # Delete all ArgoCD Applications — ArgoCD cascades deletion to all managed
     # Kubernetes resources (Istio, NVIDIA plugin, Ollama, Gateway, HTTPRoutes)
     if kubectl get applications -n argocd &>/dev/null 2>&1; then
+        log "  Removing ArgoCD finalizers (prevent deletion hang)..."
+        for app in $(kubectl get applications -n argocd -o name 2>/dev/null); do
+            kubectl patch "$app" -n argocd --type merge -p '{"metadata":{"finalizers":null}}' 2>/dev/null || true
+        done
         log "  Deleting all ArgoCD Applications..."
         kubectl delete applications --all -n argocd --timeout=120s 2>/dev/null || true
     fi
@@ -257,7 +283,14 @@ echo ""
 cd "$TERRAFORM_DIR"
 terraform destroy -auto-approve
 
-log "  Terraform destruction complete"
+# Reset deploy-time discovered values so next deploy.sh starts clean
+log "  Resetting terraform.tfvars for clean recreate..."
+sed -i.bak 's|^nlb_arn .*=.*|nlb_arn      = ""|' terraform.tfvars
+sed -i.bak 's|^nlb_dns_name .*=.*|nlb_dns_name = ""|' terraform.tfvars
+sed -i.bak 's|^cloudfront_domain = .*|cloudfront_domain = ""|' terraform.tfvars
+rm -f terraform.tfvars.bak
+
+log "  Terraform destruction complete — tfvars reset for recreate"
 echo ""
 
 # ==============================================================================
