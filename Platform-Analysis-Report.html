@@ -612,10 +612,21 @@ resource "aws_cloudwatch_log_group" "eks" {
 </details>
 
 <details class="sev-crit">
-<summary><span class="badge b-crit">CRIT</span> 8. Scripts Missing Trap Handlers &mdash; <span class="badge b-low">FIXED</span> &mdash; KEDA Left Paused</summary>
+<summary><span class="badge b-crit">CRIT</span> 8. KEDA GPU Auto-Shutdown Protection &mdash; <span class="badge b-low">FIXED</span></summary>
 <div class="detail-body">
 <p class="file">scripts/scale-up.sh, switch-model.sh</p>
-<p><strong>Risk:</strong> If Ctrl+C is pressed while KEDA is paused (during model loading), KEDA stays paused indefinitely. GPU node runs 24/7 at $0.35-$1.90/hr until someone notices.</p>
+<p><strong>Original risk:</strong> If Ctrl+C was pressed while KEDA was paused (during model loading), KEDA stayed paused indefinitely. GPU node would run 24/7 at $0.35-$1.90/hr until someone noticed.</p>
+
+<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:12px;margin:12px 0">
+<p><strong>Current state: KEDA is now protected by 3 safety layers.</strong> GPU nodes are always torn down when idle — no scenario leaves KEDA paused indefinitely.</p>
+<table style="margin:8px 0">
+<tr><th>Layer</th><th>Mechanism</th><th>Catches</th></tr>
+<tr><td><strong>1. KEDA idle timer</strong></td><td>ScaledObject monitors Prometheus. 15 min no requests &rarr; scale to 0 &rarr; Karpenter terminates GPU node</td><td>Normal idle</td></tr>
+<tr><td><strong>2. Trap handler</strong></td><td>Script interrupt (Ctrl+C / kill / terminal close) &rarr; <code>cleanup_on_interrupt()</code> removes <code>paused</code> annotation &rarr; KEDA resumes</td><td>User interrupts script</td></tr>
+<tr><td><strong>3. EventBridge safety</strong></td><td>GPU controller Lambda checks <code>paused-at</code> timestamp. If paused &gt; 15 min &rarr; auto-unpauses KEDA</td><td>Script crash where trap didn't fire</td></tr>
+</table>
+<p style="font-size:0.85rem;color:var(--muted)">Verify: <code>kubectl get scaledobject -n ollama</code> &mdash; PAUSED column should be <code>false</code> in steady state.</p>
+</div>
 
 <div class="mermaid">
 flowchart TD
