@@ -93,7 +93,7 @@ footer{text-align:center;color:var(--muted);font-size:0.8rem;margin:40px 0 20px}
 <!-- STAT BAR (clickable) -->
 <div class="stat-bar">
   <div style="background:var(--crit);flex:8" onclick="switchTab('critical')">8 Critical (4 Fixed, 4 Deferred)</div>
-  <div style="background:var(--high);flex:14" onclick="switchTab('high')">14 High (All Fixed)</div>
+  <div style="background:var(--high);flex:14" onclick="switchTab('high')">15 High (14 Fixed, 1 New)</div>
   <div style="background:var(--med);color:#000;flex:18" onclick="switchTab('medium')">18 Medium (3 Fixed)</div>
   <div style="background:var(--low);flex:12" onclick="switchTab('low')">12 Low</div>
   <div style="background:var(--cost);flex:7" onclick="switchTab('cost')">7 Cost Opts (2 Fixed)</div>
@@ -103,7 +103,7 @@ footer{text-align:center;color:var(--muted);font-size:0.8rem;margin:40px 0 20px}
 <!-- TAB BAR -->
 <div class="tabs">
   <div class="tab active" data-tab="critical" onclick="switchTab('critical')">Critical (4/8 Fixed)</div>
-  <div class="tab" data-tab="high" onclick="switchTab('high')">High (14/14 Fixed)</div>
+  <div class="tab" data-tab="high" onclick="switchTab('high')">High (14 Fixed + 1 New)</div>
   <div class="tab" data-tab="medium" onclick="switchTab('medium')">Medium (3/18 Fixed)</div>
   <div class="tab" data-tab="low" onclick="switchTab('low')">Low (12)</div>
   <div class="tab" data-tab="cost" onclick="switchTab('cost')">Cost Opts (2/7 Fixed)</div>
@@ -1078,10 +1078,76 @@ set {
 </div>
 </details>
 
+<details class="sev-high">
+<summary><span class="badge b-high">HIGH</span> 15. NetworkPolicy Bypassed by Istio Ambient Mesh (ztunnel) &mdash; <span class="badge badge-orange" style="background:#ffedd5;color:#9a3412">NEW FINDING</span></summary>
+<div class="detail-body">
+<p class="file">k8s/open-webui/networkpolicy.yaml, k8s/namespaces.yaml, k8s/open-webui/namespace.yaml</p>
+<p><strong>Discovery:</strong> Open WebUI successfully calls Cognito on HTTPS (port 443) despite its NetworkPolicy only allowing DNS (53) + Ollama (11434). Investigation revealed that <strong>Istio Ambient Mesh (ztunnel) bypasses Kubernetes NetworkPolicy enforcement</strong>.</p>
+
+<h4>Root Cause Chain</h4>
+<div class="mermaid">
+flowchart TD
+    A["open-webui namespace<br/>label: istio.io/dataplane-mode: ambient"] --> B["ztunnel DaemonSet<br/>intercepts pod traffic via Istio CNI"]
+    B --> C["ztunnel operates at L4<br/>(transport layer proxy)"]
+    C --> D["Kubernetes NetworkPolicy<br/>enforced at L3/L4 in kernel"]
+    D --> E["ztunnel proxy sits BETWEEN<br/>pod and kernel netfilter"]
+    E --> F["NetworkPolicy rules<br/>NOT enforced"]
+    F --> G["Traffic to Cognito :443<br/>passes through NAT Gateway"]
+    G --> H["Cognito reachable despite<br/>restrictive NetworkPolicy"]
+
+    style A fill:#dbeafe,stroke:#3b82f6
+    style F fill:#dc3545,color:#fff
+    style H fill:#dc3545,color:#fff
+</div>
+<p class="diagram-label">ztunnel intercepts traffic before kernel netfilter rules apply — NetworkPolicy becomes ineffective</p>
+
+<h4>Affected Namespaces</h4>
+<table>
+<tr><th>Namespace</th><th>Ambient Mesh</th><th>NetworkPolicy</th><th>Egress Gap</th></tr>
+<tr><td><code>ollama</code></td><td>Yes</td><td>DNS only</td><td><span style="color:var(--crit)">Port 443 reachable despite policy</span></td></tr>
+<tr><td><code>open-webui</code></td><td>Yes</td><td>DNS + Ollama:11434</td><td><span style="color:var(--crit)">Cognito :443 reachable despite policy</span></td></tr>
+<tr><td><code>istio-ingress</code></td><td>Yes</td><td>None</td><td>N/A (gateway, expected)</td></tr>
+<tr><td><code>monitoring</code></td><td>No</td><td>Allows :443 explicitly</td><td>None (policy matches reality)</td></tr>
+</table>
+
+<h4>What Actually Leaves the VPC</h4>
+<table>
+<tr><th>Traffic</th><th>Source</th><th>Destination</th><th>Contains Prompts?</th></tr>
+<tr><td>OAuth token exchange</td><td>Open WebUI pod</td><td>Cognito IDP :443</td><td><strong>No</strong> (auth codes only)</td></tr>
+<tr><td>OIDC discovery</td><td>Open WebUI pod</td><td>Cognito .well-known :443</td><td><strong>No</strong> (config metadata)</td></tr>
+<tr><td>JWKS key fetch</td><td>Open WebUI pod</td><td>Cognito JWKS :443</td><td><strong>No</strong> (public keys)</td></tr>
+<tr><td>Metrics remote-write</td><td>Prometheus</td><td>AMP :443</td><td><strong>No</strong> (metrics only)</td></tr>
+<tr><td>Container images</td><td>kubelet</td><td>ECR :443</td><td><strong>No</strong> (infra only)</td></tr>
+</table>
+
+<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:12px;margin:12px 0">
+<strong>Prompts and inference data are still air-gapped.</strong> The gap is that NetworkPolicy is not enforced — meaning the <em>intended</em> restriction is weaker than it appears. Open WebUI <em>could</em> reach any HTTPS endpoint, not just Cognito. It doesn't (no code path sends prompts externally), but the policy doesn't prevent it.
+</div>
+
+<h4>Why This Matters</h4>
+<ul>
+<li><strong>False sense of security:</strong> NetworkPolicy YAML says "DNS + Ollama only" but reality allows any outbound HTTPS</li>
+<li><strong>Supply chain risk:</strong> If Open WebUI is compromised (malicious update, dependency injection), the attacker could exfiltrate data via HTTPS — the NetworkPolicy wouldn't stop it</li>
+<li><strong>Ollama same gap:</strong> Ollama's "DNS only" egress is also not enforced. A compromised Ollama container could reach the internet</li>
+</ul>
+
+<h4>Fix Options (Not Implemented — Investigation Only)</h4>
+<table>
+<tr><th>Option</th><th>Approach</th><th>Effort</th><th>Trade-off</th></tr>
+<tr><td><strong>A. Istio AuthorizationPolicy</strong></td><td>Replace K8s NetworkPolicy with Istio AuthorizationPolicy — these ARE enforced by ztunnel</td><td>2-4 hrs</td><td>Best option: ztunnel honors its own policies. Requires learning Istio policy model</td></tr>
+<tr><td><strong>B. Istio Waypoint Proxy</strong></td><td>Add L7 waypoint proxy to enforce egress rules at application layer</td><td>4-6 hrs</td><td>Full L7 control (URL-level), but adds latency + resource overhead</td></tr>
+<tr><td><strong>C. Remove ambient from open-webui</strong></td><td>Remove <code>istio.io/dataplane-mode: ambient</code> label. K8s NetworkPolicy enforced by kernel</td><td>5 min</td><td>Loses mTLS between Open WebUI and Istio gateway. Simplest fix</td></tr>
+<tr><td><strong>D. Enable VPC-CNI NetworkPolicy controller</strong></td><td>Set <code>ENABLE_POLICY=true</code> on vpc-cni addon. Enforces policy independent of Istio</td><td>30 min</td><td>May conflict with ztunnel. Needs testing</td></tr>
+<tr><td><strong>E. Add Cognito VPC endpoint</strong></td><td>Creates private path to Cognito. Then restrict NAT Gateway with NACLs</td><td>2 hrs</td><td>Cognito VPC endpoint not available in all regions. Doesn't fix the policy gap itself</td></tr>
+</table>
+
+<p><strong>Recommended:</strong> Option A (Istio AuthorizationPolicy) — works WITH ztunnel instead of against it. Option C is the quick fix if mTLS between Open WebUI and the gateway is not critical.</p>
+</div>
+</details>
+
 </div>
 
 <!-- ======================================================================== -->
-<!-- MEDIUM TAB -->
 <!-- ======================================================================== -->
 <div class="tab-panel" id="panel-medium">
 
