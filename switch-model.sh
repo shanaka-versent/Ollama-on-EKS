@@ -76,13 +76,24 @@ print_header() {
 }
 
 get_pod() {
-  OLLAMA_POD=$(kubectl get pods -n "$NAMESPACE" -l app=ollama -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-  if [[ -z "$OLLAMA_POD" ]]; then
-    echo -e "${RED}Error: No Ollama pod found in namespace '$NAMESPACE'${NC}"
-    echo -e "Is the cluster running? Try: ${CYAN}kubectl get pods -n $NAMESPACE${NC}"
-    echo -e "If KEDA scaled to zero, run: ${CYAN}./scripts/scale-up.sh${NC}"
-    exit 1
-  fi
+  # Retry for up to 30s — pod may take a moment to appear after rollout
+  local attempts=0
+  while [[ $attempts -lt 6 ]]; do
+    OLLAMA_POD=$(kubectl get pods -n "$NAMESPACE" -l app=ollama --field-selector=status.phase=Running \
+      -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+    # Filter out model-loader pods
+    if [[ -n "$OLLAMA_POD" && "$OLLAMA_POD" != *"model-loader"* ]]; then
+      return 0
+    fi
+    attempts=$((attempts + 1))
+    if [[ $attempts -lt 6 ]]; then
+      sleep 5
+    fi
+  done
+  echo -e "${RED}Error: No Ollama pod found in namespace '$NAMESPACE'${NC}"
+  echo -e "Is the cluster running? Try: ${CYAN}kubectl get pods -n $NAMESPACE${NC}"
+  echo -e "If KEDA scaled to zero, run: ${CYAN}./scripts/scale-up.sh${NC}"
+  exit 1
 }
 
 check_port_forward() {
@@ -490,6 +501,40 @@ cmd_use() {
     exit 1
   fi
   echo -e "  ${GREEN}✓${NC} NodePool allows ${required_instance} (GPU limit ≥ ${min_gpus})"
+  echo ""
+
+  # ── Step 1b: Check spot availability ──
+  echo -e "${BOLD}[1b/7] Checking spot availability for ${required_instance}${NC}"
+  local region="${AWS_REGION:-ap-southeast-2}"
+  local spot_prices
+  spot_prices=$(aws ec2 describe-spot-price-history \
+    --instance-types "$required_instance" \
+    --product-descriptions "Linux/UNIX" \
+    --region "$region" \
+    --start-time "$(date -u +%Y-%m-%dT%H:%M:%S)" \
+    --query 'SpotPriceHistory[*].[AvailabilityZone,SpotPrice]' \
+    --output text 2>/dev/null | sort -k2 -n | head -3)
+
+  if [[ -n "$spot_prices" ]]; then
+    local cheapest_az cheapest_price
+    cheapest_az=$(echo "$spot_prices" | head -1 | awk '{print $1}')
+    cheapest_price=$(echo "$spot_prices" | head -1 | awk '{print $2}')
+    echo -e "  ${GREEN}✓${NC} Spot available for ${BOLD}$required_instance${NC}:"
+    echo "$spot_prices" | while read -r az price; do
+      echo -e "    $az  \$${price}/hr"
+    done
+    echo -e "  Karpenter will pick: ${GREEN}${BOLD}$cheapest_az @ \$${cheapest_price}/hr${NC} (spot)"
+  else
+    echo -e "  ${RED}✗${NC} No spot capacity for ${BOLD}$required_instance${NC}"
+    echo -e "  ${YELLOW}On-demand fallback will be used (significantly higher cost)${NC}"
+    echo ""
+    read -r -p "  Proceed with on-demand? [y/N] " od_confirm
+    if [[ "$(echo "$od_confirm" | tr '[:upper:]' '[:lower:]')" != "y" ]]; then
+      echo -e "  Aborted."
+      exit 0
+    fi
+    echo -e "  ${YELLOW}⚠${NC} Proceeding with on-demand (GPUOnDemandFallback alert will fire)"
+  fi
   echo ""
 
   # ── Step 2: Check if resources already match ──
