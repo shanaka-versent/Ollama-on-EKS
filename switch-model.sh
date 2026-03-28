@@ -76,23 +76,33 @@ print_header() {
 }
 
 get_pod() {
-  # Retry for up to 30s — pod may take a moment to appear after rollout
-  local attempts=0
-  while [[ $attempts -lt 6 ]]; do
-    OLLAMA_POD=$(kubectl get pods -n "$NAMESPACE" -l app=ollama --field-selector=status.phase=Running \
-      -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-    # Filter out model-loader pods
-    if [[ -n "$OLLAMA_POD" && "$OLLAMA_POD" != *"model-loader"* ]]; then
-      return 0
+  # Retry for up to 5 min — after cold start, pod goes through:
+  # Pending → Init:0/1 → PodInitializing → Running (2-4 min with EBS snapshot)
+  local max_wait=${1:-300}
+  local elapsed=0
+  while [[ $elapsed -lt $max_wait ]]; do
+    # Get any ollama pod (not model-loader), any phase
+    OLLAMA_POD=$(kubectl get pods -n "$NAMESPACE" -l app=ollama --no-headers 2>/dev/null \
+      | grep -v "model-loader" | awk '{print $1}' | head -1)
+    if [[ -n "$OLLAMA_POD" ]]; then
+      # Check if Running
+      local phase
+      phase=$(kubectl get pod "$OLLAMA_POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+      if [[ "$phase" == "Running" ]]; then
+        return 0
+      fi
+      # Pod exists but not Running yet — show status and keep waiting
+      local status
+      status=$(kubectl get pod "$OLLAMA_POD" -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print $3}')
+      if [[ $((elapsed % 15)) -eq 0 && $elapsed -gt 0 ]]; then
+        echo -e "  ${YELLOW}⏳${NC} Pod: $status (${elapsed}s)"
+      fi
     fi
-    attempts=$((attempts + 1))
-    if [[ $attempts -lt 6 ]]; then
-      sleep 5
-    fi
+    sleep 5
+    elapsed=$((elapsed + 5))
   done
-  echo -e "${RED}Error: No Ollama pod found in namespace '$NAMESPACE'${NC}"
-  echo -e "Is the cluster running? Try: ${CYAN}kubectl get pods -n $NAMESPACE${NC}"
-  echo -e "If KEDA scaled to zero, run: ${CYAN}./scripts/scale-up.sh${NC}"
+  echo -e "${RED}Error: No running Ollama pod found after ${max_wait}s${NC}"
+  echo -e "Check: ${CYAN}kubectl get pods -n $NAMESPACE${NC}"
   exit 1
 }
 
@@ -333,7 +343,7 @@ cmd_status() {
   echo ""
   echo -e "${BOLD}Node & Pod${NC}"
   echo -e "─────────────────────────────────────────"
-  get_pod 2>/dev/null || true
+  get_pod 5 2>/dev/null || true
   if [[ -n "$OLLAMA_POD" ]]; then
     echo -e "  Pod:       ${CYAN}$OLLAMA_POD${NC}"
     local node_info
@@ -644,10 +654,14 @@ cmd_use() {
     echo -e "  ${GREEN}✓${NC} Unloaded"
   fi
 
-  # Load and warm up
-  echo -e "  ${YELLOW}⟳${NC}  Loading $model_tag into GPU memory..."
-  curl -s "$OLLAMA_URL/api/generate" -d "{\"model\": \"$model_tag\", \"prompt\": \"hi\", \"options\": {\"num_predict\": 1}}" >/dev/null 2>&1
-  echo -e "  ${GREEN}✓${NC} Model loaded and ready"
+  # Load and warm up — Tier 3 (122B) can take 3-5 min to load into 96GB VRAM
+  echo -e "  ${YELLOW}⟳${NC}  Loading $model_tag into GPU memory (this may take a few minutes)..."
+  if curl -s --max-time 600 "$OLLAMA_URL/api/generate" \
+    -d "{\"model\": \"$model_tag\", \"prompt\": \"hi\", \"stream\": false, \"think\": false, \"options\": {\"num_predict\": 1}}" >/dev/null 2>&1; then
+    echo -e "  ${GREEN}✓${NC} Model loaded and ready"
+  else
+    echo -e "  ${YELLOW}⚠${NC} Warm-up timed out — model may still be loading. First chat request will trigger it."
+  fi
   echo ""
 
   # ── Step 7: Sync WebUI model list ──
