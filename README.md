@@ -439,7 +439,7 @@ The deployment has two phases. Complete each verification before moving on.
 **Option A: Automated deployment (recommended)**
 
 ```bash
-./scripts/deploy-stack-a.sh
+./scripts/deploy.sh
 ```
 
 This single script handles everything: validates prerequisites, bootstraps the S3 backend, runs `terraform plan` + `apply`, configures `kubectl`, waits for ArgoCD waves to sync, and runs air-gap verification.
@@ -1105,7 +1105,7 @@ k8s/
 argocd/apps/                       # Wave-based Application manifests (00-12, incl. 01b-system-nodepool.yaml)
 
 scripts/
-  deploy-stack-a.sh                # End-to-end Stack A deployment automation
+  deploy.sh                        # End-to-end deployment automation (air-gapped)
   verify-airgap.sh                 # Air-gap compliance verification
   create-model-snapshot.sh         # EBS snapshot with pre-loaded models
   generate-readme-html.py          # README.md → README.html converter
