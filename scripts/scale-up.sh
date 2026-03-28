@@ -45,6 +45,25 @@ echo ""
 
 export AWS_PROFILE="${AWS_PROFILE:-stax-stax-au1-versent-innovation}"
 
+# Pre-flight: ensure ConfigMaps exist (deployment references them via envFrom)
+# Without these, pod enters CreateContainerConfigError and never starts.
+MISSING_CMS=false
+for cm_ns in "ollama-config:ollama" "open-webui-config:open-webui"; do
+  cm="${cm_ns%%:*}"; ns="${cm_ns##*:}"
+  if ! kubectl get configmap "$cm" -n "$ns" &>/dev/null; then
+    echo -e "  ${RED}✗${NC} ConfigMap ${BOLD}$cm${NC} not found in namespace $ns"
+    MISSING_CMS=true
+  fi
+done
+if $MISSING_CMS; then
+  echo ""
+  echo -e "  ${YELLOW}Applying missing ConfigMaps from Git...${NC}"
+  kubectl apply -f "$(dirname "$0")/../k8s/ollama/configmap.yaml" 2>/dev/null || true
+  kubectl apply -f "$(dirname "$0")/../k8s/open-webui/configmap.yaml" 2>/dev/null || true
+  echo -e "  ${GREEN}✓${NC} ConfigMaps applied"
+  echo ""
+fi
+
 # Check if already running
 POD_STATUS=$(kubectl get pods -n ollama -l app=ollama \
   --no-headers 2>/dev/null | awk '{print $3}' | head -1)
