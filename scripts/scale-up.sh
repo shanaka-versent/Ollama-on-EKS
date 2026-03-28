@@ -66,9 +66,16 @@ fi
 
 # Check if already running
 POD_STATUS=$(kubectl get pods -n ollama -l app=ollama \
-  --no-headers 2>/dev/null | awk '{print $3}' | head -1)
+  --no-headers 2>/dev/null | grep -v "model-loader" | awk '{print $3}' | head -1)
 if [[ "$POD_STATUS" == "Running" ]]; then
-  echo -e "  ${YELLOW}Already running — Ollama pod is $POD_STATUS.${NC}"
+  GPU_NODE=$(kubectl get pods -n ollama -l app=ollama -o jsonpath='{.items[0].spec.nodeName}' 2>/dev/null)
+  INST=$(kubectl get node "$GPU_NODE" -o jsonpath='{.metadata.labels.node\.kubernetes\.io/instance-type}' 2>/dev/null || echo "unknown")
+  CAP=$(kubectl get node "$GPU_NODE" -o jsonpath='{.metadata.labels.karpenter\.sh/capacity-type}' 2>/dev/null || echo "unknown")
+  AZ=$(kubectl get node "$GPU_NODE" -o jsonpath='{.metadata.labels.topology\.kubernetes\.io/zone}' 2>/dev/null || echo "unknown")
+  echo -e "  ${GREEN}Already running!${NC}"
+  echo -e "  Instance : ${BOLD}$INST${NC} ($CAP)"
+  echo -e "  AZ       : $AZ"
+  echo -e "  Node     : $GPU_NODE"
   echo ""
   exit 0
 fi
