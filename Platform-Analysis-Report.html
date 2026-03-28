@@ -1079,10 +1079,23 @@ set {
 </details>
 
 <details class="sev-high">
-<summary><span class="badge b-high">HIGH</span> 15. NetworkPolicy Bypassed by Istio Ambient Mesh (ztunnel) &mdash; <span class="badge badge-orange" style="background:#ffedd5;color:#9a3412">NEW FINDING</span></summary>
+<summary><span class="badge b-high">HIGH</span> 15. NetworkPolicy Bypassed by Istio Ambient Mesh (ztunnel) &mdash; <span class="badge" style="background:#0dcaf0;color:#fff">PARTIAL FIX</span></summary>
 <div class="detail-body">
-<p class="file">k8s/open-webui/networkpolicy.yaml, k8s/namespaces.yaml, k8s/open-webui/namespace.yaml</p>
+<p class="file">k8s/open-webui/networkpolicy.yaml, k8s/open-webui/authz-policy.yaml, k8s/ollama/authz-policy.yaml</p>
 <p><strong>Discovery:</strong> Open WebUI successfully calls Cognito on HTTPS (port 443) despite its NetworkPolicy only allowing DNS (53) + Ollama (11434). Investigation revealed that <strong>Istio Ambient Mesh (ztunnel) bypasses Kubernetes NetworkPolicy enforcement</strong>.</p>
+
+<div style="background:#f0f9ff;border:1px solid #0dcaf0;border-radius:8px;padding:12px;margin:12px 0">
+<p><strong>What was fixed:</strong></p>
+<ul>
+<li><strong>Ingress control:</strong> Istio AuthorizationPolicy added for Ollama + Open WebUI. ztunnel enforces identity verification — only mesh traffic from allowed namespaces + kubelet probes (VPC CIDR) are accepted. All other sources are denied.</li>
+<li><strong>NetworkPolicy accuracy:</strong> Open WebUI NetworkPolicy updated to explicitly allow Cognito :443 egress — policy now matches actual traffic instead of giving a false sense of restriction.</li>
+</ul>
+<p><strong>What remains open:</strong></p>
+<ul>
+<li><strong>Egress control:</strong> AuthorizationPolicy in ambient L4 mode only controls ingress (server-side). Cannot restrict which external services pods call. Open WebUI can reach ANY HTTPS endpoint, not just Cognito. A waypoint proxy (L7) would be needed for egress control.</li>
+</ul>
+<p><strong>Prompt data is still air-gapped.</strong> No code path in Ollama or Open WebUI sends prompts externally. The remaining gap is a defense-in-depth concern, not an active data leak.</li>
+</div>
 
 <h4>Root Cause Chain</h4>
 <div class="mermaid">
