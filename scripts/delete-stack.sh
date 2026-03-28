@@ -399,6 +399,63 @@ except:
             vl_wait=$((vl_wait + 10))
         done
     fi
+
+    # Step 2h: Delete CloudFront VPC Origin ENIs (blocks subnet deletion for 15+ min)
+    # CloudFront VPC Origins hold ENIs in private subnets even after the distribution
+    # is deleted. AWS takes 10-15 min to release them. Explicit deletion speeds this up.
+    if [ -n "$VPC_ID" ]; then
+        log "Cleaning up CloudFront VPC Origin ENIs..."
+        CF_ENIS=$(aws ec2 describe-network-interfaces \
+            --region "$REGION" \
+            --filters \
+                "Name=vpc-id,Values=${VPC_ID}" \
+                "Name=description,Values=*CloudFront*" \
+            --query 'NetworkInterfaces[].{Id:NetworkInterfaceId,Attach:Attachment.AttachmentId}' \
+            --output json 2>/dev/null || echo "[]")
+
+        CF_ENI_COUNT=$(echo "$CF_ENIS" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+print(len(data))
+" 2>/dev/null || echo "0")
+
+        if [ "$CF_ENI_COUNT" -gt 0 ]; then
+            log "  Found ${CF_ENI_COUNT} CloudFront ENI(s) — detaching and deleting..."
+            echo "$CF_ENIS" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+for item in data:
+    eni_id = item.get('Id', '')
+    attach_id = item.get('Attach', '')
+    if eni_id and attach_id:
+        print(f'{eni_id} {attach_id}')
+    elif eni_id:
+        print(f'{eni_id} none')
+" 2>/dev/null | while read -r eni_id attach_id; do
+                if [ "$attach_id" != "none" ] && [ -n "$attach_id" ]; then
+                    log "    Detaching ${eni_id}..."
+                    aws ec2 detach-network-interface --region "$REGION" --attachment-id "$attach_id" --force >> "$LOG_FILE" 2>&1 || true
+                fi
+            done
+
+            sleep 15
+
+            echo "$CF_ENIS" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+for item in data:
+    print(item.get('Id', ''))
+" 2>/dev/null | while read -r eni_id; do
+                if [ -n "$eni_id" ]; then
+                    log "    Deleting ${eni_id}..."
+                    aws ec2 delete-network-interface --region "$REGION" --network-interface-id "$eni_id" >> "$LOG_FILE" 2>&1 || true
+                fi
+            done
+            log "  CloudFront ENIs cleaned up"
+        else
+            log "  No CloudFront VPC Origin ENIs found"
+        fi
+    fi
 }
 
 # Wait for all NLBs tagged with the cluster to be deleted
@@ -539,10 +596,23 @@ terraform_destroy() {
     cd "$REPO_DIR"
 
     if [ "$success" != "true" ]; then
-        error "Terraform destroy failed after ${MAX_TERRAFORM_RETRIES} attempts"
-        error "Review logs: ${LOG_FILE}"
-        error "You may need to manually delete resources and run: terraform state rm <resource>"
-        # Continue to orphan cleanup — it can help even if TF failed
+        warn "Full terraform destroy failed — attempting targeted VPC cleanup..."
+        # Terraform's computed count values fail when upstream resources are already deleted.
+        # Fall back to targeted destroy of remaining VPC resources.
+        cd "$TERRAFORM_DIR"
+        local remaining
+        remaining=$(terraform state list 2>/dev/null | grep -c "aws_" || echo "0")
+        if [ "$remaining" -gt 0 ]; then
+            log "  ${remaining} resource(s) remain in state — running targeted destroy..."
+            terraform destroy \
+                -target=module.vpc.aws_subnet.private \
+                -target=module.vpc.aws_subnet.public \
+                -target=module.vpc.aws_vpc.main \
+                -auto-approve >> "$LOG_FILE" 2>&1 && \
+                log "  Targeted VPC cleanup succeeded" || \
+                warn "  Targeted cleanup also failed — check state manually"
+        fi
+        cd "$REPO_DIR"
     fi
 }
 
