@@ -701,7 +701,7 @@ case "$cmd" in
       echo -e "Run '$0 list' to see available tiers"
       exit 1
     fi
-    get_pod
+    # Don't require a running pod — cmd_use handles cold start (0 replicas)
     cmd_use "$2"
     ;;
   pull-all|download)
