@@ -75,8 +75,59 @@ fi
 
 REPLICAS=$(kubectl get deployment ollama -n ollama -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "0")
 echo -e "  Current replicas : ${YELLOW}$REPLICAS${NC}"
-echo -e "  Karpenter will provision a GPU node automatically (~2-3 min)"
 echo ""
+
+# Check spot availability and pricing before scaling
+echo -e "${CYAN}${BOLD}==> Checking GPU spot availability...${NC}"
+REGION="${AWS_REGION:-ap-southeast-2}"
+INSTANCE_TYPE="g5.xlarge"
+
+# Get current GPU resource request to determine instance type
+GPU_LIMIT=$(kubectl get deployment ollama -n ollama \
+  -o jsonpath='{.spec.template.spec.containers[0].resources.limits.nvidia\.com/gpu}' 2>/dev/null || echo "1")
+if [[ "$GPU_LIMIT" -gt 1 ]]; then
+  INSTANCE_TYPE="g5.12xlarge"
+fi
+
+# Check spot price in available AZs
+SPOT_PRICES=$(aws ec2 describe-spot-price-history \
+  --instance-types "$INSTANCE_TYPE" \
+  --product-descriptions "Linux/UNIX" \
+  --region "$REGION" \
+  --start-time "$(date -u +%Y-%m-%dT%H:%M:%S)" \
+  --query 'SpotPriceHistory[*].[AvailabilityZone,SpotPrice]' \
+  --output text 2>/dev/null | sort -k2 -n | head -3)
+
+# Check on-demand price
+OD_PRICE=$(aws ec2 describe-instance-types \
+  --instance-types "$INSTANCE_TYPE" \
+  --region "$REGION" \
+  --query 'InstanceTypes[0].OnDemandPrice' \
+  --output text 2>/dev/null || echo "unknown")
+
+if [[ -n "$SPOT_PRICES" ]]; then
+  CHEAPEST_AZ=$(echo "$SPOT_PRICES" | head -1 | awk '{print $1}')
+  CHEAPEST_PRICE=$(echo "$SPOT_PRICES" | head -1 | awk '{print $2}')
+  echo -e "  ${GREEN}✓${NC} Spot available for ${BOLD}$INSTANCE_TYPE${NC}:"
+  echo "$SPOT_PRICES" | while read -r az price; do
+    echo -e "    $az  \$${price}/hr"
+  done
+  echo ""
+  echo -e "  Karpenter will pick cheapest: ${GREEN}${BOLD}$CHEAPEST_AZ @ \$${CHEAPEST_PRICE}/hr${NC} (spot)"
+  echo ""
+else
+  echo -e "  ${RED}✗${NC} No spot capacity for ${BOLD}$INSTANCE_TYPE${NC} in $REGION"
+  echo -e "  ${YELLOW}On-demand fallback: ~\$1.006/hr (g5.xlarge) / ~\$5.672/hr (g5.12xlarge)${NC}"
+  echo ""
+  read -r -p "  Proceed with on-demand? [y/N] " od_confirm
+  if [[ "$(echo "$od_confirm" | tr '[:upper:]' '[:lower:]')" != "y" ]]; then
+    echo ""
+    echo "  Aborted. Try again later when spot is available."
+    echo ""
+    exit 0
+  fi
+  echo -e "  ${YELLOW}⚠${NC} Proceeding with on-demand (GPUOnDemandFallback alert will fire)"
+fi
 
 read -r -p "  Scale up now? [y/N] " confirm
 if [[ "$(echo "$confirm" | tr '[:upper:]' '[:lower:]')" != "y" ]]; then
