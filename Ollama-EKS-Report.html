@@ -601,8 +601,8 @@ Grafana: Admin → AWS Managed Grafana (AMG) URL → IAM Identity Center SSO
 <td>Karpenter tries spot first (~65% savings), auto-falls back to on-demand if reclaimed</td>
 </tr>
 <tr>
-<td>Dual-mode pipeline</td>
-<td>Two separate stacks (not config flag) — compliance by design, eliminates human error risk</td>
+<td>Fully air-gapped</td>
+<td>No external LLM providers, no internet egress from pods. Hybrid mode (Bedrock) is in a <a href="https://github.com/shanaka-versent/Hybrid-LLM">separate repo</a></td>
 </tr>
 <tr>
 <td>Ollama image pinned to v0.18.2</td>
@@ -626,123 +626,9 @@ Grafana: Admin → AWS Managed Grafana (AMG) URL → IAM Identity Center SSO
 </tr>
 </tbody>
 </table>
-<h3 id="dual-mode-pipeline-two-separate-stacks">Dual-Mode Pipeline — Two Separate Stacks</h3>
-<p>Two separate deployment stacks — deploy one or the other per engagement. Separate stacks ensure compliance by design and eliminate human error risk.</p>
-<table>
-<thead>
-<tr>
-<th></th>
-<th>Stack A (Fully Air-Gapped)</th>
-<th>Stack B (Hybrid — Local + Bedrock)</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Phase 1 (Analysis)</td>
-<td>Local Ollama/Qwen</td>
-<td>Local Ollama/Qwen</td>
-</tr>
-<tr>
-<td>Phase 2 (Report Gen)</td>
-<td>Local Ollama/Qwen</td>
-<td>Latest Claude Opus via AWS Bedrock</td>
-</tr>
-<tr>
-<td>Sanitisation</td>
-<td>Yes — regex + LLM review</td>
-<td>Yes — regex + LLM review</td>
-</tr>
-<tr>
-<td>Internet Egress</td>
-<td>None</td>
-<td>Bedrock VPC endpoint only</td>
-</tr>
-<tr>
-<td>Best For</td>
-<td>Defence, healthcare, government</td>
-<td>Client-approved cloud access</td>
-</tr>
-</tbody>
-</table>
-<p>Stack A physically cannot reach Bedrock — no credentials, no egress rules, no API client.</p>
-<p><strong>Data flow:</strong>
-- <strong>Stack A:</strong> Client Data → Phase 1 (Ollama/Qwen) → Sanitisation → Phase 2 (Ollama/Qwen) → Good quality report
-- <strong>Stack B:</strong> Client Data → Phase 1 (Ollama/Qwen) → Sanitisation → Phase 2 (Latest Claude Opus via Bedrock, sanitised findings only) → High quality report</p>
-<div class="mermaid">flowchart LR
-    CD([Client Data])
-
-    subgraph StackA["Stack A — Fully Air-Gapped"]
-        direction LR
-        A1["Phase 1\nAnalysis\n(Ollama/Qwen)"]
-        AS["Sanitisation\nRegex + LLM Review"]
-        A2["Phase 2\nReport Generation\n(Ollama/Qwen)"]
-        AR([Report\nGood Quality])
-    end
-
-    subgraph StackB["Stack B — Hybrid (Local + Bedrock)"]
-        direction LR
-        B1["Phase 1\nAnalysis\n(Ollama/Qwen)"]
-        BS["Sanitisation\nRegex + LLM Review"]
-        B2["Phase 2\nReport Generation\n(Claude Opus via Bedrock)"]
-        BR([Report\nHigh Quality])
-    end
-
-    CD --> A1
-    A1 --> AS
-    AS --> A2
-    A2 --> AR
-
-    CD --> B1
-    B1 --> BS
-    BS -->|Sanitised JSON only\nVPC Endpoint| B2
-    B2 --> BR
-
-    style StackA fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-    style StackB fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    style AS fill:#fff3e0,stroke:#ff9800
-    style BS fill:#fff3e0,stroke:#ff9800
-    style A2 fill:#66bb6a,color:#fff
-    style B2 fill:#5c4ee5,color:#fff
-    style AR fill:#a5d6a7
-    style BR fill:#b39ddb
-</div>
-
-<p>Deploy Stack B with: <code>terraform apply -var="enable_bedrock=true"</code></p>
-<h4 id="stack-b-bedrock-integration-details">Stack B — Bedrock Integration Details</h4>
-<p>Stack B adds these AWS resources (created by <code>terraform/modules/bedrock-integration/</code>):</p>
-<table>
-<thead>
-<tr>
-<th>Resource</th>
-<th>Details</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>VPC Endpoint</td>
-<td><code>com.amazonaws.ap-southeast-2.bedrock-runtime</code>, Interface type, private subnets, private DNS enabled</td>
-</tr>
-<tr>
-<td>IRSA Role</td>
-<td><code>ollama-orchestrator-bedrock</code> — service account: <code>orchestrator:orchestrator-sa</code></td>
-</tr>
-<tr>
-<td>IAM Policy</td>
-<td><code>bedrock:InvokeModel</code> + <code>bedrock:InvokeModelWithResponseStream</code> on <code>anthropic.claude-*</code></td>
-</tr>
-<tr>
-<td>NetworkPolicy</td>
-<td>Orchestrator namespace: egress to Bedrock VPC endpoint only (Stack A blocks all egress)</td>
-</tr>
-<tr>
-<td>Sanitisation</td>
-<td>Two-pass: (1) regex strips IPs, emails, API keys, ARNs, JWTs, SSH keys, connection strings; (2) local Qwen reviews for semantic leakage. Hard stop if raw data detected</td>
-</tr>
-</tbody>
-</table>
-<blockquote>
-<p>The orchestrator is a separate product built on top of the Ollama-on-EKS infrastructure — separate repo, Dockerfile, and CI.</p>
-</blockquote>
+<h3 id="hybrid-mode-separate-repo">Hybrid Mode (Separate Repo)</h3>
+<p>A hybrid version of this platform — combining local Ollama with Claude via AWS Bedrock — is maintained in a separate repository: <strong><a href="https://github.com/shanaka-versent/Hybrid-LLM">shanaka-versent/Hybrid-LLM</a></strong>. It adds a pluggable Bedrock layer with Smart Router, 3-phase sanitise-augment-rehydrate pattern, and full data sovereignty guarantees.</p>
+<p>This repo is the <strong>fully air-gapped stack only</strong> — no Bedrock, no external LLM providers, no internet egress from pods.</p>
 <h3 id="request-sequence">Request Sequence</h3>
 <div class="mermaid">sequenceDiagram
     participant Dev as Developer
@@ -867,7 +753,7 @@ aws dynamodb create-table \
 <hr />
 <h3 id="phase-1-deploy-infrastructure-2030-min">Phase 1 — Deploy Infrastructure (~20–30 min)</h3>
 <p><strong>Option A: Automated deployment (recommended)</strong></p>
-<pre class="highlight"><code class="language-bash">./scripts/deploy-stack-a.sh
+<pre class="highlight"><code class="language-bash">./scripts/deploy.sh
 </code></pre>
 
 <p>This single script handles everything: validates prerequisites, bootstraps the S3 backend, runs <code>terraform plan</code> + <code>apply</code>, configures <code>kubectl</code>, waits for ArgoCD waves to sync, and runs air-gap verification.</p>
@@ -1798,7 +1684,7 @@ kubectl get nodes -l workload-type=gpu-inference
 </tr>
 <tr>
 <td><strong>IRSA</strong></td>
-<td>EBS CSI + LB Controller + Bedrock (Stack B) use least-privilege IAM roles via OIDC</td>
+<td>EBS CSI + LB Controller use least-privilege IAM roles via OIDC</td>
 </tr>
 <tr>
 <td><strong>cert-manager</strong></td>
@@ -1967,7 +1853,7 @@ aws apigateway update-api-key --api-key $OLD_KEY_ID --patch-operations op=replac
     cognito/                       # Cognito User Pool for Open WebUI (OAuth, MFA, groups)
     api-key-portal/                # Self-service API key management, custom login portal, GPU control (auth_proxy + gpu_controller Lambdas)
     managed-grafana/               # AMG + AMP (all dashboards via IAM Identity Center SSO)
-    bedrock-integration/           # Stack B: VPC endpoint + IRSA for Bedrock
+    bedrock-integration/           # Bedrock infrastructure (used by Hybrid-LLM repo)
 
 k8s/
   ollama/                          # Deployment (ephemeral snapshot volume), Service, NetworkPolicy, AuthorizationPolicy, ConfigMap, StorageClasses, VolumeSnapshot, GPU controller RBAC
@@ -1983,7 +1869,7 @@ k8s/
 argocd/apps/                       # Wave-based Application manifests (00-12, incl. 01b-system-nodepool.yaml)
 
 scripts/
-  deploy-stack-a.sh                # End-to-end Stack A deployment automation
+  deploy.sh                        # End-to-end deployment automation (air-gapped)
   verify-airgap.sh                 # Air-gap compliance verification
   create-model-snapshot.sh         # EBS snapshot with pre-loaded models
   generate-readme-html.py          # README.md → README.html converter
@@ -2005,7 +1891,7 @@ switch-model.sh                    # Model tier switching with GPU hardware vali
 </code></pre>
 
 <blockquote>
-<p><strong>Implementation status:</strong> All Terraform modules, K8s manifests, scripts, and workflows listed above are implemented. Stack A (air-gapped) is the default deployment. Set <code>enable_bedrock=true</code> in <code>terraform.tfvars</code> for Stack B (hybrid).</p>
+<p><strong>Implementation status:</strong> All Terraform modules, K8s manifests, scripts, and workflows listed above are implemented. Deploy with <code>./scripts/deploy.sh</code>. For the hybrid version (local LLM + Claude via Bedrock), see <a href="https://github.com/shanaka-versent/Hybrid-LLM">shanaka-versent/Hybrid-LLM</a>.</p>
 </blockquote>
 <hr />
 <h2 id="troubleshooting">Troubleshooting</h2>

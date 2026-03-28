@@ -235,86 +235,18 @@ One stack handles all tiers — no separate DEV/PROD overlays needed:
 | High-throughput gp3-ephemeral (400 MB/s + 6000 IOPS) | Compensates for EBS snapshot lazy-loading — data is fetched from S3 on first read, then cached locally |
 | AWS Managed Grafana (AMG) | Prometheus + DCGM Exporter in-cluster → AMP → AMG (SSO via IAM Identity Center). All dashboards including FinOps |
 | Spot with on-demand fallback | Karpenter tries spot first (~65% savings), auto-falls back to on-demand if reclaimed |
-| Dual-mode pipeline | Two separate stacks (not config flag) — compliance by design, eliminates human error risk |
+| Fully air-gapped | No external LLM providers, no internet egress from pods. Hybrid mode (Bedrock) is in a [separate repo](https://github.com/shanaka-versent/Hybrid-LLM) |
 | Ollama image pinned to v0.18.2 | Reproducible builds, no surprise breaking changes from `:latest` |
 | Custom login portal + Cognito | All auth flows (login, signup, MFA, password reset) handled by custom portal — users never see Cognito hosted UI. Cognito provides OAuth/OIDC backend with TOTP MFA and group-based roles |
 | cert-manager (not manual openssl) | Automated TLS lifecycle — 90d duration, 30d auto-renewal, no manual cert rotation |
 | Flex mode (single-stack architecture) | One stack, all tiers. NodePool ceiling allows both g5.xlarge and g5.12xlarge. `switch-model.sh` patches deployment resources, Karpenter auto-provisions the right instance. Cost = Tier 1 by default; flagship costs only while active. No reprovisioning needed |
 | Multi-AZ GPU, single-AZ system | GPU NodePool spans `2a`+`2b` for wider spot capacity pool. System nodes stay in `2a` (single node consolidation). Ephemeral snapshot volumes enable cross-AZ GPU provisioning at zero additional cost |
 
-### Dual-Mode Pipeline — Two Separate Stacks
+### Hybrid Mode (Separate Repo)
 
-Two separate deployment stacks — deploy one or the other per engagement. Separate stacks ensure compliance by design and eliminate human error risk.
+A hybrid version of this platform — combining local Ollama with Claude via AWS Bedrock — is maintained in a separate repository: **[shanaka-versent/Hybrid-LLM](https://github.com/shanaka-versent/Hybrid-LLM)**. It adds a pluggable Bedrock layer with Smart Router, 3-phase sanitise-augment-rehydrate pattern, and full data sovereignty guarantees.
 
-| | Stack A (Fully Air-Gapped) | Stack B (Hybrid — Local + Bedrock) |
-|---|---|---|
-| Phase 1 (Analysis) | Local Ollama/Qwen | Local Ollama/Qwen |
-| Phase 2 (Report Gen) | Local Ollama/Qwen | Latest Claude Opus via AWS Bedrock |
-| Sanitisation | Yes — regex + LLM review | Yes — regex + LLM review |
-| Internet Egress | None | Bedrock VPC endpoint only |
-| Best For | Defence, healthcare, government | Client-approved cloud access |
-
-Stack A physically cannot reach Bedrock — no credentials, no egress rules, no API client.
-
-**Data flow:**
-- **Stack A:** Client Data → Phase 1 (Ollama/Qwen) → Sanitisation → Phase 2 (Ollama/Qwen) → Good quality report
-- **Stack B:** Client Data → Phase 1 (Ollama/Qwen) → Sanitisation → Phase 2 (Latest Claude Opus via Bedrock, sanitised findings only) → High quality report
-
-```mermaid
-flowchart LR
-    CD([Client Data])
-
-    subgraph StackA["Stack A — Fully Air-Gapped"]
-        direction LR
-        A1["Phase 1\nAnalysis\n(Ollama/Qwen)"]
-        AS["Sanitisation\nRegex + LLM Review"]
-        A2["Phase 2\nReport Generation\n(Ollama/Qwen)"]
-        AR([Report\nGood Quality])
-    end
-
-    subgraph StackB["Stack B — Hybrid (Local + Bedrock)"]
-        direction LR
-        B1["Phase 1\nAnalysis\n(Ollama/Qwen)"]
-        BS["Sanitisation\nRegex + LLM Review"]
-        B2["Phase 2\nReport Generation\n(Claude Opus via Bedrock)"]
-        BR([Report\nHigh Quality])
-    end
-
-    CD --> A1
-    A1 --> AS
-    AS --> A2
-    A2 --> AR
-
-    CD --> B1
-    B1 --> BS
-    BS -->|Sanitised JSON only\nVPC Endpoint| B2
-    B2 --> BR
-
-    style StackA fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-    style StackB fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    style AS fill:#fff3e0,stroke:#ff9800
-    style BS fill:#fff3e0,stroke:#ff9800
-    style A2 fill:#66bb6a,color:#fff
-    style B2 fill:#5c4ee5,color:#fff
-    style AR fill:#a5d6a7
-    style BR fill:#b39ddb
-```
-
-Deploy Stack B with: `terraform apply -var="enable_bedrock=true"`
-
-#### Stack B — Bedrock Integration Details
-
-Stack B adds these AWS resources (created by `terraform/modules/bedrock-integration/`):
-
-| Resource | Details |
-|----------|---------|
-| VPC Endpoint | `com.amazonaws.ap-southeast-2.bedrock-runtime`, Interface type, private subnets, private DNS enabled |
-| IRSA Role | `ollama-orchestrator-bedrock` — service account: `orchestrator:orchestrator-sa` |
-| IAM Policy | `bedrock:InvokeModel` + `bedrock:InvokeModelWithResponseStream` on `anthropic.claude-*` |
-| NetworkPolicy | Orchestrator namespace: egress to Bedrock VPC endpoint only (Stack A blocks all egress) |
-| Sanitisation | Two-pass: (1) regex strips IPs, emails, API keys, ARNs, JWTs, SSH keys, connection strings; (2) local Qwen reviews for semantic leakage. Hard stop if raw data detected |
-
-> The orchestrator is a separate product built on top of the Ollama-on-EKS infrastructure — separate repo, Dockerfile, and CI.
+This repo is the **fully air-gapped stack only** — no Bedrock, no external LLM providers, no internet egress from pods.
 
 ### Request Sequence
 
@@ -978,7 +910,7 @@ flowchart LR
 | **S3 Encryption** | Portal + login buckets use `aws:kms` (not AES256). Key rotation via AWS-managed KMS |
 | **SNS Encryption** | Alert topic encrypted with `alias/aws/sns` KMS key |
 | **Cognito Signup Validation** | Pre Sign-up Lambda validates email domain (`ALLOWED_EMAIL_DOMAINS` env var). Empty = allow all (default) |
-| **IRSA** | EBS CSI + LB Controller + Bedrock (Stack B) use least-privilege IAM roles via OIDC |
+| **IRSA** | EBS CSI + LB Controller use least-privilege IAM roles via OIDC |
 | **cert-manager** | Automated TLS certificate lifecycle (90d duration, 30d auto-renewal) |
 
 ### API Key Authentication
@@ -1089,7 +1021,7 @@ terraform/
     cognito/                       # Cognito User Pool for Open WebUI (OAuth, MFA, groups)
     api-key-portal/                # Self-service API key management, custom login portal, GPU control (auth_proxy + gpu_controller Lambdas)
     managed-grafana/               # AMG + AMP (all dashboards via IAM Identity Center SSO)
-    bedrock-integration/           # Stack B: VPC endpoint + IRSA for Bedrock
+    bedrock-integration/           # Bedrock infrastructure (used by Hybrid-LLM repo)
 
 k8s/
   ollama/                          # Deployment (ephemeral snapshot volume), Service, NetworkPolicy, AuthorizationPolicy, ConfigMap, StorageClasses, VolumeSnapshot, GPU controller RBAC
@@ -1126,7 +1058,7 @@ switch-model.sh                    # Model tier switching with GPU hardware vali
   model-switch/SKILL.md            # Skill: /model command for interactive tier switching
 ```
 
-> **Implementation status:** All Terraform modules, K8s manifests, scripts, and workflows listed above are implemented. Stack A (air-gapped) is the default deployment. Set `enable_bedrock=true` in `terraform.tfvars` for Stack B (hybrid).
+> **Implementation status:** All Terraform modules, K8s manifests, scripts, and workflows listed above are implemented. Deploy with `./scripts/deploy.sh`. For the hybrid version (local LLM + Claude via Bedrock), see [shanaka-versent/Hybrid-LLM](https://github.com/shanaka-versent/Hybrid-LLM).
 
 ---
 

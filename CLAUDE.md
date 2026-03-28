@@ -135,31 +135,15 @@ Switch with: `./switch-model.sh use 3` (flagship, ~5 min) or `./switch-model.sh 
 - Cognito authentication for Open WebUI — Cognito User Pool with TOTP MFA, OAuth/OIDC, and admin-approved signups. All user management via Cognito Console. Grafana auth is via AMG SSO (IAM Identity Center)
 - Single-stack flex architecture — One set of K8s manifests, no overlays. `switch-model.sh` patches deployment resources at runtime. ArgoCD apps point directly to base manifests (`k8s/ollama/`, `k8s/nodepools/`, etc.). ArgoCD `ignoreDifferences` on container resources prevents selfHeal from reverting patches. Terraform tfvars in `terraform/environments/` for cloud-level config.
 
-## Dual-Mode Pipeline — Two Separate Stacks
+## Hybrid Mode (Separate Repo)
 
-Two separate stacks — you deploy one or the other per engagement. Separate stacks ensure compliance by design and eliminate human error risk. The air-gapped stack physically cannot reach Bedrock (no credentials, no egress rules, no API client).
+The hybrid version of this platform (local Ollama + Claude via AWS Bedrock) is maintained in a separate repository: [shanaka-versent/Hybrid-LLM](https://github.com/shanaka-versent/Hybrid-LLM). It adds a pluggable Bedrock layer with Smart Router, 3-phase sanitise-augment-rehydrate pattern, and full data sovereignty guarantees.
 
-- **Stack A (Fully Air-Gapped):** Phase 1 (analysis) and Phase 2 (report generation) both run on local Ollama/Qwen. Zero external API calls. Best for defence, healthcare, government.
-- **Stack B (Hybrid — Local + Bedrock):** Phase 1 always local. Sanitisation layer (regex + LLM review) strips all client data, code, and identifiers. Only sanitised findings JSON goes to the latest Claude Opus model via AWS Bedrock for Phase 2 report generation. Traffic stays on AWS backbone via VPC endpoint. Auth via IAM roles (IRSA), no API keys.
-
-Data flow:
-- Stack A: Client Data → Phase 1 (Ollama/Qwen) → Sanitisation → Phase 2 (Ollama/Qwen) → Good quality report
-- Stack B: Client Data → Phase 1 (Ollama/Qwen) → Sanitisation → Phase 2 (Latest Claude Opus via Bedrock, sanitised findings only) → High quality report
-
-### Stack B — Bedrock Integration Requirements
-
-Stack B requires additional AWS resources not present in Stack A:
-
-- **VPC Endpoint for Bedrock** — Service: `com.amazonaws.ap-southeast-2.bedrock-runtime`, type: Interface, in private subnets, private DNS enabled. Create in `terraform/modules/bedrock-integration/`.
-- **IRSA role for Bedrock access** — Use `terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks`. Role name: `ollama-orchestrator-bedrock`. Service account: `orchestrator:orchestrator-sa`. Policy: allow `bedrock:InvokeModel` and `bedrock:InvokeModelWithResponseStream` on resource `arn:aws:bedrock:${region}::foundation-model/anthropic.claude-*`.
-- **NetworkPolicy** — Stack B's orchestrator namespace allows egress to the Bedrock VPC endpoint only. Stack A's orchestrator namespace blocks all egress.
-- **Sanitisation layer** — Two-pass: (1) regex strips IPs, emails, API keys, AWS ARNs, JWTs, SSH keys, connection strings; (2) local Qwen reviews sanitised JSON for semantic leakage. Hard stop if raw data detected.
-
-The orchestrator is a separate product built on top of the Ollama-on-EKS infrastructure — separate repo, Dockerfile, and CI.
+This repo is the **fully air-gapped stack only** — no Bedrock, no external LLM providers, no internet egress from pods. The `terraform/modules/bedrock-integration/` module exists here as shared infrastructure but is not enabled (`enable_bedrock = false`).
 
 ## Repo Structure
 
-Terraform modules: `terraform/modules/` — vpc, iam, eks, argocd, lb-controller, observability (IMPLEMENTED), api-gateway (IMPLEMENTED, with origin lockdown), cdn-waf (IMPLEMENTED, with origin lockdown), cert-manager (IMPLEMENTED), bedrock-integration (IMPLEMENTED, Stack B only), managed-grafana (IMPLEMENTED — AMG + AMP, SSO via IAM Identity Center), cognito (IMPLEMENTED — Open WebUI Cognito User Pool + OAuth/OIDC), api-key-portal (IMPLEMENTED — self-service API key management with Cognito auth). Each module follows the pattern: `main.tf`, `variables.tf`, `outputs.tf`, `versions.tf`.
+Terraform modules: `terraform/modules/` — vpc, iam, eks, argocd, lb-controller, observability (IMPLEMENTED), api-gateway (IMPLEMENTED, with origin lockdown), cdn-waf (IMPLEMENTED, with origin lockdown), cert-manager (IMPLEMENTED), bedrock-integration (shared infra, used by Hybrid-LLM repo), managed-grafana (IMPLEMENTED — AMG + AMP, SSO via IAM Identity Center), cognito (IMPLEMENTED — Open WebUI Cognito User Pool + OAuth/OIDC), api-key-portal (IMPLEMENTED — self-service API key management with Cognito auth). Each module follows the pattern: `main.tf`, `variables.tf`, `outputs.tf`, `versions.tf`.
 
 Terraform environments: `terraform/environments/` — per-environment tfvars (dev.tfvars, prod.tfvars).
 
