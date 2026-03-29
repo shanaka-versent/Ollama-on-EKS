@@ -10,64 +10,381 @@ Deploy a fully private, air-gapped Ollama LLM server on AWS EKS with GPU acceler
 
 ```mermaid
 flowchart TB
-    subgraph L4["Layer 4 — Edge + Security"]
-        Client([Developer / Client])
-        CF["CloudFront\n+ Shield Standard"]
-        WAF["WAFv2\nRate Limit · IP Allow · Geo-Block\nSQL/XSS · Bot Control"]
-        APIGW["API Gateway\nREST API + x-api-key Auth"]
+    %% ━━━ HIGH-LEVEL SOLUTIONS ARCHITECTURE ━━━
+    %% Focus: user journeys, data flow, major capabilities
+    %% NOT: VPCs, subnets, NLBs, Istio, node types
+
+    subgraph USERS["Users"]
+        direction LR
+        WEB_USER(["Web User<br/>(Browser)"])
+        API_USER(["API Consumer<br/>(SDK / curl)"])
+        ADMIN_USER(["Admin"])
     end
 
-    subgraph L1["Layer 1 — VPC (10.0.0.0/16)"]
+    subgraph ENTRY["Entry Point"]
+        CF["CloudFront<br/>(WAF + DDoS Protection)"]
+    end
+
+    subgraph AUTH_LAYER["Authentication"]
+        direction LR
+        PORTAL["Custom Login Portal"]
+        COGNITO["Cognito<br/>(OAuth/OIDC + MFA)"]
+    end
+
+    subgraph PLATFORM["Air-Gapped LLM Platform"]
         direction TB
-        subgraph pub["Public Subnets"]
+        WEBUI["Open WebUI<br/>(Chat Interface)"]
+        OLLAMA["Local LLM<br/>(Qwen 27B / 122B)"]
+        MODELS["3 Model Tiers<br/>(Flex Mode — switch on demand)"]
+    end
+
+    subgraph OBSERVABILITY["Observability"]
+        direction LR
+        METRICS["Prometheus + AMP"]
+        DASH["Managed Grafana<br/>(SSO)"]
+    end
+
+    %% User journeys
+    WEB_USER -->|"HTTPS"| CF
+    API_USER -->|"HTTPS + API Key"| CF
+    CF --> WEBUI
+    CF -.->|"Unauthenticated"| PORTAL
+    PORTAL --> COGNITO
+    COGNITO -.->|"Token"| CF
+
+    %% Chat flow
+    WEBUI -->|"Chat / Query"| OLLAMA
+    OLLAMA --> MODELS
+
+    %% Observability
+    METRICS --> DASH
+    ADMIN_USER -->|"SSO"| DASH
+
+    style USERS fill:#fff,stroke:#555,stroke-width:1px
+    style ENTRY fill:#fff3e0,stroke:#ff9800,stroke-width:2px
+    style AUTH_LAYER fill:#fce4ec,stroke:#e91e63,stroke-width:2px,stroke-dasharray: 5 5
+    style PLATFORM fill:#e3f2fd,stroke:#2196f3,stroke-width:2px
+    style OBSERVABILITY fill:#f3e5f5,stroke:#9c27b0,stroke-width:2px
+    style WEB_USER fill:#37474f,color:#fff,stroke:#37474f
+    style API_USER fill:#37474f,color:#fff,stroke:#37474f
+    style ADMIN_USER fill:#37474f,color:#fff,stroke:#37474f
+    style OLLAMA fill:#1565c0,color:#fff
+    style CF fill:#ff9800,color:#fff
+    style COGNITO fill:#e91e63,color:#fff
+    style PORTAL fill:#f48fb1,color:#fff
+    style MODELS fill:#2E86C1,color:#fff
+```
+
+<details>
+<summary>Copy Mermaid Code (High-Level Architecture)</summary>
+
+```
+flowchart TB
+    %% ━━━ HIGH-LEVEL SOLUTIONS ARCHITECTURE ━━━
+    %% Focus: user journeys, data flow, major capabilities
+    %% NOT: VPCs, subnets, NLBs, Istio, node types
+
+    subgraph USERS["Users"]
+        direction LR
+        WEB_USER(["Web User<br/>(Browser)"])
+        API_USER(["API Consumer<br/>(SDK / curl)"])
+        ADMIN_USER(["Admin"])
+    end
+
+    subgraph ENTRY["Entry Point"]
+        CF["CloudFront<br/>(WAF + DDoS Protection)"]
+    end
+
+    subgraph AUTH_LAYER["Authentication"]
+        direction LR
+        PORTAL["Custom Login Portal"]
+        COGNITO["Cognito<br/>(OAuth/OIDC + MFA)"]
+    end
+
+    subgraph PLATFORM["Air-Gapped LLM Platform"]
+        direction TB
+        WEBUI["Open WebUI<br/>(Chat Interface)"]
+        OLLAMA["Local LLM<br/>(Qwen 27B / 122B)"]
+        MODELS["3 Model Tiers<br/>(Flex Mode — switch on demand)"]
+    end
+
+    subgraph OBSERVABILITY["Observability"]
+        direction LR
+        METRICS["Prometheus + AMP"]
+        DASH["Managed Grafana<br/>(SSO)"]
+    end
+
+    %% User journeys
+    WEB_USER -->|"HTTPS"| CF
+    API_USER -->|"HTTPS + API Key"| CF
+    CF --> WEBUI
+    CF -.->|"Unauthenticated"| PORTAL
+    PORTAL --> COGNITO
+    COGNITO -.->|"Token"| CF
+
+    %% Chat flow
+    WEBUI -->|"Chat / Query"| OLLAMA
+    OLLAMA --> MODELS
+
+    %% Observability
+    METRICS --> DASH
+    ADMIN_USER -->|"SSO"| DASH
+
+    style USERS fill:#fff,stroke:#555,stroke-width:1px
+    style ENTRY fill:#fff3e0,stroke:#ff9800,stroke-width:2px
+    style AUTH_LAYER fill:#fce4ec,stroke:#e91e63,stroke-width:2px,stroke-dasharray: 5 5
+    style PLATFORM fill:#e3f2fd,stroke:#2196f3,stroke-width:2px
+    style OBSERVABILITY fill:#f3e5f5,stroke:#9c27b0,stroke-width:2px
+    style WEB_USER fill:#37474f,color:#fff,stroke:#37474f
+    style API_USER fill:#37474f,color:#fff,stroke:#37474f
+    style ADMIN_USER fill:#37474f,color:#fff,stroke:#37474f
+    style OLLAMA fill:#1565c0,color:#fff
+    style CF fill:#ff9800,color:#fff
+    style COGNITO fill:#e91e63,color:#fff
+    style PORTAL fill:#f48fb1,color:#fff
+    style MODELS fill:#2E86C1,color:#fff
+```
+
+</details>
+
+**Key:** The blue border is the **Air-Gapped LLM Platform** (always running, no internet egress from pods). The dashed pink border is the **authentication layer** — Cognito handles auth separately, it is NOT in the data path. All inference stays local. See the Infrastructure Architecture diagram below for networking details (VPC, NLB, node types).
+
+### Infrastructure Architecture
+
+```mermaid
+flowchart TB
+    %% ━━━ INFRASTRUCTURE ARCHITECTURE ━━━
+    %% Focus: networking, compute, storage, AWS resources
+
+    INTERNET(["Internet<br/>(HTTPS)"])
+
+    subgraph EDGE["AWS Edge"]
+        direction TB
+        CF["CloudFront Distribution<br/>+ Shield Standard"]
+        WAF["WAFv2 Web ACL<br/>• Rate limit 2000/5min<br/>• IP allowlist (CIDR)<br/>• Geo-block AU+US<br/>• AWS Managed Rules (SQLi/XSS)"]
+        CFF["CloudFront Function<br/>(viewer-request: auth redirect)"]
+        CACHE["Edge Cache<br/>(CachingOptimized for /_app/*, /static/*)"]
+        APIGW["API Gateway (REST)<br/>• x-api-key auth<br/>• Usage Plan (rate + quota)<br/>• Origin lockdown (Referer secret)"]
+    end
+
+    subgraph AUTH_INFRA["Auth Infrastructure"]
+        direction TB
+        S3_LOGIN["S3 Bucket<br/>(login.html SPA)"]
+        LAMBDA["Auth Proxy Lambda<br/>(6 endpoints)"]
+        COGN_POOL["Cognito User Pool<br/>+ App Client"]
+        SNS_SIGNUP["SNS Topic<br/>(signup notifications)"]
+        SES["SES<br/>(access-granted emails)"]
+    end
+
+    subgraph VPC["VPC 10.0.0.0/16 — ap-southeast-2"]
+        direction TB
+
+        subgraph PUBLIC["Public Subnets (2 AZs)"]
             NAT["NAT Gateway"]
             IGW["Internet Gateway"]
         end
 
-        subgraph priv["Private Subnets"]
-            VPCL["VPC Link"]
-            NLB["Internal NLB"]
+        subgraph PRIVATE["Private Subnets (2 AZs, workloads in 2a)"]
+            NLB["Internal NLB<br/>(not internet-facing)"]
 
-            subgraph L2["Layer 2 — EKS Cluster (eks-ollama-dev)"]
+            subgraph EKS["EKS Cluster — Auto Mode"]
                 direction TB
-                subgraph L3["Layer 3 — ArgoCD GitOps (Waves -2 to 7)"]
-                    direction LR
-                    ISTIO["Istio Gateway\nAmbient mTLS"]
-                    OLLAMA["Ollama Pod\nv0.18.2 · NVIDIA A10G"]
-                    EBS["EBS gp3-ephemeral 200GB\n6000 IOPS · 400 MB/s\nEphemeral from Snapshot"]
-                    WEBUI["Open WebUI v0.8.12\nCustom Login Portal"]
-                    COG["Cognito User Pool\nOAuth/OIDC + TOTP MFA"]
-                    MON["Prometheus + DCGM\n→ AMP → AMG (SSO)"]
+
+                subgraph SYS_NP["System NodePool<br/>(t3.xlarge · on-demand · x86 · single AZ 2a)"]
+                    ISTIOD["Istiod + CNI + ztunnel<br/>(ambient mesh, mTLS)"]
+                    GW["Istio Gateway<br/>(Gateway API)"]
+                    ROUTES["HTTPRoutes<br/>(path-based routing)"]
+                    ARGOCD["ArgoCD<br/>(waves -2 to 7)"]
+                    KEDA_CTL["KEDA Controller<br/>(ScaledObject → Ollama)"]
+                    PROM["Prometheus<br/>(kube-prometheus-stack)"]
+                    DCGM["DCGM Exporter<br/>(GPU metrics DaemonSet)"]
+                    WEBUI_POD["Open WebUI Pod<br/>(always-on, 1 replica)"]
                 end
+
+                subgraph GPU_NP["GPU NodePool<br/>(g5.xlarge/12xlarge · spot + on-demand · multi-AZ 2a+2b)"]
+                    OLLAMA_POD["Ollama Pod<br/>(NVIDIA A10G GPU)"]
+                    EBS_VOL["EBS gp3 Ephemeral<br/>200GB · 6000 IOPS · 400 MB/s<br/>(from EBS snapshot, deleted on termination)"]
+                end
+
+                KARP["Karpenter<br/>(managed by Auto Mode)"]
+                NVIDIA["NVIDIA Device Plugin<br/>(managed by Auto Mode)"]
             end
         end
     end
 
-    Client -->|HTTPS| CF
-    CF --> WAF
-    WAF --> CF
-    CF -->|VPC Origin| NLB
-    CF -->|AWS Backbone| APIGW
-    APIGW --> VPCL
-    VPCL --> NLB
-    NLB --> ISTIO
-    ISTIO -->|mTLS| OLLAMA
-    OLLAMA --> EBS
-    WEBUI -->|port 11434| OLLAMA
-    COG -.->|OAuth/OIDC| WEBUI
+    subgraph AWS_MANAGED["AWS Managed Services"]
+        direction LR
+        AMP["Amazon Managed Prometheus<br/>(AMP workspace)"]
+        AMG["AWS Managed Grafana<br/>(IAM Identity Center SSO)"]
+    end
 
-    style L4 fill:#fff3e0,stroke:#ff9800,stroke-width:2px
-    style L1 fill:#e8f5e9,stroke:#4caf50,stroke-width:2px
-    style L2 fill:#e3f2fd,stroke:#2196f3,stroke-width:2px
-    style L3 fill:#f3e5f5,stroke:#9c27b0,stroke-width:2px
-    style pub fill:#f1f8e9,stroke:#8bc34a
-    style priv fill:#e0f2f1,stroke:#009688
-    style CF fill:#ff9800,color:#fff
-    style WAF fill:#f44336,color:#fff
-    style APIGW fill:#7b1fa2,color:#fff
-    style OLLAMA fill:#1565c0,color:#fff
-    style EBS fill:#2e7d32,color:#fff
+    %% Entry point — all traffic enters via CloudFront
+    INTERNET --> CF
+
+    %% Edge → VPC connectivity (private, on AWS backbone)
+    CF -->|"VPC Origin<br/>(private)"| NLB
+    APIGW -->|"VPC Link<br/>(private)"| NLB
+    CF --> CFF --> CACHE
+    CF --> WAF
+
+    %% Auth infra connections
+    CF -.->|"/auth/*"| S3_LOGIN
+    S3_LOGIN --> LAMBDA --> COGN_POOL
+    COGN_POOL --> SNS_SIGNUP
+    COGN_POOL --> SES
+
+    %% Internal networking
+    NLB --> GW --> ROUTES
+    ROUTES -->|"/v1/*"| OLLAMA_POD
+    ROUTES -->|"/*"| WEBUI_POD
+    GW --> ISTIOD
+
+    %% Storage
+    OLLAMA_POD --> EBS_VOL
+
+    %% Observability
+    PROM -->|"remote-write<br/>(SigV4 + IRSA)"| AMP
+    DCGM --> PROM
+    AMP --> AMG
+
+    %% Auto Mode managed components
+    KARP -.->|"provisions"| SYS_NP
+    KARP -.->|"provisions"| GPU_NP
+    KEDA_CTL -.->|"scales 0↔1"| OLLAMA_POD
+
+    style EDGE fill:#fff3e0,stroke:#ff9800,stroke-width:2px
+    style AUTH_INFRA fill:#fce4ec,stroke:#e91e63,stroke-width:2px,stroke-dasharray: 5 5
+    style VPC fill:#e8f5e9,stroke:#4caf50,stroke-width:2px
+    style PUBLIC fill:#c8e6c9,stroke:#4caf50
+    style PRIVATE fill:#a5d6a7,stroke:#388e3c,stroke-width:2px
+    style EKS fill:#e3f2fd,stroke:#2196f3,stroke-width:2px
+    style SYS_NP fill:#bbdefb,stroke:#2196f3
+    style GPU_NP fill:#fff9c4,stroke:#f9a825,stroke-width:2px
+    style AWS_MANAGED fill:#fff8e1,stroke:#ff9800,stroke-width:2px,stroke-dasharray: 5 5
+    style INTERNET fill:#37474f,color:#fff,stroke:#37474f,stroke-width:2px
+    style NLB fill:#2E86C1,color:#fff
+    style GW fill:#2E86C1,color:#fff
 ```
+
+<details>
+<summary>Copy Mermaid Code (Infrastructure Architecture)</summary>
+
+```
+flowchart TB
+    %% ━━━ INFRASTRUCTURE ARCHITECTURE ━━━
+    %% Focus: networking, compute, storage, AWS resources
+
+    INTERNET(["Internet<br/>(HTTPS)"])
+
+    subgraph EDGE["AWS Edge"]
+        direction TB
+        CF["CloudFront Distribution<br/>+ Shield Standard"]
+        WAF["WAFv2 Web ACL<br/>• Rate limit 2000/5min<br/>• IP allowlist (CIDR)<br/>• Geo-block AU+US<br/>• AWS Managed Rules (SQLi/XSS)"]
+        CFF["CloudFront Function<br/>(viewer-request: auth redirect)"]
+        CACHE["Edge Cache<br/>(CachingOptimized for /_app/*, /static/*)"]
+        APIGW["API Gateway (REST)<br/>• x-api-key auth<br/>• Usage Plan (rate + quota)<br/>• Origin lockdown (Referer secret)"]
+    end
+
+    subgraph AUTH_INFRA["Auth Infrastructure"]
+        direction TB
+        S3_LOGIN["S3 Bucket<br/>(login.html SPA)"]
+        LAMBDA["Auth Proxy Lambda<br/>(6 endpoints)"]
+        COGN_POOL["Cognito User Pool<br/>+ App Client"]
+        SNS_SIGNUP["SNS Topic<br/>(signup notifications)"]
+        SES["SES<br/>(access-granted emails)"]
+    end
+
+    subgraph VPC["VPC 10.0.0.0/16 — ap-southeast-2"]
+        direction TB
+
+        subgraph PUBLIC["Public Subnets (2 AZs)"]
+            NAT["NAT Gateway"]
+            IGW["Internet Gateway"]
+        end
+
+        subgraph PRIVATE["Private Subnets (2 AZs, workloads in 2a)"]
+            NLB["Internal NLB<br/>(not internet-facing)"]
+
+            subgraph EKS["EKS Cluster — Auto Mode"]
+                direction TB
+
+                subgraph SYS_NP["System NodePool<br/>(t3.xlarge · on-demand · x86 · single AZ 2a)"]
+                    ISTIOD["Istiod + CNI + ztunnel<br/>(ambient mesh, mTLS)"]
+                    GW["Istio Gateway<br/>(Gateway API)"]
+                    ROUTES["HTTPRoutes<br/>(path-based routing)"]
+                    ARGOCD["ArgoCD<br/>(waves -2 to 7)"]
+                    KEDA_CTL["KEDA Controller<br/>(ScaledObject → Ollama)"]
+                    PROM["Prometheus<br/>(kube-prometheus-stack)"]
+                    DCGM["DCGM Exporter<br/>(GPU metrics DaemonSet)"]
+                    WEBUI_POD["Open WebUI Pod<br/>(always-on, 1 replica)"]
+                end
+
+                subgraph GPU_NP["GPU NodePool<br/>(g5.xlarge/12xlarge · spot + on-demand · multi-AZ 2a+2b)"]
+                    OLLAMA_POD["Ollama Pod<br/>(NVIDIA A10G GPU)"]
+                    EBS_VOL["EBS gp3 Ephemeral<br/>200GB · 6000 IOPS · 400 MB/s<br/>(from EBS snapshot, deleted on termination)"]
+                end
+
+                KARP["Karpenter<br/>(managed by Auto Mode)"]
+                NVIDIA["NVIDIA Device Plugin<br/>(managed by Auto Mode)"]
+            end
+        end
+    end
+
+    subgraph AWS_MANAGED["AWS Managed Services"]
+        direction LR
+        AMP["Amazon Managed Prometheus<br/>(AMP workspace)"]
+        AMG["AWS Managed Grafana<br/>(IAM Identity Center SSO)"]
+    end
+
+    %% Entry point — all traffic enters via CloudFront
+    INTERNET --> CF
+
+    %% Edge → VPC connectivity (private, on AWS backbone)
+    CF -->|"VPC Origin<br/>(private)"| NLB
+    APIGW -->|"VPC Link<br/>(private)"| NLB
+    CF --> CFF --> CACHE
+    CF --> WAF
+
+    %% Auth infra connections
+    CF -.->|"/auth/*"| S3_LOGIN
+    S3_LOGIN --> LAMBDA --> COGN_POOL
+    COGN_POOL --> SNS_SIGNUP
+    COGN_POOL --> SES
+
+    %% Internal networking
+    NLB --> GW --> ROUTES
+    ROUTES -->|"/v1/*"| OLLAMA_POD
+    ROUTES -->|"/*"| WEBUI_POD
+    GW --> ISTIOD
+
+    %% Storage
+    OLLAMA_POD --> EBS_VOL
+
+    %% Observability
+    PROM -->|"remote-write<br/>(SigV4 + IRSA)"| AMP
+    DCGM --> PROM
+    AMP --> AMG
+
+    %% Auto Mode managed components
+    KARP -.->|"provisions"| SYS_NP
+    KARP -.->|"provisions"| GPU_NP
+    KEDA_CTL -.->|"scales 0↔1"| OLLAMA_POD
+
+    style EDGE fill:#fff3e0,stroke:#ff9800,stroke-width:2px
+    style AUTH_INFRA fill:#fce4ec,stroke:#e91e63,stroke-width:2px,stroke-dasharray: 5 5
+    style VPC fill:#e8f5e9,stroke:#4caf50,stroke-width:2px
+    style PUBLIC fill:#c8e6c9,stroke:#4caf50
+    style PRIVATE fill:#a5d6a7,stroke:#388e3c,stroke-width:2px
+    style EKS fill:#e3f2fd,stroke:#2196f3,stroke-width:2px
+    style SYS_NP fill:#bbdefb,stroke:#2196f3
+    style GPU_NP fill:#fff9c4,stroke:#f9a825,stroke-width:2px
+    style AWS_MANAGED fill:#fff8e1,stroke:#ff9800,stroke-width:2px,stroke-dasharray: 5 5
+    style INTERNET fill:#37474f,color:#fff,stroke:#37474f,stroke-width:2px
+    style NLB fill:#2E86C1,color:#fff
+    style GW fill:#2E86C1,color:#fff
+```
+
+</details>
 
 **Traffic flows:**
 ```
@@ -207,6 +524,91 @@ flowchart TB
     style ZERO fill:#ef4444,color:#fff
 ```
 
+<details>
+<summary>Copy Mermaid Code (GPU Pod & Storage Lifecycle)</summary>
+
+```
+flowchart TB
+    subgraph TRIGGER["Scale-Up Trigger"]
+        MANUAL["scripts/scale-up.sh<br/>(manual)"]
+        SWITCH["switch-model.sh use &lt;tier&gt;<br/>(tier change)"]
+    end
+
+    subgraph PROVISION["Node Provisioning"]
+        KEDA_UP["KEDA: replicas 0 → 1"]
+        KARP["Karpenter detects<br/>pending Ollama pod"]
+        SPOT{"Spot<br/>available?"}
+        SPOT_Y["Provision spot instance<br/>(~65% savings)"]
+        SPOT_N["Fallback: on-demand<br/>(GPUOnDemandFallback alert)"]
+        NODE["GPU Node Ready<br/>g5.xlarge (1x A10G) or<br/>g5.12xlarge (4x A10G)"]
+    end
+
+    subgraph STORAGE["EBS Storage (per pod, ephemeral)"]
+        SNAP["EBS Snapshot<br/>(region-level, pre-loaded<br/>with all 3 Qwen models)"]
+        VOL["Ephemeral Volume Created<br/>200GB gp3<br/>6000 IOPS · 400 MB/s"]
+        LAZY["Snapshot Lazy-Loading<br/>(fetched from S3 on first read,<br/>cached locally on volume)"]
+    end
+
+    subgraph POD["Ollama Pod Startup"]
+        SCHED["Pod scheduled on GPU node<br/>(nodeSelector + GPU taint toleration)"]
+        MOUNT["Volume mounted at<br/>/root/.ollama/models"]
+        LOADER["Model Loader Job<br/>(ollama pull — hits local disk)"]
+        VRAM["Model weights loaded<br/>into GPU VRAM"]
+        READY["Ollama Ready<br/>Inference serving on :11434"]
+    end
+
+    subgraph MODELS["Qwen Models on Snapshot"]
+        M1["qwen3.5:27b<br/>Tier 1 — 16GB on disk"]
+        M2["qwen3-coder:30b-a3b<br/>Tier 2 — 17GB on disk"]
+        M3["qwen3.5:122b-a10b<br/>Tier 3 — 65GB on disk"]
+    end
+
+    subgraph TEARDOWN["Scale-Down (automatic)"]
+        IDLE["15 min no requests"]
+        KEDA_DN["KEDA: replicas 1 → 0"]
+        DRAIN["Pod terminated<br/>Ephemeral volume DELETED"]
+        KARP_DN["Karpenter: node empty<br/>for 10 min → terminate"]
+        ZERO["$0/hr GPU cost"]
+    end
+
+    MANUAL --> KEDA_UP
+    SWITCH --> KEDA_UP
+    KEDA_UP --> KARP
+    KARP --> SPOT
+    SPOT -->|Yes| SPOT_Y --> NODE
+    SPOT -->|No| SPOT_N --> NODE
+
+    SNAP -->|"Create volume in<br/>same AZ as node"| VOL
+    VOL --> LAZY
+    NODE --> SCHED
+    SCHED --> MOUNT
+    LAZY --> MOUNT
+    MOUNT --> LOADER
+    LOADER --> VRAM
+    VRAM --> READY
+
+    SNAP --- MODELS
+
+    READY --> IDLE
+    IDLE --> KEDA_DN
+    KEDA_DN --> DRAIN
+    DRAIN --> KARP_DN
+    KARP_DN --> ZERO
+
+    style TRIGGER fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    style PROVISION fill:#fff3e0,stroke:#f97316,stroke-width:2px
+    style STORAGE fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style POD fill:#ede9fe,stroke:#6366f1,stroke-width:2px
+    style MODELS fill:#f0fdf4,stroke:#10b981,stroke-width:2px
+    style TEARDOWN fill:#fef2f2,stroke:#ef4444,stroke-width:2px
+    style SNAP fill:#2e7d32,color:#fff
+    style NODE fill:#f97316,color:#fff
+    style READY fill:#6366f1,color:#fff
+    style ZERO fill:#ef4444,color:#fff
+```
+
+</details>
+
 **Key points:**
 - **Ephemeral volumes** — each Ollama pod gets a fresh EBS volume from the pre-loaded snapshot. Volume is deleted on pod termination; the snapshot preserves models permanently
 - **All 3 Qwen models** are pre-loaded on the snapshot (~100GB total). Only the active tier's model is loaded into GPU VRAM; others sit on disk ready for instant switching
@@ -303,6 +705,65 @@ sequenceDiagram
     APIGW-->>-CF: Response to CloudFront
     CF-->>Dev: HTTPS streaming response
 ```
+
+<details>
+<summary>Copy Mermaid Code (Request Sequence)</summary>
+
+```
+sequenceDiagram
+    participant Dev as Developer
+    participant CF as CloudFront + WAF
+    participant APIGW as API Gateway (REST)
+    participant NLB as Internal NLB
+    participant IGW as Istio Gateway
+    participant ZT as ztunnel (Ambient mTLS)
+    participant OLM as Ollama Pod (NVIDIA A10G)
+    participant EBS as EBS Ephemeral Volume (200GB gp3)
+
+    Dev->>CF: POST /v1/chat/completions (HTTPS)
+
+    rect rgb(255, 248, 240)
+        Note over CF: CloudFront Function (viewer-request)
+        CF->>CF: No token cookie? → 302 to /auth/login.html
+        Note over CF: WAF rule chain
+        CF->>CF: Rate limit — 2000 req/5min per IP
+        CF->>CF: IP allowlist — corporate CIDRs only
+        CF->>CF: Geo-block — AU + US only
+        CF->>CF: SQL/XSS — AWSManagedRulesCommonRuleSet
+    end
+
+    CF->>+APIGW: HTTPS (AWS backbone)
+
+    rect rgb(245, 240, 255)
+        Note over APIGW: API Key Auth
+        APIGW->>APIGW: Validate x-api-key against usage plan
+        APIGW->>APIGW: Check rate limit + quota per key
+    end
+
+    APIGW->>+NLB: VPC Link (private connectivity)
+    NLB->>+IGW: Forward to Istio Gateway pod
+
+    rect rgb(240, 248, 255)
+        Note over IGW,OLM: Istio Ambient mTLS — transparent L4 encryption
+        IGW->>+ZT: Intercepted by ztunnel (no sidecar needed)
+        ZT->>+OLM: Decrypted request to ollama.ollama.svc:11434
+    end
+
+    OLM->>+EBS: Load model weights (if not already in GPU VRAM)
+    EBS-->>-OLM: Ephemeral volume from EBS snapshot (lazy-loaded)
+
+    Note over OLM: GPU inference — NVIDIA A10G (DEV: 1x 24GB / PROD: 4x 96GB)
+    Note over OLM: Context window: 32K tokens, 4 parallel requests
+
+    OLM-->>-ZT: Streaming response tokens
+    ZT-->>-IGW: mTLS encrypted stream
+    IGW-->>-NLB: HTTP response
+    NLB-->>-APIGW: Forward back through VPC Link
+    APIGW-->>-CF: Response to CloudFront
+    CF-->>Dev: HTTPS streaming response
+```
+
+</details>
 
 ---
 
@@ -754,6 +1215,44 @@ stateDiagram-v2
     note right of NodeTerminating: ~10 min consolidation delay
 ```
 
+<details>
+<summary>Copy Mermaid Code (GPU Lifecycle State Diagram)</summary>
+
+```
+stateDiagram-v2
+    [*] --> Idle: Cluster deployed
+    Idle --> Starting: scale-up.sh / Portal Start
+    Starting --> Running: Pod ready + model loaded (~3 min)
+    Running --> Running: Requests within 15-min window
+    Running --> IdleDetection: No requests for 15 min
+    IdleDetection --> ScalingDown: KEDA scales Ollama to 0
+    ScalingDown --> NodeTerminating: Karpenter detects empty node
+    NodeTerminating --> Idle: GPU node terminated (~10 min)
+    Running --> Stopping: scale-down.sh / Portal Stop
+    Stopping --> NodeTerminating: Immediate scale to 0
+
+    state Starting {
+        [*] --> KEDAPaused: Pause KEDA
+        KEDAPaused --> NodeProvisioning: Karpenter provisions GPU node
+        NodeProvisioning --> PodScheduled: Node ready
+        PodScheduled --> ModelLoading: Ephemeral volume from snapshot
+        ModelLoading --> [*]: Model in VRAM
+    }
+
+    state Running {
+        [*] --> Serving: Inference requests
+        Serving --> SafetyCheck: EventBridge every 5 min
+        SafetyCheck --> KEDAUnpaused: Grace period (15 min) exceeded
+        KEDAUnpaused --> Serving: KEDA active, monitoring idle
+    }
+
+    note right of Idle: $0/hr — no GPU node
+    note right of Running: $0.35/hr (spot) or $1.90/hr (flagship)
+    note right of NodeTerminating: ~10 min consolidation delay
+```
+
+</details>
+
 ### KEDA + Cost Management State Diagram
 
 ```mermaid
@@ -792,6 +1291,48 @@ stateDiagram-v2
     note right of KEDAPaused: Safety net — max 15 min paused
     note left of GPUBilling: Spot preferred, on-demand fallback
 ```
+
+<details>
+<summary>Copy Mermaid Code (KEDA + Cost Management)</summary>
+
+```
+stateDiagram-v2
+    [*] --> KEDAActive: Normal state
+
+    state "KEDA Active" as KEDAActive {
+        [*] --> Monitoring
+        Monitoring --> ScaleToZero: CPU below threshold for 15 min
+        ScaleToZero --> [*]: Ollama replicas = 0
+    }
+
+    state "KEDA Paused" as KEDAPaused {
+        [*] --> ManualStart
+        ManualStart --> GracePeriod: Timestamp recorded
+        GracePeriod --> SafetyUnpause: 15 min elapsed (EventBridge)
+        SafetyUnpause --> [*]: KEDA resumed
+    }
+
+    state "GPU Billing" as GPUBilling {
+        [*] --> SpotActive: Karpenter provisions spot
+        SpotActive --> SpotReclaimed: AWS reclaims
+        SpotReclaimed --> OnDemandFallback: No spot available
+        SpotActive --> NodeEmpty: Pod scaled to 0
+        OnDemandFallback --> NodeEmpty: Pod scaled to 0
+        NodeEmpty --> Terminated: 10 min consolidation
+        Terminated --> [*]: $0/hr
+    }
+
+    KEDAActive --> KEDAPaused: scale-up.sh / Portal Start
+    KEDAPaused --> KEDAActive: scale-down.sh / Portal Stop / Safety check
+    KEDAActive --> GPUBilling: Scale to 1 replica
+    GPUBilling --> KEDAActive: Node terminated
+
+    note right of KEDAActive: Auto-shutdown after 15 min idle
+    note right of KEDAPaused: Safety net — max 15 min paused
+    note left of GPUBilling: Spot preferred, on-demand fallback
+```
+
+</details>
 
 ### GPU Start/Stop (CLI)
 
@@ -879,6 +1420,45 @@ flowchart LR
     style W2 fill:#fff3e0,stroke:#ff9800,stroke-width:2px
     style W3 fill:#e8f5e9,stroke:#4caf50,stroke-width:2px
 ```
+
+<details>
+<summary>Copy Mermaid Code (ArgoCD Sync Waves)</summary>
+
+```
+flowchart LR
+    subgraph W0["Wave -2 to 0"]
+        CRD["Gateway API CRDs"]
+        ISTIO["Istio Base + Istiod\nCNI + ztunnel"]
+    end
+
+    subgraph W1["Waves 1-2"]
+        NS["Namespaces\n+ Ambient Labels"]
+        NP["System + GPU NodePools\n+ NodeClasses"]
+        ST["StorageClasses + VolumeSnapshot\n+ GPU Controller RBAC"]
+        KEDA["KEDA Operator"]
+    end
+
+    subgraph W2["Waves 3-4"]
+        OLM["Ollama Deployment\nService + NetworkPolicy"]
+        ML["Model Loader Job"]
+        KSO["KEDA ScaledObject\n15-min idle → scale to 0"]
+    end
+
+    subgraph W3["Waves 5-7"]
+        GW["Istio Gateway\n→ Internal NLB"]
+        HR["HTTPRoutes"]
+        WUI["Open WebUI"]
+    end
+
+    CRD --> ISTIO --> NS --> NP --> ST --> KEDA --> OLM --> ML --> KSO --> GW --> HR --> WUI
+
+    style W0 fill:#e8eaf6,stroke:#3f51b5,stroke-width:2px
+    style W1 fill:#e0f7fa,stroke:#00bcd4,stroke-width:2px
+    style W2 fill:#fff3e0,stroke:#ff9800,stroke-width:2px
+    style W3 fill:#e8f5e9,stroke:#4caf50,stroke-width:2px
+```
+
+</details>
 
 ---
 
