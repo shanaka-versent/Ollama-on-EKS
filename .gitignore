@@ -33,6 +33,9 @@ certs/
 deck/kong.yaml
 deck/kong-consumers.yaml
 
-# Generated HTML reports (auto-generated from markdown sources)
+# Generated HTML reports (keep local for learning, auto-generated from markdown)
 README.html
 Ollama-EKS-Report.html
+Auth-Flow-Guide.html
+Platform-Analysis-Report.html
+docs/auth-flow-guide.html
