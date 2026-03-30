@@ -287,124 +287,106 @@ scale_down_workloads() {
 }
 
 # ==============================================================================
-# Phase 2: Clean Up K8s Resources That Create AWS Resources
+# Phase 2: Clean Up K8s + AWS Resources That Block VPC Deletion
 # ==============================================================================
+# Deletion order matters! Dependencies:
+#   CloudFront VPC Origin → holds NLB endpoint service → blocks NLB deletion
+#   NLB → created by K8s Gateway API (Istio) → holds ENIs in subnets
+#   ArgoCD → reconciles K8s resources → will recreate deleted resources
+#
+# Correct teardown sequence:
+#   1. Delete CloudFront distribution + VPC Origin (releases NLB endpoint service)
+#   2. Delete Gateway ArgoCD apps only (stop Gateway reconciliation, keep LB Controller alive)
+#   3. Delete K8s Gateway API resources (triggers NLB deletion with LB Controller still running)
+#   4. Wait for NLB to be fully gone
+#   5. Delete remaining ArgoCD apps (safe — NLB already cleaned up)
+#   6. Force-delete orphaned NLBs (safety net)
+#   7. Clean up remaining K8s + AWS resources (cert-manager, API Gateway)
 cleanup_k8s_resources() {
-    step "Phase 2: Cleaning up K8s resources that create AWS resources"
+    step "Phase 2: Cleaning up K8s + AWS resources (correct dependency order)"
 
-    if [ "$KUBECTL_OK" != "true" ]; then
-        warn "Skipping — kubectl not connected"
-        return
+    # ── Step 2a: Delete CloudFront distribution + VPC Origin ────────────────
+    # CloudFront VPC Origin creates a VPC Endpoint Service that references the
+    # NLB. The NLB cannot be fully deleted until this reference is removed.
+    # Must happen BEFORE K8s Gateway deletion.
+    log "Step 2a: Deleting CloudFront distribution + VPC Origin..."
+    CF_DIST_IDS=$(aws cloudfront list-distributions --region us-east-1 \
+        --query "DistributionList.Items[?contains(Comment, 'ollama') || contains(Comment, 'Ollama')].Id" \
+        --output text 2>/dev/null || echo "")
+
+    # Also find by tag if comment-based search misses
+    if [ -z "$CF_DIST_IDS" ]; then
+        CF_DIST_IDS=$(aws cloudfront list-distributions --region us-east-1 \
+            --query "DistributionList.Items[].Id" --output text 2>/dev/null || echo "")
+        # Filter by project tag
+        local tagged_dists=""
+        for dist_id in $CF_DIST_IDS; do
+            local tags
+            tags=$(aws cloudfront list-tags-for-resource --resource "arn:aws:cloudfront::$(aws sts get-caller-identity --query Account --output text):distribution/${dist_id}" \
+                --query "Tags.Items[?Key=='Project' && Value=='${PROJECT_TAG}'].Value" --output text 2>/dev/null || echo "")
+            if [ -n "$tags" ]; then
+                tagged_dists="${tagged_dists} ${dist_id}"
+            fi
+        done
+        CF_DIST_IDS=$(echo "$tagged_dists" | xargs)
     fi
 
-    # Step 2a: Delete all HTTPRoutes (they reference the Gateway)
-    log "Deleting HTTPRoutes across all namespaces..."
-    kubectl delete httproutes --all-namespaces --all --timeout=30s >> "$LOG_FILE" 2>&1 || true
+    for dist_id in $CF_DIST_IDS; do
+        if [ -n "$dist_id" ]; then
+            log "  Disabling CloudFront distribution: ${dist_id}..."
+            # Must disable before deleting
+            local etag
+            etag=$(aws cloudfront get-distribution-config --id "$dist_id" \
+                --query 'ETag' --output text 2>/dev/null || echo "")
+            local config
+            config=$(aws cloudfront get-distribution-config --id "$dist_id" \
+                --query 'DistributionConfig' --output json 2>/dev/null || echo "")
 
-    # Step 2b: Delete the Istio Gateway (this owns the NLB-creating Service)
-    log "Deleting Istio Gateway..."
-    if kubectl get gateway ollama-gateway -n istio-ingress > /dev/null 2>&1; then
-        kubectl delete gateway ollama-gateway -n istio-ingress --timeout=60s >> "$LOG_FILE" 2>&1 || true
-        log "Gateway deleted"
-    else
-        warn "Gateway not found — may already be gone"
-    fi
-
-    # Step 2c: Delete any remaining Services of type LoadBalancer
-    log "Deleting LoadBalancer Services..."
-    LB_SERVICES=$(kubectl get svc --all-namespaces -o json 2>/dev/null | \
-        python3 -c "
+            if [ -n "$config" ] && [ -n "$etag" ]; then
+                # Set Enabled=false
+                local disabled_config
+                disabled_config=$(echo "$config" | python3 -c "
 import sys, json
-try:
-    data = json.load(sys.stdin)
-    for item in data.get('items', []):
-        spec = item.get('spec', {})
-        if spec.get('type') == 'LoadBalancer':
-            ns = item['metadata']['namespace']
-            name = item['metadata']['name']
-            print(f'{ns}/{name}')
-except:
-    pass
+c = json.load(sys.stdin)
+c['Enabled'] = False
+json.dump(c, sys.stdout)
 " 2>/dev/null || echo "")
 
-    if [ -n "$LB_SERVICES" ]; then
-        echo "$LB_SERVICES" | while IFS='/' read -r ns name; do
-            log "  Deleting LB service: ${ns}/${name}"
-            kubectl delete svc "$name" -n "$ns" --timeout=60s >> "$LOG_FILE" 2>&1 || true
-        done
-    else
-        log "No LoadBalancer services found"
-    fi
+                if [ -n "$disabled_config" ]; then
+                    aws cloudfront update-distribution --id "$dist_id" \
+                        --if-match "$etag" \
+                        --distribution-config "$disabled_config" >> "$LOG_FILE" 2>&1 || true
+                    log "  Distribution ${dist_id} disabled — waiting for deployment..."
 
-    # Step 2d: Wait for NLBs to be fully deleted
-    log "Waiting for cluster-tagged NLBs to be deleted by AWS..."
-    wait_for_nlb_deletion
+                    # Wait up to 5 min for distribution to finish deploying
+                    local cf_wait=0
+                    while [ $cf_wait -lt 300 ]; do
+                        local status
+                        status=$(aws cloudfront get-distribution --id "$dist_id" \
+                            --query 'Distribution.Status' --output text 2>/dev/null || echo "")
+                        if [ "$status" = "Deployed" ]; then
+                            break
+                        fi
+                        sleep 15
+                        cf_wait=$((cf_wait + 15))
+                        echo -e "  ${DIM}[${cf_wait}s] Waiting for CloudFront to disable...${NC}"
+                    done
 
-    # Step 2e: Delete ArgoCD applications (stop reconciliation fighting cleanup)
-    log "Deleting ArgoCD applications (prevent reconciliation)..."
-    if kubectl get applications -n argocd > /dev/null 2>&1; then
-        # Remove finalizers first to prevent ArgoCD from blocking deletion
-        APPS=$(kubectl get applications -n argocd -o name 2>/dev/null || echo "")
-        if [ -n "$APPS" ]; then
-            echo "$APPS" | while read -r app; do
-                kubectl patch "$app" -n argocd --type merge -p '{"metadata":{"finalizers":null}}' >> "$LOG_FILE" 2>&1 || true
-            done
-            kubectl delete applications --all -n argocd --timeout=60s >> "$LOG_FILE" 2>&1 || true
-            log "ArgoCD applications deleted"
-        fi
-    else
-        warn "ArgoCD namespace not found — may already be gone"
-    fi
-
-    # Step 2f: Delete cert-manager resources (CRDs can block namespace deletion)
-    log "Deleting cert-manager resources..."
-    kubectl delete certificates --all-namespaces --all --timeout=30s >> "$LOG_FILE" 2>&1 || true
-    kubectl delete clusterissuers --all --timeout=30s >> "$LOG_FILE" 2>&1 || true
-
-    # Step 2g: Delete API Gateway REST API + VPC Link (blocks NLB + IGW deletion)
-    # VPC Link holds the NLB, which holds ENIs, which block IGW detach.
-    # Must be deleted BEFORE terraform destroy to avoid 20-min IGW timeout.
-    log "Cleaning up API Gateway REST API and VPC Links..."
-    REST_APIS=$(aws apigateway get-rest-apis --region "$REGION" \
-        --query "items[?contains(name, 'ollama')].id" --output text 2>/dev/null || echo "")
-    for api_id in $REST_APIS; do
-        if [ -n "$api_id" ]; then
-            log "  Deleting REST API: ${api_id}"
-            aws apigateway delete-rest-api --rest-api-id "$api_id" --region "$REGION" >> "$LOG_FILE" 2>&1 || true
-        fi
-    done
-
-    sleep 5
-
-    VPC_LINKS=$(aws apigateway get-vpc-links --region "$REGION" \
-        --query "items[?contains(name, 'ollama')].id" --output text 2>/dev/null || echo "")
-    for link_id in $VPC_LINKS; do
-        if [ -n "$link_id" ]; then
-            log "  Deleting VPC Link: ${link_id}"
-            aws apigateway delete-vpc-link --vpc-link-id "$link_id" --region "$REGION" >> "$LOG_FILE" 2>&1 || true
-        fi
-    done
-
-    if [ -n "$VPC_LINKS" ]; then
-        log "  Waiting for VPC Link deletion (up to 60s)..."
-        local vl_wait=0
-        while [ $vl_wait -lt 60 ]; do
-            REMAINING=$(aws apigateway get-vpc-links --region "$REGION" \
-                --query "items[?contains(name, 'ollama')].id" --output text 2>/dev/null || echo "")
-            if [ -z "$REMAINING" ]; then
-                log "  VPC Links deleted"
-                break
+                    # Now delete
+                    local del_etag
+                    del_etag=$(aws cloudfront get-distribution --id "$dist_id" \
+                        --query 'ETag' --output text 2>/dev/null || echo "")
+                    aws cloudfront delete-distribution --id "$dist_id" \
+                        --if-match "$del_etag" >> "$LOG_FILE" 2>&1 || true
+                    log "  Distribution ${dist_id} deleted"
+                fi
             fi
-            sleep 10
-            vl_wait=$((vl_wait + 10))
-        done
-    fi
+        fi
+    done
 
-    # Step 2h: Delete CloudFront VPC Origin ENIs (blocks subnet deletion for 15+ min)
-    # CloudFront VPC Origins hold ENIs in private subnets even after the distribution
-    # is deleted. AWS takes 10-15 min to release them. Explicit deletion speeds this up.
+    # Clean up CloudFront VPC Origin ENIs (may linger after distribution deletion)
     if [ -n "$VPC_ID" ]; then
-        log "Cleaning up CloudFront VPC Origin ENIs..."
+        log "  Cleaning up CloudFront VPC Origin ENIs..."
         CF_ENIS=$(aws ec2 describe-network-interfaces \
             --region "$REGION" \
             --filters \
@@ -455,6 +437,154 @@ for item in data:
         else
             log "  No CloudFront VPC Origin ENIs found"
         fi
+    fi
+
+    if [ "$KUBECTL_OK" != "true" ]; then
+        warn "Skipping K8s cleanup — kubectl not connected"
+        return
+    fi
+
+    # ── Step 2b: Delete Gateway ArgoCD apps only (stop Gateway reconciliation) ─
+    # We must stop ArgoCD from recreating the Gateway BEFORE we delete it,
+    # but we MUST keep the AWS LB Controller running so it can process the
+    # NLB deletion when the Gateway is removed.
+    # Strategy: delete only Gateway/HTTPRoute ArgoCD apps, keep everything else.
+    log "Step 2b: Deleting Gateway-related ArgoCD apps (keep LB Controller alive)..."
+    if kubectl get applications -n argocd > /dev/null 2>&1; then
+        for app in gateway httproutes ollama-autoscaler; do
+            if kubectl get application "$app" -n argocd > /dev/null 2>&1; then
+                kubectl patch application "$app" -n argocd --type merge -p '{"metadata":{"finalizers":null}}' >> "$LOG_FILE" 2>&1 || true
+                kubectl delete application "$app" -n argocd --timeout=30s >> "$LOG_FILE" 2>&1 || true
+                log "  Deleted ArgoCD app: ${app}"
+            fi
+        done
+    fi
+
+    # ── Step 2c: Delete K8s Gateway API resources (triggers NLB deletion) ──
+    # The Istio Gateway creates a K8s Service of type LoadBalancer, which the
+    # AWS LB Controller provisions as an NLB. Deleting the Gateway resource
+    # triggers the LB Controller to delete the NLB.
+    # IMPORTANT: LB Controller must still be running at this point.
+    log "Step 2c: Deleting K8s Gateway API resources (LB Controller still alive)..."
+
+    log "  Deleting HTTPRoutes..."
+    kubectl delete httproutes --all-namespaces --all --timeout=30s >> "$LOG_FILE" 2>&1 || true
+
+    log "  Deleting Istio Gateway..."
+    if kubectl get gateway ollama-gateway -n istio-ingress > /dev/null 2>&1; then
+        kubectl delete gateway ollama-gateway -n istio-ingress --timeout=60s >> "$LOG_FILE" 2>&1 || true
+        log "  Gateway deleted"
+    else
+        warn "  Gateway not found — may already be gone"
+    fi
+
+    # Delete any remaining Services of type LoadBalancer
+    log "  Deleting remaining LoadBalancer Services..."
+    LB_SERVICES=$(kubectl get svc --all-namespaces -o json 2>/dev/null | \
+        python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    for item in data.get('items', []):
+        spec = item.get('spec', {})
+        if spec.get('type') == 'LoadBalancer':
+            ns = item['metadata']['namespace']
+            name = item['metadata']['name']
+            print(f'{ns}/{name}')
+except:
+    pass
+" 2>/dev/null || echo "")
+
+    if [ -n "$LB_SERVICES" ]; then
+        echo "$LB_SERVICES" | while IFS='/' read -r ns name; do
+            log "    Deleting LB service: ${ns}/${name}"
+            kubectl delete svc "$name" -n "$ns" --timeout=60s >> "$LOG_FILE" 2>&1 || true
+        done
+    else
+        log "  No LoadBalancer services found"
+    fi
+
+    # ── Step 2d: Wait for NLB deletion by LB Controller ────────────────────
+    log "Step 2d: Waiting for LB Controller to delete the NLB..."
+    wait_for_nlb_deletion
+
+    # ── Step 2e: Delete remaining ArgoCD apps (now safe — NLB is gone) ─────
+    log "Step 2e: Deleting all remaining ArgoCD applications..."
+    if kubectl get applications -n argocd > /dev/null 2>&1; then
+        APPS=$(kubectl get applications -n argocd -o name 2>/dev/null || echo "")
+        if [ -n "$APPS" ]; then
+            echo "$APPS" | while read -r app; do
+                kubectl patch "$app" -n argocd --type merge -p '{"metadata":{"finalizers":null}}' >> "$LOG_FILE" 2>&1 || true
+            done
+            kubectl delete applications --all -n argocd --timeout=60s >> "$LOG_FILE" 2>&1 || true
+            log "ArgoCD applications deleted"
+        fi
+    else
+        warn "ArgoCD namespace not found — may already be gone"
+    fi
+
+    # ── Step 2f: Force-delete orphaned NLBs (safety net) ───────────────────
+    # Catch anything the LB Controller missed.
+    log "Step 2f: Checking for any remaining orphaned NLBs..."
+    local remaining_nlbs
+    remaining_nlbs=$(aws elbv2 describe-load-balancers --region "$REGION" \
+        --query "LoadBalancers[?contains(LoadBalancerName, 'k8s-istioing') || contains(LoadBalancerName, 'ollama')].LoadBalancerArn" \
+        --output text 2>/dev/null || echo "")
+
+    if [ -n "$remaining_nlbs" ]; then
+        for nlb_arn in $remaining_nlbs; do
+            if [ -n "$nlb_arn" ]; then
+                log "  Force-deleting NLB: ${nlb_arn}"
+                aws elbv2 delete-load-balancer --load-balancer-arn "$nlb_arn" --region "$REGION" >> "$LOG_FILE" 2>&1 || true
+            fi
+        done
+        log "  Waiting for force-deleted NLBs to release ENIs..."
+        wait_for_nlb_deletion
+    else
+        log "  No orphaned NLBs — LB Controller cleaned up successfully"
+    fi
+
+    # ── Step 2g: Clean up remaining resources ──────────────────────────────
+    log "Step 2g: Cleaning up remaining resources..."
+
+    # cert-manager CRDs can block namespace deletion
+    log "  Deleting cert-manager resources..."
+    kubectl delete certificates --all-namespaces --all --timeout=30s >> "$LOG_FILE" 2>&1 || true
+    kubectl delete clusterissuers --all --timeout=30s >> "$LOG_FILE" 2>&1 || true
+
+    # API Gateway REST API + VPC Links
+    log "  Cleaning up API Gateway REST API and VPC Links..."
+    REST_APIS=$(aws apigateway get-rest-apis --region "$REGION" \
+        --query "items[?contains(name, 'ollama')].id" --output text 2>/dev/null || echo "")
+    for api_id in $REST_APIS; do
+        if [ -n "$api_id" ]; then
+            log "    Deleting REST API: ${api_id}"
+            aws apigateway delete-rest-api --rest-api-id "$api_id" --region "$REGION" >> "$LOG_FILE" 2>&1 || true
+        fi
+    done
+
+    VPC_LINKS=$(aws apigateway get-vpc-links --region "$REGION" \
+        --query "items[?contains(name, 'ollama')].id" --output text 2>/dev/null || echo "")
+    for link_id in $VPC_LINKS; do
+        if [ -n "$link_id" ]; then
+            log "    Deleting VPC Link: ${link_id}"
+            aws apigateway delete-vpc-link --vpc-link-id "$link_id" --region "$REGION" >> "$LOG_FILE" 2>&1 || true
+        fi
+    done
+
+    if [ -n "$VPC_LINKS" ]; then
+        log "    Waiting for VPC Link deletion (up to 60s)..."
+        local vl_wait=0
+        while [ $vl_wait -lt 60 ]; do
+            REMAINING=$(aws apigateway get-vpc-links --region "$REGION" \
+                --query "items[?contains(name, 'ollama')].id" --output text 2>/dev/null || echo "")
+            if [ -z "$REMAINING" ]; then
+                log "    VPC Links deleted"
+                break
+            fi
+            sleep 10
+            vl_wait=$((vl_wait + 10))
+        done
     fi
 }
 
@@ -612,6 +742,13 @@ terraform_destroy() {
                 log "  Targeted VPC cleanup succeeded" || \
                 warn "  Targeted cleanup also failed — check state manually"
         fi
+
+        # Reset tfvars even on partial failure — stale values block clean recreate
+        log "Resetting deploy-time values in terraform.tfvars..."
+        sed -i.bak 's|^nlb_arn .*=.*|nlb_arn      = ""|' "$TERRAFORM_DIR/terraform.tfvars"
+        sed -i.bak 's|^nlb_dns_name .*=.*|nlb_dns_name = ""|' "$TERRAFORM_DIR/terraform.tfvars"
+        sed -i.bak 's|^cloudfront_domain = .*|cloudfront_domain = ""|' "$TERRAFORM_DIR/terraform.tfvars"
+        rm -f "$TERRAFORM_DIR/terraform.tfvars.bak"
         cd "$REPO_DIR"
     fi
 }
