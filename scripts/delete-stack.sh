@@ -1159,7 +1159,10 @@ except:
         issues=$((issues + 1))
     fi
 
-    # Check for project-tagged resources
+    # Check for project-tagged resources (filter out stale tag API cache)
+    # The AWS Resource Tagging API has ~15-30 min eventual consistency — it
+    # returns ARNs for resources that are already deleted. We verify each
+    # resource actually exists before counting it as an issue.
     log "Checking for any remaining project-tagged resources..."
     TAGGED_RESOURCES=$(aws resourcegroupstaggingapi get-resources \
         --region "$REGION" \
@@ -1176,15 +1179,36 @@ for arn in arns:
     if [ -z "$TAGGED_RESOURCES" ]; then
         log "No resources with Project=${PROJECT_TAG} tag found"
     else
-        TAGGED_COUNT=$(echo "$TAGGED_RESOURCES" | wc -l | tr -d ' ')
-        warn "${TAGGED_COUNT} resource(s) still tagged with Project=${PROJECT_TAG}:"
-        echo "$TAGGED_RESOURCES" | head -20 | while read -r arn; do
-            warn "  ${arn}"
-        done
-        if [ "$TAGGED_COUNT" -gt 20 ]; then
-            warn "  ... and $((TAGGED_COUNT - 20)) more"
+        # Verify tagged resources actually exist (filter stale tag cache)
+        LIVE_RESOURCES=""
+        while read -r arn; do
+            [ -z "$arn" ] && continue
+            local exists="false"
+            case "$arn" in
+                *:vpc/*)         aws ec2 describe-vpcs --vpc-ids "${arn##*/}" --region "$REGION" >/dev/null 2>&1 && exists="true" ;;
+                *:subnet/*)      aws ec2 describe-subnets --subnet-ids "${arn##*/}" --region "$REGION" >/dev/null 2>&1 && exists="true" ;;
+                *:natgateway/*)  local ngw_state; ngw_state=$(aws ec2 describe-nat-gateways --nat-gateway-ids "${arn##*/}" --region "$REGION" --query 'NatGateways[0].State' --output text 2>/dev/null || echo "deleted"); [ "$ngw_state" != "deleted" ] && exists="true" ;;
+                *:vpc-endpoint/*) aws ec2 describe-vpc-endpoints --vpc-endpoint-ids "${arn##*/}" --region "$REGION" >/dev/null 2>&1 && exists="true" ;;
+                *:userpool/*)    aws cognito-idp describe-user-pool --user-pool-id "${arn##*userpool/}" --region "$REGION" >/dev/null 2>&1 && exists="true" ;;
+                *:snapshot/*)    aws ec2 describe-snapshots --snapshot-ids "${arn##*/}" --region "$REGION" >/dev/null 2>&1 && exists="true" ;;
+                *)               exists="true" ;;  # Unknown type — assume exists
+            esac
+            if [ "$exists" = "true" ]; then
+                LIVE_RESOURCES="${LIVE_RESOURCES}${arn}\n"
+            fi
+        done <<< "$TAGGED_RESOURCES"
+
+        LIVE_RESOURCES=$(echo -e "$LIVE_RESOURCES" | sed '/^$/d')
+        if [ -z "$LIVE_RESOURCES" ]; then
+            log "Tagged resources found in API cache but all are already deleted (eventual consistency)"
+        else
+            LIVE_COUNT=$(echo "$LIVE_RESOURCES" | wc -l | tr -d ' ')
+            warn "${LIVE_COUNT} resource(s) still exist with Project=${PROJECT_TAG}:"
+            echo "$LIVE_RESOURCES" | head -20 | while read -r arn; do
+                warn "  ${arn}"
+            done
+            issues=$((issues + 1))
         fi
-        issues=$((issues + 1))
     fi
 
     # Summary
