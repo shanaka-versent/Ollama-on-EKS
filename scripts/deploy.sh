@@ -15,9 +15,10 @@
 #   - Prompts and source code never leave the AWS account
 #
 # Usage:
-#   ./scripts/deploy.sh                # Full deployment
-#   ./scripts/deploy.sh --plan-only    # Terraform plan only (no apply)
-#   ./scripts/deploy.sh --skip-infra   # Skip Terraform (cluster already exists)
+#   ./scripts/deploy.sh                  # Full deployment
+#   ./scripts/deploy.sh --auto-approve   # No-touch — skip confirmation prompt
+#   ./scripts/deploy.sh --plan-only      # Terraform plan only (no apply)
+#   ./scripts/deploy.sh --skip-infra     # Skip Terraform (cluster already exists)
 #
 # Prerequisites:
 #   - AWS CLI configured (aws sts get-caller-identity works)
@@ -27,6 +28,9 @@
 
 set -euo pipefail
 
+# Disable AWS CLI pager — prevents `less` from opening mid-script
+export AWS_PAGER=""
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="${SCRIPT_DIR}/.."
 TERRAFORM_DIR="${REPO_DIR}/terraform"
@@ -34,14 +38,17 @@ TERRAFORM_DIR="${REPO_DIR}/terraform"
 # Parse arguments
 PLAN_ONLY=false
 SKIP_INFRA=false
+AUTO_APPROVE=false
 for arg in "$@"; do
     case "$arg" in
-        --plan-only)  PLAN_ONLY=true ;;
-        --skip-infra) SKIP_INFRA=true ;;
+        --plan-only)     PLAN_ONLY=true ;;
+        --skip-infra)    SKIP_INFRA=true ;;
+        --auto-approve)  AUTO_APPROVE=true ;;
         --help|-h)
-            echo "Usage: $0 [--plan-only] [--skip-infra]"
-            echo "  --plan-only   Run terraform plan without applying"
-            echo "  --skip-infra  Skip Terraform (cluster already deployed)"
+            echo "Usage: $0 [--auto-approve] [--plan-only] [--skip-infra]"
+            echo "  --auto-approve  Skip confirmation prompt (for CI/CD)"
+            echo "  --plan-only     Run terraform plan without applying"
+            echo "  --skip-infra    Skip Terraform (cluster already deployed)"
             exit 0
             ;;
     esac
@@ -67,6 +74,17 @@ step()  {
     echo ""
 }
 
+# Helper: portable sed -i (macOS BSD vs Linux GNU)
+sedi() {
+    if sed --version &>/dev/null 2>&1; then
+        # GNU sed
+        sed -i "$@"
+    else
+        # BSD sed (macOS)
+        sed -i '' "$@"
+    fi
+}
+
 # ==============================================================================
 # Phase 1: Prerequisites
 # ==============================================================================
@@ -81,8 +99,8 @@ check_prerequisites() {
             local version
             case "$tool" in
                 aws)       version=$(aws --version 2>&1 | head -1) ;;
-                terraform) version=$(terraform version -json 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin)['terraform_version'])" 2>/dev/null || terraform version | head -1) ;;
-                kubectl)   version=$(kubectl version --client -o json 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin)['clientVersion']['gitVersion'])" 2>/dev/null || echo "installed") ;;
+                terraform) version=$(terraform version 2>/dev/null | head -1) ;;
+                kubectl)   version=$(kubectl version --client --short 2>/dev/null || kubectl version --client 2>/dev/null | head -1) ;;
                 helm)      version=$(helm version --short 2>/dev/null || echo "installed") ;;
             esac
             log "$tool: ${version}"
@@ -141,8 +159,14 @@ check_prerequisites() {
     log "GPU Spot quota (G/VT):      ${spot_quota} vCPUs"
     log "GPU On-Demand quota (G/VT): ${on_demand_quota} vCPUs"
 
-    if (( $(echo "$spot_quota < 4" | bc -l 2>/dev/null || echo 1) )) && \
-       (( $(echo "$on_demand_quota < 4" | bc -l 2>/dev/null || echo 1) )); then
+    # Use shell arithmetic (no bc dependency)
+    local spot_int on_demand_int
+    spot_int=${spot_quota%.*}
+    on_demand_int=${on_demand_quota%.*}
+    spot_int=${spot_int:-0}
+    on_demand_int=${on_demand_int:-0}
+
+    if [[ "$spot_int" -lt 4 ]] && [[ "$on_demand_int" -lt 4 ]]; then
         warn "GPU quotas are 0 or very low — Karpenter will fail to provision GPU nodes."
         warn "Request increases: https://console.aws.amazon.com/servicequotas"
         warn "  L-3819A6DF (G/VT Spot): minimum 4 vCPUs for g5.xlarge"
@@ -154,10 +178,9 @@ check_prerequisites() {
     # Phase 2 and Phase 3b will discover and populate the correct values
     echo ""
     log "Resetting NLB/CloudFront values for clean deployment..."
-    sed -i.bak 's|^nlb_arn .*=.*|nlb_arn      = ""|' "$TERRAFORM_DIR/terraform.tfvars"
-    sed -i.bak 's|^nlb_dns_name .*=.*|nlb_dns_name = ""|' "$TERRAFORM_DIR/terraform.tfvars"
-    sed -i.bak 's|^cloudfront_domain = .*|cloudfront_domain = ""|' "$TERRAFORM_DIR/terraform.tfvars"
-    rm -f "$TERRAFORM_DIR/terraform.tfvars.bak"
+    sedi 's|^nlb_arn .*=.*|nlb_arn      = ""|' "$TERRAFORM_DIR/terraform.tfvars"
+    sedi 's|^nlb_dns_name .*=.*|nlb_dns_name = ""|' "$TERRAFORM_DIR/terraform.tfvars"
+    sedi 's|^cloudfront_domain = .*|cloudfront_domain = ""|' "$TERRAFORM_DIR/terraform.tfvars"
     log "Stale values cleared — will be auto-discovered during deployment"
 
     log "Air-gapped configuration verified"
@@ -177,8 +200,7 @@ setup_backend() {
     # Check if backend.tf has placeholder
     if grep -q '<ACCOUNT_ID>' "$TERRAFORM_DIR/backend.tf"; then
         log "Replacing <ACCOUNT_ID> placeholder in backend.tf with ${ACCOUNT_ID}..."
-        sed -i.bak "s/<ACCOUNT_ID>/${ACCOUNT_ID}/g" "$TERRAFORM_DIR/backend.tf"
-        rm -f "$TERRAFORM_DIR/backend.tf.bak"
+        sedi "s/<ACCOUNT_ID>/${ACCOUNT_ID}/g" "$TERRAFORM_DIR/backend.tf"
         log "backend.tf updated"
     fi
 
@@ -209,8 +231,7 @@ setup_backend() {
     fi
 
     # Create DynamoDB table if it doesn't exist
-    TABLE_EXISTS=$(aws dynamodb describe-table --table-name "$TABLE_NAME" --region "$REGION" 2>/dev/null && echo "yes" || echo "no")
-    if [[ "$TABLE_EXISTS" == "yes" ]]; then
+    if aws dynamodb describe-table --table-name "$TABLE_NAME" --region "$REGION" >/dev/null 2>&1; then
         log "DynamoDB table already exists: ${TABLE_NAME}"
     else
         log "Creating DynamoDB table: ${TABLE_NAME}..."
@@ -238,65 +259,91 @@ deploy_infrastructure() {
     log "Running terraform init..."
     if [[ -f terraform.tfstate ]] && [[ -s terraform.tfstate ]]; then
         log "Local state file found — migrating to S3 backend..."
-        terraform init -migrate-state -input=false
+        terraform init -migrate-state -input=false 2>&1 || {
+            warn "Init with -migrate-state failed. Retrying standard init..."
+            terraform init -input=false -reconfigure
+        }
     else
-        terraform init -input=false
+        terraform init -input=false 2>&1 || {
+            warn "Init failed. Retrying with -reconfigure..."
+            terraform init -input=false -reconfigure
+        }
     fi
 
     # Terraform plan
     echo ""
     log "Running terraform plan..."
-    terraform plan -out=tfplan
+    terraform plan -out=tfplan -input=false
 
     if [[ "$PLAN_ONLY" == "true" ]]; then
         log "Plan complete. Run without --plan-only to apply."
+        cd "$REPO_DIR"
         exit 0
     fi
 
-    # Confirm before apply
-    echo ""
-    echo -e "${YELLOW}${BOLD}  Review the plan above.${NC}"
-    read -r -p "  Apply this plan? [y/N] " confirm
-    if [[ "$(echo "$confirm" | tr '[:upper:]' '[:lower:]')" != "y" ]]; then
+    # Confirm before apply (skipped with --auto-approve)
+    if [[ "$AUTO_APPROVE" != "true" ]]; then
         echo ""
-        echo "  Aborted. Plan saved to terraform/tfplan."
-        echo "  To apply later: cd terraform && terraform apply tfplan"
-        exit 0
+        echo -e "${YELLOW}${BOLD}  Review the plan above.${NC}"
+        read -r -p "  Apply this plan? [y/N] " confirm
+        if [[ "$(echo "$confirm" | tr '[:upper:]' '[:lower:]')" != "y" ]]; then
+            echo ""
+            echo "  Aborted. Plan saved to terraform/tfplan."
+            echo "  To apply later: cd terraform && terraform apply tfplan"
+            cd "$REPO_DIR"
+            exit 0
+        fi
     fi
 
-    # Terraform apply (Phase 1 — creates all infrastructure)
+    # Terraform apply
+    # Retry logic: EKS API server may not be fully stable when Helm charts
+    # install (connection reset errors on ClusterRole creation). The cluster
+    # needs ~1-2 min after creation for the API server to stabilize.
+    # Retry up to 3 times with a 60s wait between attempts.
     echo ""
-    log "Applying Terraform plan..."
-    terraform apply tfplan
+    local apply_attempt=0
+    local apply_max=3
+    while [[ $apply_attempt -lt $apply_max ]]; do
+        apply_attempt=$((apply_attempt + 1))
+        log "Applying Terraform plan (attempt ${apply_attempt}/${apply_max})..."
 
-    # Clean up plan file
-    rm -f tfplan
+        if [[ -f tfplan ]]; then
+            if terraform apply -input=false tfplan 2>&1 | tee /tmp/tf-apply.log; then
+                rm -f tfplan
+                break
+            fi
+        else
+            # Retry without saved plan (plan was consumed by first attempt)
+            if terraform apply -auto-approve -input=false 2>&1 | tee /tmp/tf-apply.log; then
+                break
+            fi
+        fi
 
-    log "Phase 1 apply complete"
+        rm -f tfplan
+        if [[ $apply_attempt -lt $apply_max ]]; then
+            warn "Terraform apply failed (attempt ${apply_attempt}/${apply_max})"
+            warn "Common cause: EKS API server not yet stable — retrying in 60s..."
+            sleep 60
+        else
+            error "Terraform apply failed after ${apply_max} attempts"
+            error "Check /tmp/tf-apply.log for details"
+            cd "$REPO_DIR"
+            return 1
+        fi
+    done
 
-    # Phase 2 — re-apply with CloudFront domain for Cognito callbacks and portal CORS
-    # CloudFront domain is only known after first apply (circular dependency with portal S3 origins).
-    # Second apply updates: Cognito callback URLs, portal CORS headers, portal Lambda env vars.
+    log "Terraform apply complete"
+
+    # Save CloudFront domain to tfvars (for reference / future applies)
+    # No Phase 2 re-apply needed — Cognito, portal, and login all reference
+    # module.cdn_waf.cloudfront_domain directly (resolved in the same apply).
     echo ""
     CLOUDFRONT_DOMAIN=$(terraform output -raw cloudfront_domain 2>/dev/null || echo "")
     if [[ -n "$CLOUDFRONT_DOMAIN" ]]; then
         log "CloudFront domain: ${CLOUDFRONT_DOMAIN}"
-        log "Updating terraform.tfvars with CloudFront domain for Cognito/portal wiring..."
-        sed -i.bak "s|^cloudfront_domain = .*|cloudfront_domain = \"${CLOUDFRONT_DOMAIN}\"|" terraform.tfvars
-        rm -f terraform.tfvars.bak
-
-        log "Running Phase 2 apply (Cognito callbacks + portal CORS)..."
-        if ! terraform apply -auto-approve 2>&1 | tee /tmp/tf-phase2.log | tail -5; then
-            error "Phase 2 terraform apply failed."
-            error "Log: /tmp/tf-phase2.log"
-            error "To retry: cd terraform && terraform apply -auto-approve"
-            error "To rollback Phase 1: cd terraform && terraform destroy -target=module.cdn_waf -target=module.api_gateway -auto-approve"
-            cd "$REPO_DIR"
-            return 1
-        fi
-        log "Phase 2 apply complete"
+        sedi "s|^cloudfront_domain = .*|cloudfront_domain = \"${CLOUDFRONT_DOMAIN}\"|" terraform.tfvars
     else
-        warn "Could not get CloudFront domain — Cognito callbacks will need manual wiring"
+        warn "Could not get CloudFront domain from outputs"
     fi
 
     log "Terraform deployment complete"
@@ -367,7 +414,7 @@ for sid in ids:
         log "Patching ${ncfile}..."
 
         # Replace role
-        sed -i.bak "s/^  role: .*/  role: ${role_name}/" "$ncfile"
+        sedi "s/^  role: .*/  role: ${role_name}/" "$ncfile"
 
         # Replace subnetSelectorTerms block
         python3 -c "
@@ -395,7 +442,6 @@ content = re.sub(
 with open('${ncfile}', 'w') as f:
     f.write(content)
 "
-        rm -f "${ncfile}.bak"
     done
 
     log "NodeClass files patched with new VPC IDs"
@@ -614,24 +660,64 @@ wire_nlb_to_terraform() {
 
     log "NLB ARN: ${nlb_arn}"
 
+    # Wait for NLB to be fully active before terraform apply.
+    # CloudFront VPC Origin creation fails if NLB is still provisioning.
+    log "Waiting for NLB to become active..."
+    local nlb_wait=0
+    local nlb_max_wait=180
+    while [[ $nlb_wait -lt $nlb_max_wait ]]; do
+        local nlb_state
+        nlb_state=$(aws elbv2 describe-load-balancers --region "$region" \
+            --load-balancer-arns "$nlb_arn" \
+            --query 'LoadBalancers[0].State.Code' --output text 2>/dev/null || echo "unknown")
+        if [[ "$nlb_state" == "active" ]]; then
+            log "NLB is active"
+            break
+        fi
+        echo -e "  ${DIM}[${nlb_wait}s] NLB state: ${nlb_state} — waiting...${NC}"
+        sleep 15
+        nlb_wait=$((nlb_wait + 15))
+    done
+
     # Update terraform.tfvars with NLB values
     cd "$TERRAFORM_DIR"
-    sed -i.bak "s|^nlb_arn .*=.*|nlb_arn      = \"${nlb_arn}\"|" terraform.tfvars
-    sed -i.bak "s|^nlb_dns_name .*=.*|nlb_dns_name = \"${nlb_dns}\"|" terraform.tfvars
-    rm -f terraform.tfvars.bak
+    sedi "s|^nlb_arn .*=.*|nlb_arn      = \"${nlb_arn}\"|" terraform.tfvars
+    sedi "s|^nlb_dns_name .*=.*|nlb_dns_name = \"${nlb_dns}\"|" terraform.tfvars
 
     log "terraform.tfvars updated with NLB values"
 
     # Final terraform apply — creates API Gateway VPC Link + CloudFront VPC Origin
     log "Running final Terraform apply (API Gateway VPC Link + CloudFront VPC Origin)..."
     log "Note: CloudFront VPC Origin creation takes ~7 minutes"
-    terraform apply -auto-approve 2>&1 | tail -5
+    if ! terraform apply -auto-approve -input=false 2>&1 | tee /tmp/tf-final.log; then
+        error "Final terraform apply failed — check /tmp/tf-final.log"
+        cd "$REPO_DIR"
+        return 1
+    fi
+    log "CloudFront VPC Origin wired successfully"
 
-    if [[ $? -eq 0 ]]; then
-        log "API Gateway and CloudFront VPC Origin wired successfully"
-    else
-        warn "Terraform apply had errors — check output above"
-        warn "You may need to re-authenticate (aws sso login) and re-run: cd terraform && terraform apply -auto-approve"
+    # --- Warm up CloudFront VPC Origin connection ---
+    # VPC Origins have a cold start (10-30s on first requests while AWS establishes
+    # the private connection). Sending warmup requests primes the path so the user
+    # doesn't hit a 30s delay on first page load.
+    local cf_domain
+    cf_domain=$(terraform output -raw cloudfront_domain 2>/dev/null || echo "")
+    if [[ -n "$cf_domain" ]]; then
+        log "Warming up CloudFront VPC Origin (first requests are slow)..."
+        for i in 1 2 3 4 5; do
+            curl -s -o /dev/null --max-time 35 "https://${cf_domain}/api/config" 2>/dev/null &
+        done
+        wait
+        # A few more sequential to ensure the path is fully warm
+        for i in 1 2 3; do
+            local warmup_code
+            warmup_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "https://${cf_domain}/api/config" 2>/dev/null || echo "000")
+            if [[ "$warmup_code" == "200" ]]; then
+                log "VPC Origin warm (HTTP ${warmup_code})"
+                break
+            fi
+            echo -e "  ${DIM}Warming up... (${warmup_code})${NC}"
+        done
     fi
 
     cd "$REPO_DIR"
@@ -643,13 +729,22 @@ wire_nlb_to_terraform() {
 setup_grafana_dashboards() {
     step "Phase 3c: Setting up Grafana dashboards"
 
+    # Discover workspace name from Terraform output instead of hardcoding
+    local workspace_name
+    workspace_name=$(cd "$TERRAFORM_DIR" && terraform output -raw managed_grafana_workspace_name 2>/dev/null || echo "")
+
+    if [[ -z "$workspace_name" ]]; then
+        # Fallback: check for any workspace
+        workspace_name="ollama-grafana"
+    fi
+
     # Check if AMG workspace exists (requires IAM Identity Center)
     local amg_status
     amg_status=$(aws grafana list-workspaces --region "$REGION" \
-        --query 'workspaces[?name==`ollama-grafana`].status' --output text 2>/dev/null || echo "")
+        --query "workspaces[?name==\`${workspace_name}\`].status" --output text 2>/dev/null || echo "")
 
     if [[ -z "$amg_status" || "$amg_status" == "None" ]]; then
-        warn "AMG workspace not found — IAM Identity Center may not be enabled"
+        warn "AMG workspace '${workspace_name}' not found — IAM Identity Center may not be enabled"
         warn "Enable IAM Identity Center, then run: ./scripts/setup-amg.sh"
         return
     fi
