@@ -1038,6 +1038,7 @@ argocd/apps/                       # Wave-based Application manifests (00-12, in
 
 scripts/
   deploy.sh                        # End-to-end deployment automation (air-gapped)
+  delete-stack.sh                  # Zero-touch teardown (correct dependency ordering, retry logic)
   verify-airgap.sh                 # Air-gap compliance verification
   create-model-snapshot.sh         # EBS snapshot with pre-loaded models
   generate-readme-html.py          # README.md → README.html converter
@@ -1079,6 +1080,8 @@ switch-model.sh                    # Model tier switching with GPU hardware vali
 | KEDA stays paused | `kubectl get scaledobject -n ollama` PAUSED=true | Trap handlers should prevent this. Manual fix: `kubectl annotate scaledobject ollama-autoscaler -n ollama autoscaling.keda.sh/paused-` |
 | Ollama returns 500 | Model failed to load | Check `OLLAMA_CONTEXT_LENGTH` is set to `32768` in ConfigMap |
 | No spot capacity | `scale-up.sh` shows no spot | Script will prompt to use on-demand. Check quotas: `aws service-quotas get-service-quota --service-code ec2 --quota-code L-3819A6DF` |
+| VPC deletion stuck | `terraform destroy` hangs on VPC/subnet | Orphaned NLBs or ENIs blocking — run `./scripts/delete-stack.sh` instead of raw `terraform destroy` |
+| NLB orphaned after teardown | NLB still exists after ArgoCD deleted | LB Controller was killed before processing NLB deletion — `delete-stack.sh` handles this with selective ArgoCD deletion |
 
 ### Debug Commands
 
@@ -1103,9 +1106,26 @@ kubectl exec -n ollama deploy/ollama -- curl -s --max-time 5 https://google.com
 ## Tear Down
 
 ```bash
-cd terraform
-terraform destroy
+# Zero-touch teardown — handles all dependency ordering automatically
+./scripts/delete-stack.sh
+
+# Options
+./scripts/delete-stack.sh --force          # Skip confirmation prompt
+./scripts/delete-stack.sh --skip-terraform # K8s + AWS cleanup only (no terraform destroy)
 ```
+
+The script executes a 5-phase teardown in the correct dependency order:
+
+| Phase | What It Does |
+|-------|-------------|
+| **0. Pre-flight** | Verify AWS creds, kubectl access, Terraform state |
+| **1. Scale down** | Scale Ollama to 0, delete GPU NodePool (immediate node termination) |
+| **2. Dependency-ordered cleanup** | 2a: Disable + delete CloudFront distribution (release VPC Origin endpoint service) → 2b: Delete only Gateway/HTTPRoute ArgoCD apps (keep LB Controller alive) → 2c: Delete K8s Gateway (LB Controller processes NLB deletion) → 2d: Wait for NLB gone → 2e: Delete remaining ArgoCD apps → 2f: Force-delete orphaned NLBs (safety net) → 2g: Clean up cert-manager, API Gateway, VPC Links |
+| **3. Terraform destroy** | With retry logic for session expiry, errored state recovery, and state lock handling |
+| **4. Orphan cleanup** | Delete any remaining NLBs, target groups, ENIs, and security groups |
+| **5. Verify** | Confirm EKS cluster, VPC, NLBs, CloudFront distributions, and tagged resources are all gone |
+
+> **Why not just `terraform destroy`?** Terraform alone can't handle the K8s → AWS resource dependency chain. The Istio Gateway creates NLBs via the LB Controller, CloudFront VPC Origins hold endpoint services referencing those NLBs, and ArgoCD will recreate deleted resources. Without the correct teardown ordering, you get orphaned NLBs and ENIs that block VPC deletion for 20+ minutes (or forever).
 
 > **Note:** EBS snapshots are retained by default. Delete manually if not needed: `aws ec2 delete-snapshot --snapshot-id snap-xxx`
 
@@ -1129,9 +1149,10 @@ terraform destroy
 
 ## Companion Documents
 
-- **Ollama-EKS-Report.html** — Full visual report with architecture diagrams, cost tables, and implementation details
-- **Auth-Flow-Guide.html** — Interactive auth flow guide with 9 Mermaid diagrams (Cognito, OAuth, MFA, signup, password reset)
-- **Platform-Analysis-Report.html** — Security/cost/reliability analysis with 59 findings, tabbed UI, before/after comparisons
+- **Ollama-EKS-Report.html** — Full visual report with architecture diagrams, cost tables, and implementation details *(local only)*
+- **Auth-Flow-Guide.html** — Interactive auth flow guide with 9 Mermaid diagrams (Cognito, OAuth, MFA, signup, password reset) *(local only)*
+- **Platform-Analysis-Report.html** — Security/cost/reliability analysis with 59 findings, tabbed UI, before/after comparisons *(local only)*
+- **README.html** — Generated HTML version of this README with rendered Mermaid diagrams *(local only, regenerate with `python3 scripts/generate-readme-html.py README.md README.html`)*
 - **RECOMMENDATIONS-Ollama-EKS-Improvements.md** — Detailed recommendations for each improvement area
 - **CLAUDE.md** — Project context file for Claude Code implementation
 - **switch-model.sh** — Model tier switching script with GPU hardware validation and KEDA trap handler
