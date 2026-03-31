@@ -29,6 +29,9 @@
 
 set -euo pipefail
 
+# Disable AWS CLI pager — prevents `less` from opening mid-script
+export AWS_PAGER=""
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="${SCRIPT_DIR}/.."
 TERRAFORM_DIR="${REPO_DIR}/terraform"
@@ -544,6 +547,29 @@ except:
         log "  No orphaned NLBs — LB Controller cleaned up successfully"
     fi
 
+    # ── Step 2f: Clean up LB Controller security groups ──────────────────
+    # The LB Controller creates security groups (k8s-traffic-*, k8s-istioing-*)
+    # that are NOT managed by Terraform. They block VPC deletion if not removed.
+    # Must be cleaned up BEFORE terraform destroy.
+    if [ -n "$VPC_ID" ]; then
+        log "Step 2f: Cleaning up LB Controller security groups..."
+        local lb_sgs
+        lb_sgs=$(aws ec2 describe-security-groups --region "$REGION" \
+            --filters "Name=vpc-id,Values=${VPC_ID}" \
+            --query "SecurityGroups[?starts_with(GroupName, 'k8s-')].GroupId" \
+            --output text 2>/dev/null || echo "")
+
+        if [ -n "$lb_sgs" ]; then
+            for sg_id_cleanup in $lb_sgs; do
+                log "    Deleting SG: ${sg_id_cleanup}"
+                aws ec2 delete-security-group --group-id "$sg_id_cleanup" --region "$REGION" >> "$LOG_FILE" 2>&1 || true
+            done
+            log "  LB Controller security groups cleaned up"
+        else
+            log "  No LB Controller security groups found"
+        fi
+    fi
+
     # ── Step 2g: Clean up remaining resources ──────────────────────────────
     log "Step 2g: Cleaning up remaining resources..."
 
@@ -571,21 +597,6 @@ except:
             aws apigateway delete-vpc-link --vpc-link-id "$link_id" --region "$REGION" >> "$LOG_FILE" 2>&1 || true
         fi
     done
-
-    if [ -n "$VPC_LINKS" ]; then
-        log "    Waiting for VPC Link deletion (up to 60s)..."
-        local vl_wait=0
-        while [ $vl_wait -lt 60 ]; do
-            REMAINING=$(aws apigateway get-vpc-links --region "$REGION" \
-                --query "items[?contains(name, 'ollama')].id" --output text 2>/dev/null || echo "")
-            if [ -z "$REMAINING" ]; then
-                log "    VPC Links deleted"
-                break
-            fi
-            sleep 10
-            vl_wait=$((vl_wait + 10))
-        done
-    fi
 }
 
 # Wait for all NLBs tagged with the cluster to be deleted
@@ -822,6 +833,7 @@ cleanup_orphaned_resources() {
 
     cleanup_orphaned_nlbs
     cleanup_orphaned_target_groups
+    cleanup_orphaned_grafana_workspaces
 
     if [ -n "$VPC_ID" ]; then
         cleanup_orphaned_enis
@@ -1002,6 +1014,28 @@ for item in data:
             fi
         done
     fi
+}
+
+# Delete orphaned Grafana workspaces (cost: $9/mo per editor user if left running)
+cleanup_orphaned_grafana_workspaces() {
+    log "Checking for orphaned Grafana workspaces..."
+    local workspace_ids
+    workspace_ids=$(aws grafana list-workspaces --region "$REGION" \
+        --query "workspaces[?contains(name, 'ollama')].id" \
+        --output text 2>/dev/null || echo "")
+
+    if [ -z "$workspace_ids" ]; then
+        log "No orphaned Grafana workspaces found"
+        return
+    fi
+
+    for ws_id in $workspace_ids; do
+        if [ -n "$ws_id" ]; then
+            log "  Deleting Grafana workspace: ${ws_id}"
+            aws grafana delete-workspace --workspace-id "$ws_id" --region "$REGION" >> "$LOG_FILE" 2>&1 || true
+        fi
+    done
+    log "Grafana workspaces cleaned up"
 }
 
 # Delete orphaned security groups created by the LB controller
@@ -1191,6 +1225,7 @@ for arn in arns:
                 *:vpc-endpoint/*) aws ec2 describe-vpc-endpoints --vpc-endpoint-ids "${arn##*/}" --region "$REGION" >/dev/null 2>&1 && exists="true" ;;
                 *:userpool/*)    aws cognito-idp describe-user-pool --user-pool-id "${arn##*userpool/}" --region "$REGION" >/dev/null 2>&1 && exists="true" ;;
                 *:snapshot/*)    aws ec2 describe-snapshots --snapshot-ids "${arn##*/}" --region "$REGION" >/dev/null 2>&1 && exists="true" ;;
+                *:workspace/*)   aws amp describe-workspace --workspace-id "${arn##*/}" --region "$REGION" >/dev/null 2>&1 && exists="true" ;;
                 *)               exists="true" ;;  # Unknown type — assume exists
             esac
             if [ "$exists" = "true" ]; then
