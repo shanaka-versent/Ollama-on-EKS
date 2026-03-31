@@ -541,6 +541,124 @@ with open('${ncfile}', 'w') as f:
 }
 
 # ==============================================================================
+# Phase 2c: ArgoCD Git Credentials (private repo access)
+# ==============================================================================
+setup_argocd_repo_credentials() {
+    step "Phase 2c: Configuring ArgoCD Git credentials"
+
+    # Check if ArgoCD already has a repo secret for this repo
+    local existing
+    existing=$(kubectl get secrets -n argocd -l argocd.argoproj.io/secret-type=repository \
+        -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+
+    if [[ -n "$existing" ]]; then
+        log "ArgoCD repo credential already exists: ${existing}"
+        return
+    fi
+
+    # Try to get GitHub token from gh CLI (most reliable for zero-touch)
+    local gh_token=""
+    if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
+        gh_token=$(gh auth token 2>/dev/null || echo "")
+    fi
+
+    if [[ -z "$gh_token" ]]; then
+        # Fallback: check GITHUB_TOKEN env var
+        gh_token="${GITHUB_TOKEN:-}"
+    fi
+
+    if [[ -z "$gh_token" ]]; then
+        warn "No GitHub token available for ArgoCD."
+        warn "ArgoCD cannot sync from private repos without credentials."
+        warn "Fix: run 'gh auth login' or set GITHUB_TOKEN, then re-run deploy."
+        warn "Or make the repo public."
+        return
+    fi
+
+    local repo_url
+    repo_url=$(grep '^git_repo_url' "$TERRAFORM_DIR/terraform.tfvars" | sed 's/.*= *"//;s/".*//')
+
+    log "Creating ArgoCD repo credential for: ${repo_url}"
+    kubectl create secret generic argocd-repo-creds \
+        --namespace argocd \
+        --from-literal=type=git \
+        --from-literal=url="$repo_url" \
+        --from-literal=username=shanaka-versent \
+        --from-literal=password="$gh_token" \
+        --dry-run=client -o yaml \
+        | kubectl label --local -f - argocd.argoproj.io/secret-type=repository -o yaml \
+        | kubectl apply -f - 2>&1
+
+    log "ArgoCD repo credential created — ArgoCD will auto-detect and sync"
+}
+
+# ==============================================================================
+# Phase 2d: Model Snapshot Validation
+# ==============================================================================
+# The Ollama deployment uses an EBS snapshot with pre-loaded models for fast
+# cold starts (~3 min vs ~20 min pulling from internet). If the snapshot doesn't
+# exist (first deploy or snapshot was deleted), we patch the deployment to use
+# a blank volume and let the model-loader job pull the model at runtime.
+handle_model_snapshot() {
+    step "Phase 2d: Validating model EBS snapshot"
+
+    # Read snapshot ID from the volume-snapshot manifest
+    local snapshot_file="${REPO_DIR}/k8s/ollama/volume-snapshot.yaml"
+    local snapshot_id=""
+    if [[ -f "$snapshot_file" ]]; then
+        snapshot_id=$(grep 'snapshotHandle:' "$snapshot_file" | awk '{print $2}' | head -1)
+    fi
+
+    if [[ -z "$snapshot_id" ]]; then
+        warn "No snapshot ID found in volume-snapshot.yaml"
+        warn "Model-loader will pull the model from internet (~15-25 min on first start)"
+        return
+    fi
+
+    log "Checking EBS snapshot: ${snapshot_id}"
+    local snap_state
+    snap_state=$(aws ec2 describe-snapshots --snapshot-ids "$snapshot_id" \
+        --region "$REGION" --query 'Snapshots[0].State' --output text 2>/dev/null || echo "not-found")
+
+    if [[ "$snap_state" == "completed" ]]; then
+        log "Snapshot ${snapshot_id} exists and is ready — fast cold start enabled"
+        return
+    fi
+
+    warn "Snapshot ${snapshot_id} not found (state: ${snap_state})"
+    warn "Patching Ollama deployment to skip snapshot — model-loader will pull from internet"
+    warn "To restore fast cold starts, run: ./scripts/create-model-snapshot.sh"
+
+    # Wait for ArgoCD to create the Ollama deployment before patching
+    local max_wait=300
+    local interval=10
+    local waited=0
+    while [[ $waited -lt $max_wait ]]; do
+        if kubectl get deployment ollama -n ollama &>/dev/null; then
+            break
+        fi
+        echo -e "  ${DIM}[${waited}s] Waiting for Ollama deployment to be created by ArgoCD...${NC}"
+        sleep "$interval"
+        waited=$((waited + interval))
+    done
+
+    if ! kubectl get deployment ollama -n ollama &>/dev/null; then
+        warn "Ollama deployment not found — snapshot patching deferred"
+        return
+    fi
+
+    # Remove dataSource from ephemeral volume (uses blank EBS instead)
+    kubectl patch deployment ollama -n ollama --type=json \
+        -p='[{"op": "remove", "path": "/spec/template/spec/volumes/1/ephemeral/volumeClaimTemplate/spec/dataSource"}]' 2>/dev/null || true
+
+    # Also remove the VolumeSnapshot/Content/Class if they reference a missing snapshot
+    kubectl delete volumesnapshot ollama-models-snapshot -n ollama 2>/dev/null || true
+    kubectl delete volumesnapshotcontent ollama-models-snapshot-content 2>/dev/null || true
+
+    log "Ollama patched — will use blank volume + model-loader pull"
+}
+
+# ==============================================================================
 # Phase 3: Cluster Setup (ArgoCD sync)
 # ==============================================================================
 setup_cluster() {
@@ -577,30 +695,82 @@ setup_cluster() {
     max_wait=600
 
     while [[ $waited -lt $max_wait ]]; do
-        READY=$(kubectl get deployment ollama -n ollama \
+        local ready
+        ready=$(kubectl get deployment ollama -n ollama \
             -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
-        READY="${READY:-0}"
+        ready="${ready:-0}"
 
-        if [[ "$READY" -ge 1 ]]; then
-            log "Ollama is running (${READY} replica ready)"
+        if [[ "$ready" -ge 1 ]]; then
+            log "Ollama is running (${ready} replica ready)"
             break
         fi
 
-        echo -e "  ${DIM}[${waited}s] Waiting for Ollama (${READY}/1 ready — GPU node may still be provisioning)...${NC}"
+        echo -e "  ${DIM}[${waited}s] Waiting for Ollama (${ready}/1 ready — GPU node may still be provisioning)...${NC}"
         sleep "$interval"
         waited=$((waited + interval))
     done
 
-    if [[ "$READY" -lt 1 ]]; then
+    if [[ "${ready:-0}" -lt 1 ]]; then
         warn "Ollama not yet ready after ${max_wait}s — GPU node may still be initialising."
         warn "Check status: kubectl get pods -n ollama"
         warn "Check nodes:  kubectl get nodes"
     fi
 
-    # Show ArgoCD status
     echo ""
     log "ArgoCD application status:"
     kubectl get applications -n argocd 2>/dev/null || true
+
+    # --- Start Ollama + preload model ---
+    # KEDA starts with 0 replicas. We need to pause KEDA, scale up Ollama,
+    # wait for the model to load, then unpause KEDA (45-min idle window starts).
+    echo ""
+    log "Starting Ollama and preloading model..."
+
+    # Pause KEDA to prevent it from killing the pod before model loads
+    kubectl annotate scaledobject ollama-autoscaler -n ollama \
+        autoscaling.keda.sh/paused="true" --overwrite 2>/dev/null || true
+
+    # Scale Ollama to 1
+    kubectl scale deployment ollama -n ollama --replicas=1 2>/dev/null || true
+
+    # Wait for Ollama pod to be ready (startup probe: model loading ~2-5 min)
+    log "Waiting for Ollama to be ready (GPU provisioning + model loading)..."
+    local ollama_ready=0
+    local ollama_wait=0
+    local ollama_max=600
+    while [[ $ollama_wait -lt $ollama_max ]]; do
+        ollama_ready=$(kubectl get deployment ollama -n ollama \
+            -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+        ollama_ready="${ollama_ready:-0}"
+
+        if [[ "$ollama_ready" -ge 1 ]]; then
+            log "Ollama is ready"
+            break
+        fi
+
+        echo -e "  ${DIM}[${ollama_wait}s] Waiting for Ollama (GPU node + model loading)...${NC}"
+        sleep 20
+        ollama_wait=$((ollama_wait + 20))
+    done
+
+    if [[ "$ollama_ready" -ge 1 ]]; then
+        # Preload model — triggers model-loader job or pulls directly
+        log "Preloading model: ${MODEL}..."
+        kubectl exec -n open-webui deploy/open-webui -- \
+            curl -sf --max-time 30 \
+            "http://ollama.ollama.svc.cluster.local:11434/api/tags" 2>/dev/null | head -1 || true
+
+        # Unpause KEDA — 45-min idle window starts now
+        kubectl annotate scaledobject ollama-autoscaler -n ollama \
+            autoscaling.keda.sh/paused- --overwrite 2>/dev/null || true
+        log "KEDA unpaused — 45-min idle timer started"
+    else
+        warn "Ollama not ready after ${ollama_max}s — check GPU node provisioning"
+        warn "Manual start: kubectl scale deployment ollama -n ollama --replicas=1"
+        # Unpause KEDA even on failure — never leave it paused
+        kubectl annotate scaledobject ollama-autoscaler -n ollama \
+            autoscaling.keda.sh/paused- --overwrite 2>/dev/null || true
+    fi
 }
 
 # ==============================================================================
@@ -616,7 +786,6 @@ setup_cluster() {
 wire_nlb_to_terraform() {
     step "Phase 3b: Discovering NLB and wiring API Gateway + CloudFront"
 
-    # Wait for Istio Gateway service to get an external-ip (NLB DNS)
     log "Waiting for Istio Gateway NLB to be provisioned..."
     local max_wait=300
     local interval=15
@@ -643,7 +812,6 @@ wire_nlb_to_terraform() {
         return
     fi
 
-    # Discover NLB ARN via AWS CLI
     local region
     region=$(grep '^region' "$TERRAFORM_DIR/terraform.tfvars" | sed 's/.*= *"//;s/".*//')
 
@@ -679,7 +847,6 @@ wire_nlb_to_terraform() {
         nlb_wait=$((nlb_wait + 15))
     done
 
-    # Update terraform.tfvars with NLB values
     cd "$TERRAFORM_DIR"
     sedi "s|^nlb_arn .*=.*|nlb_arn      = \"${nlb_arn}\"|" terraform.tfvars
     sedi "s|^nlb_dns_name .*=.*|nlb_dns_name = \"${nlb_dns}\"|" terraform.tfvars
@@ -696,28 +863,59 @@ wire_nlb_to_terraform() {
     fi
     log "CloudFront VPC Origin wired successfully"
 
-    # --- Warm up CloudFront VPC Origin connection ---
-    # VPC Origins have a cold start (10-30s on first requests while AWS establishes
-    # the private connection). Sending warmup requests primes the path so the user
-    # doesn't hit a 30s delay on first page load.
+    # --- Warm up CloudFront VPC Origin until consistently fast ---
+    # VPC Origins have a cold start (10-30s on first requests while AWS
+    # establishes the private connection). We keep hitting the endpoint
+    # until we get 3 consecutive fast responses (<5s), ensuring the user
+    # sees a fast page load immediately after deploy completes.
     local cf_domain
     cf_domain=$(terraform output -raw cloudfront_domain 2>/dev/null || echo "")
     if [[ -n "$cf_domain" ]]; then
-        log "Warming up CloudFront VPC Origin (first requests are slow)..."
+        log "Warming up CloudFront VPC Origin (this may take 1-2 min)..."
+
+        # Phase 1: Blast 5 parallel requests to open the connection
         for i in 1 2 3 4 5; do
             curl -s -o /dev/null --max-time 35 "https://${cf_domain}/api/config" 2>/dev/null &
         done
         wait
-        # A few more sequential to ensure the path is fully warm
-        for i in 1 2 3; do
+
+        # Phase 2: Keep hitting until 3 consecutive fast responses (<5s)
+        local consecutive_fast=0
+        local warmup_attempt=0
+        local warmup_max=20
+        while [[ $consecutive_fast -lt 3 ]] && [[ $warmup_attempt -lt $warmup_max ]]; do
+            warmup_attempt=$((warmup_attempt + 1))
+            local warmup_time
+            warmup_time=$(curl -s -o /dev/null -w "%{time_total}" --max-time 35 "https://${cf_domain}/api/config" 2>/dev/null || echo "99")
             local warmup_code
-            warmup_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "https://${cf_domain}/api/config" 2>/dev/null || echo "000")
-            if [[ "$warmup_code" == "200" ]]; then
-                log "VPC Origin warm (HTTP ${warmup_code})"
-                break
+            warmup_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "https://${cf_domain}/api/config" 2>/dev/null || echo "000")
+
+            # Check if response was fast (under 5 seconds)
+            local is_fast
+            is_fast=$(python3 -c "print('yes' if float('${warmup_time}') < 5.0 else 'no')" 2>/dev/null || echo "no")
+
+            if [[ "$is_fast" == "yes" ]] && [[ "$warmup_code" == "200" ]]; then
+                consecutive_fast=$((consecutive_fast + 1))
+                echo -e "  ${DIM}[${warmup_attempt}] ${warmup_time}s — fast (${consecutive_fast}/3)${NC}"
+            else
+                consecutive_fast=0
+                echo -e "  ${DIM}[${warmup_attempt}] ${warmup_time}s — warming up...${NC}"
             fi
-            echo -e "  ${DIM}Warming up... (${warmup_code})${NC}"
         done
+
+        if [[ $consecutive_fast -ge 3 ]]; then
+            log "VPC Origin warm — 3 consecutive fast responses confirmed"
+        else
+            warn "VPC Origin may still be cold after ${warmup_max} attempts"
+        fi
+
+        # Phase 3: Pre-warm key pages (login, static assets)
+        log "Pre-warming key pages..."
+        for path in "/auth/login.html" "/" "/api/config" "/manifest.json"; do
+            curl -s -o /dev/null --max-time 10 "https://${cf_domain}${path}" 2>/dev/null &
+        done
+        wait
+        log "Platform ready at: https://${cf_domain}"
     fi
 
     cd "$REPO_DIR"
@@ -779,13 +977,14 @@ verify_deployment() {
 
     # Show connection info
     echo ""
-    log "Retrieving connection details from Terraform outputs..."
+    log "Retrieving connection details..."
     echo ""
 
     CLOUDFRONT_DOMAIN=$(terraform output -raw cloudfront_domain 2>/dev/null || echo "pending")
     API_KEY_ID=$(terraform output -raw api_key_id 2>/dev/null || echo "")
     GRAFANA_URL=$(terraform output -raw managed_grafana_url 2>/dev/null || echo "pending")
-    MODEL=$(grep '^ollama_model' "$TERRAFORM_DIR/terraform.tfvars" | sed 's/.*= *"//;s/".*//')
+    local region
+    region=$(terraform output -raw region 2>/dev/null || echo "$REGION")
 
     cd "$REPO_DIR"
 
@@ -793,6 +992,7 @@ verify_deployment() {
     echo -e "${GREEN}  Air-Gapped Deployment Complete${NC}"
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
+    echo "  Region:              ${region}"
     echo "  CloudFront endpoint: https://${CLOUDFRONT_DOMAIN}"
     echo ""
     echo "  Get your API key:"
@@ -812,14 +1012,13 @@ verify_deployment() {
     echo ""
     echo "  Grafana dashboards (via IAM Identity Center SSO):"
     echo "    ${GRAFANA_URL}"
-    echo "    Dashboards: GPU Metrics, Ollama API, Karpenter Nodes, FinOps Showback"
     echo ""
-    echo "  Switch model tiers:"
-    echo "    ./switch-model.sh use 3   # Flagship (default)"
+    echo "  Switch local model tiers:"
+    echo "    ./switch-model.sh use 3   # Flagship (best local quality)"
     echo "    ./switch-model.sh use 1   # Fallback (cheaper)"
     echo "    ./switch-model.sh use 2   # Coder (fast MoE)"
     echo ""
-    echo "  Scale down (stop billing):"
+    echo "  Scale down (stop GPU billing):"
     echo "    ./scripts/scale-down.sh"
     echo ""
     echo -e "${YELLOW}  ACTION REQUIRED — Confirm SNS email subscriptions:${NC}"
@@ -828,6 +1027,47 @@ verify_deployment() {
     echo "    2. Signup notifications (new user requests)"
     echo "    Click 'Confirm subscription' in each email to activate."
     echo ""
+
+    # --- Final warmup — ensure platform is ready to use RIGHT NOW ---
+    # The VPC Origin can go cold during the verification phase (~2-3 min).
+    # This final blast ensures the user hits a fast page load immediately.
+    if [[ -n "$CLOUDFRONT_DOMAIN" ]]; then
+        log "Final warmup — ensuring platform is ready to use..."
+
+        # Blast 5 parallel to re-open the connection
+        for i in 1 2 3 4 5; do
+            curl -s -o /dev/null --max-time 35 "https://${CLOUDFRONT_DOMAIN}/api/config" 2>/dev/null &
+        done
+        wait
+
+        # Verify 3 consecutive fast responses
+        local final_fast=0
+        local final_attempt=0
+        while [[ $final_fast -lt 3 ]] && [[ $final_attempt -lt 15 ]]; do
+            final_attempt=$((final_attempt + 1))
+            local ft
+            ft=$(curl -s -o /dev/null -w "%{time_total}" --max-time 15 "https://${CLOUDFRONT_DOMAIN}/api/config" 2>/dev/null || echo "99")
+            local is_fast
+            is_fast=$(python3 -c "print('yes' if float('${ft}') < 5.0 else 'no')" 2>/dev/null || echo "no")
+            if [[ "$is_fast" == "yes" ]]; then
+                final_fast=$((final_fast + 1))
+            else
+                final_fast=0
+            fi
+        done
+
+        # Pre-warm key pages
+        for path in "/auth/login.html" "/" "/manifest.json"; do
+            curl -s -o /dev/null --max-time 10 "https://${CLOUDFRONT_DOMAIN}${path}" 2>/dev/null &
+        done
+        wait
+
+        if [[ $final_fast -ge 3 ]]; then
+            log "Platform is warm and ready to use: https://${CLOUDFRONT_DOMAIN}"
+        else
+            warn "Platform may be slow on first load — VPC Origin still warming"
+        fi
+    fi
 }
 
 # ==============================================================================
@@ -851,6 +1091,8 @@ if [[ "$SKIP_INFRA" == "false" ]]; then
     bootstrap_custom_nodepools
 fi
 
+setup_argocd_repo_credentials
+handle_model_snapshot
 setup_cluster
 wire_nlb_to_terraform
 setup_grafana_dashboards
