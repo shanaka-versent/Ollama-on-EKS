@@ -130,8 +130,30 @@ resource "aws_api_gateway_integration" "chat_completions_mock" {
   type        = "MOCK"
 
   request_templates = {
-    "application/json" = "{\"statusCode\": 503}"
+    "application/json" = "{\"statusCode\": 200}"
   }
+}
+
+resource "aws_api_gateway_method_response" "chat_completions_503" {
+  count       = local.nlb_available ? 0 : 1
+  rest_api_id = aws_api_gateway_rest_api.ollama.id
+  resource_id = aws_api_gateway_resource.completions.id
+  http_method = aws_api_gateway_method.chat_completions.http_method
+  status_code = "503"
+}
+
+resource "aws_api_gateway_integration_response" "chat_completions_503" {
+  count       = local.nlb_available ? 0 : 1
+  rest_api_id = aws_api_gateway_rest_api.ollama.id
+  resource_id = aws_api_gateway_resource.completions.id
+  http_method = aws_api_gateway_method.chat_completions.http_method
+  status_code = aws_api_gateway_method_response.chat_completions_503[0].status_code
+
+  response_templates = {
+    "application/json" = "{\"error\": \"Service starting - NLB not yet provisioned\"}"
+  }
+
+  depends_on = [aws_api_gateway_integration.chat_completions_mock]
 }
 
 # --- /api ---
@@ -181,8 +203,30 @@ resource "aws_api_gateway_integration" "api_tags_mock" {
   type        = "MOCK"
 
   request_templates = {
-    "application/json" = "{\"statusCode\": 503}"
+    "application/json" = "{\"statusCode\": 200}"
   }
+}
+
+resource "aws_api_gateway_method_response" "api_tags_503" {
+  count       = local.nlb_available ? 0 : 1
+  rest_api_id = aws_api_gateway_rest_api.ollama.id
+  resource_id = aws_api_gateway_resource.tags.id
+  http_method = aws_api_gateway_method.api_tags.http_method
+  status_code = "503"
+}
+
+resource "aws_api_gateway_integration_response" "api_tags_503" {
+  count       = local.nlb_available ? 0 : 1
+  rest_api_id = aws_api_gateway_rest_api.ollama.id
+  resource_id = aws_api_gateway_resource.tags.id
+  http_method = aws_api_gateway_method.api_tags.http_method
+  status_code = aws_api_gateway_method_response.api_tags_503[0].status_code
+
+  response_templates = {
+    "application/json" = "{\"error\": \"Service starting - NLB not yet provisioned\"}"
+  }
+
+  depends_on = [aws_api_gateway_integration.api_tags_mock]
 }
 
 # ==============================================================================
@@ -209,8 +253,10 @@ resource "aws_api_gateway_deployment" "ollama" {
   depends_on = [
     aws_api_gateway_integration.chat_completions,
     aws_api_gateway_integration.chat_completions_mock,
+    aws_api_gateway_integration_response.chat_completions_503,
     aws_api_gateway_integration.api_tags,
     aws_api_gateway_integration.api_tags_mock,
+    aws_api_gateway_integration_response.api_tags_503,
   ]
 }
 
