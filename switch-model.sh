@@ -9,7 +9,7 @@
 #   3. KEDA is paused during the switch to prevent scale-to-zero
 #   4. Model is loaded and warmed up
 #
-# Tier 1 & 2: g5.xlarge  (1x A10G, 24GB) — $0.35/hr spot
+# Tier 1 & 2: g5.2xlarge (1x A10G, 24GB, 32 GiB RAM) — $0.45/hr spot
 # Tier 3:     g5.12xlarge (4x A10G, 96GB) — $1.90/hr spot
 # Idle:       No GPU node at all          — $0/hr (KEDA + Karpenter)
 #
@@ -59,8 +59,8 @@ trap cleanup_on_interrupt INT TERM
 # ============================================================
 # Format: "tag|name|vram|min_gpus|instance|gpu_limit|mem_limit|mem_req|cpu_limit|cpu_req|description"
 MODELS=(
-  "qwen3.5:27b|Qwen 3.5 27B (Dense)|~18GB|1|g5.xlarge|1|14Gi|12Gi|3|2|Fallback. Fast dense model for testing and quick iteration."
-  "qwen3-coder:30b-a3b|Qwen3-Coder 30B-A3B (MoE)|~20GB|1|g5.xlarge|1|14Gi|12Gi|3|2|Coding-specialised MoE. Only 3.3B active params = very fast."
+  "qwen3.5:27b|Qwen 3.5 27B (Dense)|~18GB|1|g5.2xlarge|1|28Gi|24Gi|7|4|Fallback. Fast dense model for testing and quick iteration."
+  "qwen3-coder:30b-a3b|Qwen3-Coder 30B-A3B (MoE)|~20GB|1|g5.2xlarge|1|28Gi|24Gi|7|4|Coding-specialised MoE. Only 3.3B active params = very fast."
   "qwen3.5:122b-a10b|Qwen 3.5 122B-A10B (MoE)|~72GB Q4|4|g5.12xlarge|4|96Gi|64Gi|16|8|Flagship. Best quality. Karpenter auto-provisions g5.12xlarge."
 )
 
@@ -445,10 +445,10 @@ cmd_list() {
 
   echo -e "  ${BOLD}How Flex Mode Works:${NC}"
   echo -e "  ┌──────────────────────────────────────────────────────────────────┐"
-  echo -e "  │ The NodePool ceiling allows BOTH g5.xlarge and g5.12xlarge.     │"
+  echo -e "  │ The NodePool ceiling allows BOTH g5.2xlarge and g5.12xlarge.     │"
   echo -e "  │ Karpenter provisions based on what the Ollama pod REQUESTS:     │"
   echo -e "  │                                                                  │"
-  echo -e "  │  Tier 1/2 (1 GPU)  → g5.xlarge   → \$0.35/hr spot              │"
+  echo -e "  │  Tier 1/2 (1 GPU)  → g5.2xlarge   → \$0.45/hr spot              │"
   echo -e "  │  Tier 3   (4 GPUs) → g5.12xlarge  → \$1.90/hr spot              │"
   echo -e "  │  KEDA idle (0 pods) → no GPU node → \$0/hr                      │"
   echo -e "  │                                                                  │"
@@ -456,8 +456,8 @@ cmd_list() {
   echo -e "  └──────────────────────────────────────────────────────────────────┘"
   echo ""
   echo -e "  ${BOLD}Usage:${NC}"
-  echo -e "    ${CYAN}./switch-model.sh use 1${NC}     → Tier 1 fallback  (g5.xlarge, ~3 min)"
-  echo -e "    ${CYAN}./switch-model.sh use 2${NC}     → Tier 2 coder     (g5.xlarge, ~3 min)"
+  echo -e "    ${CYAN}./switch-model.sh use 1${NC}     → Tier 1 fallback  (g5.2xlarge, ~3 min)"
+  echo -e "    ${CYAN}./switch-model.sh use 2${NC}     → Tier 2 coder     (g5.2xlarge, ~3 min)"
   echo -e "    ${CYAN}./switch-model.sh use 3${NC}     → Tier 3 flagship  (g5.12xlarge, ~5 min)"
   echo -e "    ${CYAN}./switch-model.sh status${NC}    → Show current tier, hardware, models"
   echo ""
@@ -777,13 +777,13 @@ case "$cmd" in
     echo ""
     echo -e "${BOLD}Examples:${NC}"
     echo -e "  ${CYAN}$0 status${NC}             → Check current tier and hardware"
-    echo -e "  ${CYAN}$0 use 1${NC}              → Tier 1 fallback  (g5.xlarge,  ~3 min)"
-    echo -e "  ${CYAN}$0 use 2${NC}              → Tier 2 coder     (g5.xlarge,  ~3 min)"
+    echo -e "  ${CYAN}$0 use 1${NC}              → Tier 1 fallback  (g5.2xlarge,  ~3 min)"
+    echo -e "  ${CYAN}$0 use 2${NC}              → Tier 2 coder     (g5.2xlarge,  ~3 min)"
     echo -e "  ${CYAN}$0 use 3${NC}              → Tier 3 flagship  (g5.12xlarge, ~5 min)"
     echo -e "  ${CYAN}$0 use qwen3.5:27b${NC}    → Switch by exact model tag"
     echo ""
     echo -e "${BOLD}How Flex Mode Works:${NC}"
-    echo -e "  The GPU NodePool ceiling allows both g5.xlarge and g5.12xlarge."
+    echo -e "  The GPU NodePool ceiling allows both g5.2xlarge and g5.12xlarge."
     echo -e "  When you switch tiers, the script:"
     echo -e "    1. Pauses KEDA (prevents scale-to-zero during switch)"
     echo -e "    2. Patches Ollama deployment resources (GPU, memory, CPU)"
