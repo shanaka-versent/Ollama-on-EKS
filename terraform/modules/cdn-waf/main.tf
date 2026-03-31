@@ -70,12 +70,18 @@ resource "aws_cloudfront_function" "auth_redirect" {
         return request;
       }
 
-      // If user has a valid session cookie, let them through to Open WebUI
-      if (cookies['token']) {
+      // If user has a valid session cookie, let them through to Open WebUI.
+      // Check both 'token' (JWT from Open WebUI) and 'oauth_session_id'
+      // (server-side session from OAuth callback). On the first redirect
+      // after OAuth, 'token' may not be sent yet (SameSite=Lax), but
+      // 'oauth_session_id' will be present.
+      if (cookies['token'] || cookies['oauth_session_id']) {
         return request;
       }
 
-      // No session — redirect to custom login page (hosted on separate S3 bucket)
+      // No session — redirect to login page.
+      // If stale browser state causes login issues (e.g., after stack recreate),
+      // visit /auth/cleanup.html manually to clear localStorage/cookies/caches.
       return {
         statusCode: 302,
         statusDescription: 'Found',
@@ -123,10 +129,10 @@ resource "aws_cloudfront_vpc_origin" "nlb" {
   count = local.webui_enabled ? 1 : 0
 
   vpc_origin_endpoint_config {
-    name                 = "${var.project_name}-nlb-origin"
-    arn                  = var.nlb_arn
-    http_port            = 80
-    https_port           = 443
+    name                   = "${var.project_name}-nlb-origin"
+    arn                    = var.nlb_arn
+    http_port              = 80
+    https_port             = 443
     origin_protocol_policy = "http-only"
 
     origin_ssl_protocols {
@@ -373,7 +379,9 @@ resource "aws_cloudfront_distribution" "ollama" {
       }
 
       vpc_origin_config {
-        vpc_origin_id = aws_cloudfront_vpc_origin.nlb[0].id
+        vpc_origin_id            = aws_cloudfront_vpc_origin.nlb[0].id
+        origin_keepalive_timeout = 60 # Max — keep VPC Origin connections warm longer
+        origin_read_timeout      = 60 # Max — LLM streaming responses can be slow
       }
     }
   }

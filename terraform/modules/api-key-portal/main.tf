@@ -73,14 +73,14 @@ resource "aws_s3_bucket_policy" "portal" {
 
 # Upload static portal files
 resource "aws_s3_object" "index_html" {
-  bucket       = aws_s3_bucket.portal.id
-  key          = "portal/index.html"
-  content      = templatefile("${path.module}/static/index.html", {
+  bucket = aws_s3_bucket.portal.id
+  key    = "portal/index.html"
+  content = templatefile("${path.module}/static/index.html", {
     cloudfront_domain = var.cloudfront_domain
     api_base_url      = "https://${var.cloudfront_domain}"
   })
   content_type = "text/html"
-  etag         = md5(templatefile("${path.module}/static/index.html", {
+  etag = md5(templatefile("${path.module}/static/index.html", {
     cloudfront_domain = var.cloudfront_domain
     api_base_url      = "https://${var.cloudfront_domain}"
   }))
@@ -143,17 +143,26 @@ resource "aws_cloudfront_origin_access_control" "login" {
 }
 
 resource "aws_s3_object" "login_html" {
-  bucket       = aws_s3_bucket.login.id
-  key          = "auth/login.html"
-  content      = templatefile("${path.module}/static/login.html", {
+  bucket = aws_s3_bucket.login.id
+  key    = "auth/login.html"
+  content = templatefile("${path.module}/static/login.html", {
     signup_client_id = var.signup_client_id
     region           = var.region
   })
   content_type = "text/html"
-  etag         = md5(templatefile("${path.module}/static/login.html", {
+  etag = md5(templatefile("${path.module}/static/login.html", {
     signup_client_id = var.signup_client_id
     region           = var.region
   }))
+}
+
+resource "aws_s3_object" "cleanup_html" {
+  bucket        = aws_s3_bucket.login.id
+  key           = "auth/cleanup.html"
+  content       = file("${path.module}/static/cleanup.html")
+  content_type  = "text/html"
+  cache_control = "no-cache, no-store, must-revalidate"
+  etag          = md5(file("${path.module}/static/cleanup.html"))
 }
 
 # ==============================================================================
@@ -243,8 +252,8 @@ resource "aws_iam_role" "key_manager" {
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Action = "sts:AssumeRole"
-      Effect = "Allow"
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
       Principal = { Service = "lambda.amazonaws.com" }
     }]
   })
@@ -345,8 +354,8 @@ resource "aws_iam_role" "expiry_checker" {
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Action = "sts:AssumeRole"
-      Effect = "Allow"
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
       Principal = { Service = "lambda.amazonaws.com" }
     }]
   })
@@ -461,13 +470,13 @@ resource "aws_api_gateway_resource" "portal_key_by_id" {
 }
 
 # --- GET /portal/api/keys (list user's keys) ---
-# Auth: key_manager Lambda validates token from Authorization header (Cognito id_token)
-# or Open WebUI session cookie. No API GW authorizer — Lambda handles both token types.
+# Auth: Cognito authorizer validates id_token at API Gateway level before Lambda is invoked.
 resource "aws_api_gateway_method" "list_keys" {
   rest_api_id      = var.rest_api_id
   resource_id      = aws_api_gateway_resource.portal_keys.id
   http_method      = "GET"
-  authorization    = "NONE"
+  authorization    = "COGNITO_USER_POOLS"
+  authorizer_id    = aws_api_gateway_authorizer.cognito.id
   api_key_required = false
 }
 
@@ -485,7 +494,8 @@ resource "aws_api_gateway_method" "create_key" {
   rest_api_id      = var.rest_api_id
   resource_id      = aws_api_gateway_resource.portal_keys.id
   http_method      = "POST"
-  authorization    = "NONE"
+  authorization    = "COGNITO_USER_POOLS"
+  authorizer_id    = aws_api_gateway_authorizer.cognito.id
   api_key_required = false
 }
 
@@ -503,7 +513,8 @@ resource "aws_api_gateway_method" "update_key" {
   rest_api_id      = var.rest_api_id
   resource_id      = aws_api_gateway_resource.portal_key_by_id.id
   http_method      = "PATCH"
-  authorization    = "NONE"
+  authorization    = "COGNITO_USER_POOLS"
+  authorizer_id    = aws_api_gateway_authorizer.cognito.id
   api_key_required = false
 }
 
@@ -521,7 +532,8 @@ resource "aws_api_gateway_method" "delete_key" {
   rest_api_id      = var.rest_api_id
   resource_id      = aws_api_gateway_resource.portal_key_by_id.id
   http_method      = "DELETE"
-  authorization    = "NONE"
+  authorization    = "COGNITO_USER_POOLS"
+  authorizer_id    = aws_api_gateway_authorizer.cognito.id
   api_key_required = false
 }
 
@@ -672,8 +684,8 @@ resource "aws_iam_role" "auth_proxy" {
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Action = "sts:AssumeRole"
-      Effect = "Allow"
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
       Principal = { Service = "lambda.amazonaws.com" }
     }]
   })
@@ -1483,10 +1495,10 @@ resource "aws_api_gateway_method" "gpu_status_options" {
 }
 
 resource "aws_api_gateway_integration" "gpu_status_options" {
-  rest_api_id = var.rest_api_id
-  resource_id = aws_api_gateway_resource.gpu_status.id
-  http_method = aws_api_gateway_method.gpu_status_options.http_method
-  type        = "MOCK"
+  rest_api_id       = var.rest_api_id
+  resource_id       = aws_api_gateway_resource.gpu_status.id
+  http_method       = aws_api_gateway_method.gpu_status_options.http_method
+  type              = "MOCK"
   request_templates = { "application/json" = "{\"statusCode\": 200}" }
 }
 
@@ -1524,10 +1536,10 @@ resource "aws_api_gateway_method" "gpu_start_options" {
 }
 
 resource "aws_api_gateway_integration" "gpu_start_options" {
-  rest_api_id = var.rest_api_id
-  resource_id = aws_api_gateway_resource.gpu_start.id
-  http_method = aws_api_gateway_method.gpu_start_options.http_method
-  type        = "MOCK"
+  rest_api_id       = var.rest_api_id
+  resource_id       = aws_api_gateway_resource.gpu_start.id
+  http_method       = aws_api_gateway_method.gpu_start_options.http_method
+  type              = "MOCK"
   request_templates = { "application/json" = "{\"statusCode\": 200}" }
 }
 
@@ -1565,10 +1577,10 @@ resource "aws_api_gateway_method" "gpu_stop_options" {
 }
 
 resource "aws_api_gateway_integration" "gpu_stop_options" {
-  rest_api_id = var.rest_api_id
-  resource_id = aws_api_gateway_resource.gpu_stop.id
-  http_method = aws_api_gateway_method.gpu_stop_options.http_method
-  type        = "MOCK"
+  rest_api_id       = var.rest_api_id
+  resource_id       = aws_api_gateway_resource.gpu_stop.id
+  http_method       = aws_api_gateway_method.gpu_stop_options.http_method
+  type              = "MOCK"
   request_templates = { "application/json" = "{\"statusCode\": 200}" }
 }
 
