@@ -30,10 +30,10 @@ spec:
     name: ollama
   minReplicaCount: 0
   maxReplicaCount: 1
-  # 30 minutes — wait after last active signal before scaling to 0
-  cooldownPeriod: 1800
-  # 30 minutes — on first deploy, allow time for model loading before auto-scaling kicks in
-  initialCooldownPeriod: 1800
+  # 45 minutes — wait after last active signal before scaling to 0
+  cooldownPeriod: 2700
+  # 45 minutes — on first deploy, allow time for model loading before auto-scaling kicks in
+  initialCooldownPeriod: 2700
   pollingInterval: 60
   advanced:
     restoreToOriginalReplicaCount: false
