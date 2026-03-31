@@ -157,13 +157,13 @@ output "bedrock_irsa_role_arn" {
 # ==============================================================================
 
 output "managed_grafana_url" {
-  description = "AWS Managed Grafana URL (SSO login via IAM Identity Center)"
-  value       = module.managed_grafana.grafana_endpoint
+  description = "AWS Managed Grafana URL (SSO login via IAM Identity Center) — empty when disabled"
+  value       = var.enable_managed_grafana ? module.managed_grafana[0].grafana_endpoint : "disabled (using in-cluster Grafana)"
 }
 
 output "amp_remote_write_endpoint" {
-  description = "AMP remote write endpoint (Prometheus → AMP → AMG)"
-  value       = module.managed_grafana.amp_remote_write_endpoint
+  description = "AMP remote write endpoint (Prometheus → AMP)"
+  value       = var.enable_managed_grafana ? module.managed_grafana[0].amp_remote_write_endpoint : ""
 }
 
 # ==============================================================================

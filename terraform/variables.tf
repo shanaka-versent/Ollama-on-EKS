@@ -246,6 +246,12 @@ variable "argocd_chart_version" {
 # AWS MANAGED GRAFANA (AMG — SSO via IAM Identity Center)
 # ==============================================================================
 
+variable "enable_managed_grafana" {
+  description = "Enable AWS Managed Grafana ($9/editor/month). Default: false (uses in-cluster Grafana). Set true for production."
+  type        = bool
+  default     = false
+}
+
 variable "grafana_admin_user_ids" {
   description = "IAM Identity Center user IDs to grant Grafana ADMIN role"
   type        = list(string)
