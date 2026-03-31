@@ -172,9 +172,9 @@ resource "aws_cognito_user_pool_client" "webui" {
   logout_urls   = ["https://${var.cloudfront_domain}"]
 
   # Token validity
-  access_token_validity  = 1   # 1 hour
-  id_token_validity      = 1   # 1 hour
-  refresh_token_validity = 30  # 30 days
+  access_token_validity  = 1  # 1 hour
+  id_token_validity      = 1  # 1 hour
+  refresh_token_validity = 30 # 30 days
 
   token_validity_units {
     access_token  = "hours"
@@ -225,6 +225,9 @@ resource "aws_cognito_user" "admin" {
 
   # Cognito sends a temporary password via email
   desired_delivery_mediums = ["EMAIL"]
+
+  # PreSignUp Lambda must have permission before Cognito can invoke it
+  depends_on = [aws_lambda_permission.cognito_pre_signup]
 }
 
 resource "aws_cognito_user_in_group" "admin" {
@@ -305,8 +308,8 @@ resource "aws_lambda_function" "pre_signup" {
 
   environment {
     variables = {
-      SNS_TOPIC_ARN          = aws_sns_topic.signup_notifications.arn
-      ALLOWED_EMAIL_DOMAINS  = var.allowed_email_domains
+      SNS_TOPIC_ARN         = aws_sns_topic.signup_notifications.arn
+      ALLOWED_EMAIL_DOMAINS = var.allowed_email_domains
     }
   }
 
@@ -318,7 +321,7 @@ data "archive_file" "pre_signup" {
   output_path = "${path.module}/lambda/pre_signup.zip"
 
   source {
-    content = <<-PYTHON
+    content  = <<-PYTHON
 import os
 import json
 import boto3
@@ -488,7 +491,7 @@ data "archive_file" "access_granted" {
   output_path = "${path.module}/lambda/access_granted.zip"
 
   source {
-    content = <<-PYTHON
+    content  = <<-PYTHON
 import os
 import json
 import boto3

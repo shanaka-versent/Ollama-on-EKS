@@ -42,6 +42,16 @@ spec:
         - name: open-webui
           image: ghcr.io/open-webui/open-webui:v0.8.12
           imagePullPolicy: IfNotPresent
+          # Fix Open WebUI v0.8.12 OAuth bug: cookie_expires undefined
+          # (https://github.com/open-webui/open-webui/issues/23197)
+          # Patches the file in-place then starts the server normally.
+          # Remove this command block when upgrading to a fixed version.
+          command: ["sh", "-c"]
+          args:
+            - |
+              sed -i "s/'max_age': cookie_max_age, 'expires': cookie_expires/'max_age': cookie_max_age/" \
+                /app/backend/open_webui/utils/oauth.py && \
+              exec bash /app/backend/start.sh
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: false
