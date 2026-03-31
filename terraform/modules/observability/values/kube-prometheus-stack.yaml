@@ -92,10 +92,30 @@ prometheus:
 %{ endif }
 
 # ──────────────────────────────────────────────────────────────────────
-# Grafana — DISABLED (using AWS Managed Grafana via IAM Identity Center)
+# Grafana — In-cluster (accessed via kubectl port-forward)
+# Replaces AWS Managed Grafana ($9/editor/month per stack create)
+# Access: kubectl port-forward svc/kube-prometheus-stack-grafana -n monitoring 3000:80
+# Login: admin / ollama-grafana-admin
 # ──────────────────────────────────────────────────────────────────────
 grafana:
-  enabled: false
+  enabled: true
+  adminPassword: "ollama-grafana-admin"
+  persistence:
+    enabled: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+    datasources:
+      enabled: true
+      label: grafana_datasource
 
 # ──────────────────────────────────────────────────────────────────────
 # Alertmanager
