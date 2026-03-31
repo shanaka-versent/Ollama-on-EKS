@@ -86,15 +86,16 @@ spec:
             - name: HOME
               value: "/tmp/ollama-home"
           resources:
-            # Set per environment via Kustomize overlay
+            # Sized for g5.2xlarge (8 vCPU, 32 GiB RAM, 1x A10G)
+            # switch-model.sh patches these for Tier 3 (g5.12xlarge)
             limits:
               nvidia.com/gpu: "1"
-              memory: "14Gi"
-              cpu: "3"
+              memory: "28Gi"
+              cpu: "7"
             requests:
               nvidia.com/gpu: "1"
-              memory: "12Gi"
-              cpu: "1"
+              memory: "24Gi"
+              cpu: "4"
           volumeMounts:
             - name: ollama-data
               mountPath: /data/models
