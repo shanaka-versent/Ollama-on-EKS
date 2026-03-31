@@ -1,12 +1,12 @@
 # GPU NodePool for Ollama LLM Inference (EKS Auto Mode)
 # @author Shanaka Jayasundera - shanakaj@gmail.com
 #
-# Flex Mode — NodePool ceiling allows both g5.xlarge (Tier 1/2) and
+# Flex Mode — NodePool ceiling allows both g5.2xlarge (Tier 1/2) and
 # g5.12xlarge (Tier 3 flagship). Karpenter provisions based on what
 # the Ollama pod REQUESTS — not the ceiling. The ceiling is just a
 # permission, not a provisioning order.
 #
-#   Pod requests 1 GPU  → g5.xlarge   ($0.35/hr spot)
+#   Pod requests 1 GPU  → g5.2xlarge  ($0.45/hr spot)
 #   Pod requests 4 GPUs → g5.12xlarge ($1.90/hr spot)
 #   Pod scaled to 0     → no GPU node ($0/hr)
 #
@@ -17,8 +17,7 @@
 # eks.amazonaws.com NodeClass (NOT karpenter.k8s.aws EC2NodeClass).
 #
 # Instance types:
-#   g5.xlarge   — 1x A10G (24GB) — Tier 1 (27b) / Tier 2 (coder:30b)
-#   g5.2xlarge  — 1x A10G (24GB) — Same GPU, more CPU/RAM (spot fallback)
+#   g5.2xlarge  — 1x A10G (24GB), 32 GiB RAM — Tier 1 (27b) / Tier 2 (coder:30b)
 #   g5.12xlarge — 4x A10G (96GB) — Tier 3 flagship (122b-a10b)
 apiVersion: karpenter.sh/v1
 kind: NodePool
@@ -43,12 +42,11 @@ spec:
         - key: eks.amazonaws.com/instance-family
           operator: In
           values: ["g5"]
-        # Flex: allow xlarge (Tier 1/2) and 12xlarge (Tier 3 flagship)
-        # Karpenter picks the smallest instance that fits the pod's requests
+        # Flex: 2xlarge (Tier 1/2, 1x A10G, 32 GiB RAM) and 12xlarge (Tier 3, 4x A10G)
+        # g5.2xlarge gives enough CPU RAM for model weight spill during loading
         - key: eks.amazonaws.com/instance-size
           operator: In
           values:
-            - xlarge
             - 2xlarge
             - 12xlarge
         # NVIDIA GPUs only
