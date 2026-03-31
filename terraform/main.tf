@@ -470,8 +470,8 @@ module "observability" {
   eks_oidc_issuer_url      = module.eks.oidc_issuer_url
 
   # AMP integration: Prometheus remote-writes all metrics to AMP for AMG to read
-  amp_remote_write_endpoint = module.managed_grafana.amp_remote_write_endpoint
-  amp_remote_write_role_arn = module.managed_grafana.prometheus_remote_write_role_arn
+  amp_remote_write_endpoint = var.enable_managed_grafana ? module.managed_grafana[0].amp_remote_write_endpoint : ""
+  amp_remote_write_role_arn = var.enable_managed_grafana ? module.managed_grafana[0].prometheus_remote_write_role_arn : ""
 
   # Alert notifications: Alertmanager → SNS → email
   alert_email = var.alert_email
@@ -488,12 +488,12 @@ module "observability" {
 # ==============================================================================
 # AWS MANAGED GRAFANA (AMG + AMP — SSO via IAM Identity Center)
 # ==============================================================================
-# Prerequisites: IAM Identity Center (AWS SSO) must be enabled in the account.
-# AMG reads from AMP (Prometheus metrics) + CloudWatch (FinOps, API Gateway).
-# Dashboard JSON files in terraform/modules/observability/dashboards/ — import into AMG.
+# Disabled by default ($9/editor/month). Uses in-cluster Grafana instead.
+# To re-enable AMG: set enable_managed_grafana = true in terraform.tfvars
 
 module "managed_grafana" {
   source = "./modules/managed-grafana"
+  count  = var.enable_managed_grafana ? 1 : 0
 
   project_name          = var.project_name
   eks_oidc_provider_arn = module.eks.oidc_provider_arn

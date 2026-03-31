@@ -922,43 +922,36 @@ wire_nlb_to_terraform() {
 }
 
 # ==============================================================================
-# Phase 3c: Setup AWS Managed Grafana (dashboards + data sources)
+# Phase 3c: Setup Grafana dashboards
 # ==============================================================================
 setup_grafana_dashboards() {
     step "Phase 3c: Setting up Grafana dashboards"
 
-    # Discover workspace name from Terraform output instead of hardcoding
-    local workspace_name
-    workspace_name=$(cd "$TERRAFORM_DIR" && terraform output -raw managed_grafana_workspace_name 2>/dev/null || echo "")
+    # Check if AMG is enabled (enable_managed_grafana in tfvars)
+    local amg_enabled
+    amg_enabled=$(grep '^enable_managed_grafana' "$TERRAFORM_DIR/terraform.tfvars" 2>/dev/null | sed 's/.*= *//' | tr -d ' ' || echo "false")
 
-    if [[ -z "$workspace_name" ]]; then
-        # Fallback: check for any workspace
-        workspace_name="ollama-grafana"
-    fi
+    if [[ "$amg_enabled" == "true" ]]; then
+        # AMG mode — run setup-amg.sh
+        local workspace_name
+        workspace_name=$(cd "$TERRAFORM_DIR" && terraform output -raw managed_grafana_workspace_name 2>/dev/null || echo "ollama-grafana")
 
-    # Check if AMG workspace exists (requires IAM Identity Center)
-    local amg_status
-    amg_status=$(aws grafana list-workspaces --region "$REGION" \
-        --query "workspaces[?name==\`${workspace_name}\`].status" --output text 2>/dev/null || echo "")
+        local amg_status
+        amg_status=$(aws grafana list-workspaces --region "$REGION" \
+            --query "workspaces[?name==\`${workspace_name}\`].status" --output text 2>/dev/null || echo "")
 
-    if [[ -z "$amg_status" || "$amg_status" == "None" ]]; then
-        warn "AMG workspace '${workspace_name}' not found — IAM Identity Center may not be enabled"
-        warn "Enable IAM Identity Center, then run: ./scripts/setup-amg.sh"
-        return
-    fi
-
-    if [[ "$amg_status" != "ACTIVE" ]]; then
-        warn "AMG workspace status: ${amg_status} (expected ACTIVE) — skipping dashboard setup"
-        warn "Run manually once active: ./scripts/setup-amg.sh"
-        return
-    fi
-
-    if [[ -x "${SCRIPT_DIR}/setup-amg.sh" ]]; then
-        log "Running setup-amg.sh (creates data sources + imports 4 dashboards)..."
-        "${SCRIPT_DIR}/setup-amg.sh" || warn "Grafana setup had errors — run manually: ./scripts/setup-amg.sh"
+        if [[ "$amg_status" == "ACTIVE" ]] && [[ -x "${SCRIPT_DIR}/setup-amg.sh" ]]; then
+            log "Running setup-amg.sh (AMG data sources + dashboards)..."
+            "${SCRIPT_DIR}/setup-amg.sh" || warn "AMG setup had errors — run manually: ./scripts/setup-amg.sh"
+        else
+            warn "AMG workspace not ACTIVE (status: ${amg_status:-not found}) — skipping"
+        fi
     else
-        warn "setup-amg.sh not found or not executable — skipping Grafana dashboard setup"
-        warn "Run manually after deploy: ./scripts/setup-amg.sh"
+        # In-cluster Grafana mode — dashboards auto-discovered via sidecar
+        log "Using in-cluster Grafana (AMG disabled)"
+        log "Dashboards auto-discovered via ConfigMap sidecar"
+        log "Access: kubectl port-forward svc/kube-prometheus-stack-grafana -n monitoring 3000:80"
+        log "Login: admin / ollama-grafana-admin"
     fi
 }
 
