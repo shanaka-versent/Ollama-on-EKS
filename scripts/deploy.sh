@@ -421,8 +421,8 @@ for sid in ids:
 
     cd "$REPO_DIR"
 
-    # Patch both NodeClass files
-    for ncfile in k8s/nodepools/gpu-nodeclass.yaml k8s/nodepools/system-nodeclass.yaml; do
+    # Patch custom NodeClass files (app + GPU)
+    for ncfile in k8s/nodepools/gpu-nodeclass.yaml k8s/nodepools/app-nodeclass.yaml; do
         if [[ ! -f "$ncfile" ]]; then
             warn "NodeClass file not found: $ncfile"
             continue
@@ -468,66 +468,54 @@ with open('${ncfile}', 'w') as f:
     log "Applying custom NodePool/NodeClass to cluster (before ArgoCD)..."
 
     # Apply NodeClasses first (NodePools reference them)
-    kubectl apply -f k8s/nodepools/system-nodeclass.yaml
+    kubectl apply -f k8s/nodepools/app-nodeclass.yaml
     kubectl apply -f k8s/nodepools/gpu-nodeclass.yaml
     # Apply NodePools
-    kubectl apply -f k8s/nodepools/system-nodepool.yaml
+    kubectl apply -f k8s/nodepools/app-nodepool.yaml
     kubectl apply -f k8s/nodepools/gpu-nodepool.yaml
 
-    log "Custom NodePools applied — Karpenter will provision t3.xlarge nodes"
+    log "Custom NodePools applied (app + GPU) — built-in system pool handles infra"
 
-    # --- Step 4: Wait for at least one system node (t3.xlarge) ---
+    # --- Step 4: Wait for at least one node to be Ready ---
+    # Built-in EKS Auto Mode "system" pool provisions c6g.large Graviton nodes
+    # for infrastructure workloads. No custom system pool needed.
     echo ""
-    log "Waiting for system node (t3.xlarge) to be Ready..."
+    log "Waiting for a system node to be Ready..."
     local max_wait=300
     local interval=15
     local waited=0
 
     while [[ $waited -lt $max_wait ]]; do
-        local system_nodes
-        system_nodes=$(kubectl get nodes -l workload-type=system --no-headers 2>/dev/null | grep -c "Ready" || true)
-        system_nodes="${system_nodes:-0}"
+        local ready_nodes
+        ready_nodes=$(kubectl get nodes --no-headers 2>/dev/null | grep -c "Ready" || true)
+        ready_nodes="${ready_nodes:-0}"
 
-        if [[ "$system_nodes" -ge 1 ]]; then
-            log "System node ready (t3.xlarge)"
+        if [[ "$ready_nodes" -ge 1 ]]; then
+            log "Node(s) ready"
             kubectl get nodes -o wide 2>/dev/null | head -5
             break
         fi
 
-        echo -e "  ${DIM}[${waited}s] Waiting for t3.xlarge system node...${NC}"
+        echo -e "  ${DIM}[${waited}s] Waiting for node to be Ready...${NC}"
         sleep "$interval"
         waited=$((waited + interval))
     done
 
     if [[ "$waited" -ge "$max_wait" ]]; then
-        warn "System node not ready after ${max_wait}s — check NodePool/NodeClass status:"
+        warn "No nodes ready after ${max_wait}s — check NodePool/NodeClass status:"
         warn "  kubectl get nodepools,nodeclasses"
-        warn "  kubectl describe nodeclass system-x86"
+        warn "  kubectl describe nodeclass app"
     fi
 
-    # --- Step 4b: Neuter built-in "system" NodePool to prevent c6g.large provisioning ---
-    # EKS Auto Mode REQUIRES node_pools=["system"] when nodeRoleArn is set (API rejects []).
-    # The built-in pool provisions c6g.large Graviton instances we don't want.
-    # Solution: patch limits to 0 CPU / 0 memory — pool exists (satisfies EKS) but can never
-    # provision nodes. EKS does NOT revert this patch. Deleting the pool doesn't work because
-    # EKS Auto Mode reconciler recreates it.
-    if kubectl get nodepool system &>/dev/null; then
-        log "Patching built-in 'system' NodePool limits to 0 — prevents c6g.large provisioning"
-        kubectl patch nodepool system --type=merge -p '{"spec":{"limits":{"cpu":"0","memory":"0"}}}'
-        # Also delete any existing NodeClaims from the built-in pool
-        for nc in $(kubectl get nodeclaims -l karpenter.sh/nodepool=system -o name 2>/dev/null); do
-            log "Deleting built-in NodeClaim: $nc"
-            kubectl delete "$nc" --wait=false
-        done
-        log "Built-in pool neutered — only custom system-x86 (t3.xlarge) can provision nodes"
-    fi
+    # Built-in EKS Auto Mode "system" pool handles infra (CoreDNS, Istio, etc.).
+    # Custom "app" pool handles Open WebUI. No custom system pool needed.
 
     # --- Step 5: Commit + push to main for ArgoCD ---
     if git diff --quiet k8s/nodepools/ 2>/dev/null; then
         log "NodeClass files unchanged — no commit needed"
     else
         log "Committing NodeClass updates..."
-        git add k8s/nodepools/gpu-nodeclass.yaml k8s/nodepools/system-nodeclass.yaml
+        git add k8s/nodepools/gpu-nodeclass.yaml k8s/nodepools/app-nodeclass.yaml
 
         local current_branch
         current_branch=$(git rev-parse --abbrev-ref HEAD)
@@ -695,7 +683,7 @@ setup_cluster() {
 
     # Wait for ArgoCD to sync
     log "ArgoCD deploys in wave order: Istio → Namespaces → Storage → Ollama → Gateway"
-    log "System nodes (t3.xlarge) are already running — ArgoCD will schedule immediately"
+    log "System nodes are running — ArgoCD will schedule immediately"
 
     local max_wait=900
     local interval=20
@@ -747,11 +735,11 @@ setup_cluster() {
     log "ArgoCD application status:"
     kubectl get applications -n argocd 2>/dev/null || true
 
-    # --- Start Ollama + preload model ---
-    # KEDA starts with 0 replicas. We need to pause KEDA, scale up Ollama,
-    # wait for the model to load, then unpause KEDA (45-min idle window starts).
+    # --- Start Ollama (don't wait for model loading here) ---
+    # Kick off GPU provisioning + model loading. NLB wiring runs in parallel
+    # (Phase 3b) while the model loads — saves ~10 min vs sequential.
     echo ""
-    log "Starting Ollama and preloading model..."
+    log "Starting Ollama (GPU provisioning + model loading runs in parallel with NLB wiring)..."
 
     # Pause KEDA to prevent it from killing the pod before model loads
     kubectl annotate scaledobject ollama-autoscaler -n ollama \
@@ -759,8 +747,16 @@ setup_cluster() {
 
     # Scale Ollama to 1
     kubectl scale deployment ollama -n ollama --replicas=1 2>/dev/null || true
+    log "Ollama scaled to 1 — GPU node provisioning started"
+}
 
-    # Wait for Ollama pod to be ready (startup probe: model loading ~2-5 min)
+# ==============================================================================
+# Phase 3c: Wait for Ollama model loading + unpause KEDA
+# ==============================================================================
+# Called AFTER NLB wiring (Phase 3b) so model loading and NLB wiring are parallel.
+wait_for_ollama_ready() {
+    step "Phase 3c: Waiting for Ollama model loading"
+
     log "Waiting for Ollama to be ready (GPU provisioning + model loading)..."
     local ollama_ready=0
     local ollama_wait=0
@@ -781,11 +777,10 @@ setup_cluster() {
     done
 
     if [[ "$ollama_ready" -ge 1 ]]; then
-        # Preload model — triggers model-loader job or pulls directly
-        log "Preloading model: ${MODEL}..."
-        kubectl exec -n open-webui deploy/open-webui -- \
-            curl -sf --max-time 30 \
-            "http://ollama.ollama.svc.cluster.local:11434/api/tags" 2>/dev/null | head -1 || true
+        # Verify model is accessible
+        log "Verifying model availability..."
+        kubectl exec -n ollama deploy/ollama -- \
+            curl -sf --max-time 30 "http://localhost:11434/api/tags" 2>/dev/null | head -1 || true
 
         # Unpause KEDA — 45-min idle window starts now
         kubectl annotate scaledobject ollama-autoscaler -n ollama \
@@ -1113,7 +1108,8 @@ fi
 
 setup_argocd_repo_credentials
 handle_model_snapshot
-setup_cluster
-wire_nlb_to_terraform
+setup_cluster              # Waits for ArgoCD waves, kicks off Ollama (doesn't wait for model)
+wire_nlb_to_terraform      # NLB wiring runs while GPU node provisions + model loads (~10 min saved)
+wait_for_ollama_ready      # Now wait for model loading + unpause KEDA
 setup_grafana_dashboards
 verify_deployment

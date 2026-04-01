@@ -1,0 +1,71 @@
+# App NodePool for Application Workloads (EKS Auto Mode)
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# Dedicated to user-facing applications: Open WebUI, future app workloads.
+# Isolated from infrastructure (system pool) and GPU (gpu-ollama pool) via
+# taint workload-type=app:NoSchedule — only pods with matching toleration
+# can schedule here.
+#
+# Graviton ARM64 (c6g.xlarge) — Open WebUI multi-arch image supports ARM64.
+# On-demand ONLY — user-facing apps need consistent availability.
+#
+# Cost: ~$50/mo (1x c6g.xlarge on-demand, always-on while WebUI is running)
+#
+# Instance sizing:
+#   c6g.xlarge — 4 vCPU / 8 GiB — fits Open WebUI with room to spare
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: app
+spec:
+  # Weight 50 — lower priority than system (100), higher than GPU
+  weight: 50
+  template:
+    metadata:
+      labels:
+        workload-type: app
+    spec:
+      nodeClassRef:
+        group: eks.amazonaws.com
+        kind: NodeClass
+        name: app
+      requirements:
+        # c6g family — Graviton ARM64, cost-effective
+        - key: eks.amazonaws.com/instance-family
+          operator: In
+          values: ["c6g"]
+        # xlarge ONLY — fits Open WebUI + headroom
+        - key: eks.amazonaws.com/instance-size
+          operator: In
+          values:
+            - xlarge
+        # ARM64 (Graviton)
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["arm64"]
+        # On-demand ONLY — user-facing apps need consistent availability
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values:
+            - on-demand
+        # Single AZ — co-locate with system nodes
+        - key: topology.kubernetes.io/zone
+          operator: In
+          values:
+            - ap-southeast-2a
+      # Taint — only app pods with matching toleration schedule here
+      taints:
+        - key: workload-type
+          value: app
+          effect: NoSchedule
+      expireAfter: 336h
+  # Resource limits — up to 4x c6g.xlarge nodes
+  limits:
+    cpu: "16"
+    memory: 64Gi
+  # Disruption — consolidate underutilized nodes after 5 min
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 5m
+    budgets:
+      - nodes: "100%"

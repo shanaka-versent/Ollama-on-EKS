@@ -1,9 +1,11 @@
 # Base kustomization for NodePools
-# Both system and GPU NodePools + NodeClasses
+# Built-in EKS Auto Mode "system" pool handles infra (CoreDNS, Istio, ArgoCD, Prometheus)
+# Custom "app" pool isolates Open WebUI on dedicated Graviton nodes
+# Custom "gpu-ollama" pool for Ollama inference on g5 spot instances
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - system-nodepool.yaml
-  - system-nodeclass.yaml
+  - app-nodepool.yaml
+  - app-nodeclass.yaml
   - gpu-nodepool.yaml
   - gpu-nodeclass.yaml
