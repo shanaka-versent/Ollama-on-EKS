@@ -683,7 +683,7 @@ setup_cluster() {
 
     # Wait for ArgoCD to sync
     log "ArgoCD deploys in wave order: Istio → Namespaces → Storage → Ollama → Gateway"
-    log "System nodes (t3.xlarge) are already running — ArgoCD will schedule immediately"
+    log "System nodes are running — ArgoCD will schedule immediately"
 
     local max_wait=900
     local interval=20
@@ -735,11 +735,11 @@ setup_cluster() {
     log "ArgoCD application status:"
     kubectl get applications -n argocd 2>/dev/null || true
 
-    # --- Start Ollama + preload model ---
-    # KEDA starts with 0 replicas. We need to pause KEDA, scale up Ollama,
-    # wait for the model to load, then unpause KEDA (45-min idle window starts).
+    # --- Start Ollama (don't wait for model loading here) ---
+    # Kick off GPU provisioning + model loading. NLB wiring runs in parallel
+    # (Phase 3b) while the model loads — saves ~10 min vs sequential.
     echo ""
-    log "Starting Ollama and preloading model..."
+    log "Starting Ollama (GPU provisioning + model loading runs in parallel with NLB wiring)..."
 
     # Pause KEDA to prevent it from killing the pod before model loads
     kubectl annotate scaledobject ollama-autoscaler -n ollama \
@@ -747,8 +747,16 @@ setup_cluster() {
 
     # Scale Ollama to 1
     kubectl scale deployment ollama -n ollama --replicas=1 2>/dev/null || true
+    log "Ollama scaled to 1 — GPU node provisioning started"
+}
 
-    # Wait for Ollama pod to be ready (startup probe: model loading ~2-5 min)
+# ==============================================================================
+# Phase 3c: Wait for Ollama model loading + unpause KEDA
+# ==============================================================================
+# Called AFTER NLB wiring (Phase 3b) so model loading and NLB wiring are parallel.
+wait_for_ollama_ready() {
+    step "Phase 3c: Waiting for Ollama model loading"
+
     log "Waiting for Ollama to be ready (GPU provisioning + model loading)..."
     local ollama_ready=0
     local ollama_wait=0
@@ -769,11 +777,10 @@ setup_cluster() {
     done
 
     if [[ "$ollama_ready" -ge 1 ]]; then
-        # Preload model — triggers model-loader job or pulls directly
-        log "Preloading model: ${MODEL}..."
-        kubectl exec -n open-webui deploy/open-webui -- \
-            curl -sf --max-time 30 \
-            "http://ollama.ollama.svc.cluster.local:11434/api/tags" 2>/dev/null | head -1 || true
+        # Verify model is accessible
+        log "Verifying model availability..."
+        kubectl exec -n ollama deploy/ollama -- \
+            curl -sf --max-time 30 "http://localhost:11434/api/tags" 2>/dev/null | head -1 || true
 
         # Unpause KEDA — 45-min idle window starts now
         kubectl annotate scaledobject ollama-autoscaler -n ollama \
@@ -1101,7 +1108,8 @@ fi
 
 setup_argocd_repo_credentials
 handle_model_snapshot
-setup_cluster
-wire_nlb_to_terraform
+setup_cluster              # Waits for ArgoCD waves, kicks off Ollama (doesn't wait for model)
+wire_nlb_to_terraform      # NLB wiring runs while GPU node provisions + model loads (~10 min saved)
+wait_for_ollama_ready      # Now wait for model loading + unpause KEDA
 setup_grafana_dashboards
 verify_deployment
