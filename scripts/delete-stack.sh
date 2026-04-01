@@ -387,6 +387,92 @@ json.dump(c, sys.stdout)
         fi
     done
 
+    # Delete CloudFront VPC Origins (they hold VPC Endpoint Services that block NLB deletion)
+    log "  Deleting CloudFront VPC Origins..."
+    local vpc_origins
+    vpc_origins=$(aws cloudfront list-vpc-origins \
+        --query "VpcOriginList.Items[?contains(Name, 'ollama')].Id" \
+        --output text 2>/dev/null || echo "")
+
+    # Fallback: list all VPC Origins if name filter misses
+    if [ -z "$vpc_origins" ]; then
+        vpc_origins=$(aws cloudfront list-vpc-origins \
+            --query "VpcOriginList.Items[].Id" \
+            --output text 2>/dev/null || echo "")
+        # Filter to only origins pointing at our NLB ARN prefix
+        local filtered_origins=""
+        for vo_id in $vpc_origins; do
+            local vo_arn
+            vo_arn=$(aws cloudfront get-vpc-origin --id "$vo_id" \
+                --query "VpcOrigin.VpcOriginEndpointConfig.Arn" --output text 2>/dev/null || echo "")
+            if echo "$vo_arn" | grep -q "${ACCOUNT_ID}"; then
+                filtered_origins="${filtered_origins} ${vo_id}"
+            fi
+        done
+        vpc_origins=$(echo "$filtered_origins" | xargs)
+    fi
+
+    for vo_id in $vpc_origins; do
+        if [ -n "$vo_id" ]; then
+            log "    Deleting VPC Origin: ${vo_id}"
+            local vo_etag
+            vo_etag=$(aws cloudfront get-vpc-origin --id "$vo_id" \
+                --query 'ETag' --output text 2>/dev/null || echo "")
+            if [ -n "$vo_etag" ]; then
+                aws cloudfront delete-vpc-origin --id "$vo_id" \
+                    --if-match "$vo_etag" >> "$LOG_FILE" 2>&1 || true
+            fi
+        fi
+    done
+
+    # Wait for VPC Origins to finish deleting (they transition through Deploying state)
+    if [ -n "$vpc_origins" ]; then
+        local vo_wait=0
+        while [ $vo_wait -lt 120 ]; do
+            local remaining
+            remaining=$(aws cloudfront list-vpc-origins \
+                --query "length(VpcOriginList.Items[?contains(Name, 'ollama')])" \
+                --output text 2>/dev/null || echo "0")
+            if [ "$remaining" = "0" ] || [ -z "$remaining" ]; then
+                break
+            fi
+            sleep 15
+            vo_wait=$((vo_wait + 15))
+            echo -e "  ${DIM}[${vo_wait}s] Waiting for VPC Origins to delete...${NC}"
+        done
+        log "  VPC Origins deleted"
+    else
+        log "  No CloudFront VPC Origins found"
+    fi
+
+    # Delete VPC Endpoint Services created by VPC Origins (they block NLB deletion)
+    # Only target services whose NLB ARN contains our cluster name pattern
+    log "  Cleaning up VPC Endpoint Services..."
+    local vpce_svcs
+    vpce_svcs=$(aws ec2 describe-vpc-endpoint-service-configurations --region "$REGION" \
+        --query "ServiceConfigurations[?contains(to_string(NetworkLoadBalancerArns), 'k8s-istioing') || contains(to_string(NetworkLoadBalancerArns), 'ollama')].ServiceId" \
+        --output text 2>/dev/null || echo "")
+
+    for svc_id in $vpce_svcs; do
+        if [ -n "$svc_id" ]; then
+            # Reject any active connections first
+            local endpoints
+            endpoints=$(aws ec2 describe-vpc-endpoint-connections --region "$REGION" \
+                --filters "Name=service-id,Values=${svc_id}" \
+                --query "VpcEndpointConnections[?VpcEndpointState=='available'].VpcEndpointId" \
+                --output text 2>/dev/null || echo "")
+            if [ -n "$endpoints" ]; then
+                log "    Rejecting connections for ${svc_id}..."
+                aws ec2 reject-vpc-endpoint-connections --region "$REGION" \
+                    --service-id "$svc_id" --vpc-endpoint-ids $endpoints >> "$LOG_FILE" 2>&1 || true
+                sleep 5
+            fi
+            log "    Deleting VPC Endpoint Service: ${svc_id}"
+            aws ec2 delete-vpc-endpoint-service-configurations --region "$REGION" \
+                --service-ids "$svc_id" >> "$LOG_FILE" 2>&1 || true
+        fi
+    done
+
     # Clean up CloudFront VPC Origin ENIs (may linger after distribution deletion)
     if [ -n "$VPC_ID" ]; then
         log "  Cleaning up CloudFront VPC Origin ENIs..."
