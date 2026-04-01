@@ -1273,14 +1273,26 @@ resource "aws_api_gateway_deployment" "portal" {
   ]
 }
 
-# Point the existing prod stage to this new deployment
+# Point the existing prod stage to this new deployment (create if first apply)
 resource "null_resource" "update_stage" {
   triggers = {
     deployment_id = aws_api_gateway_deployment.portal.id
   }
 
   provisioner "local-exec" {
-    command = "aws apigateway update-stage --rest-api-id ${var.rest_api_id} --stage-name prod --patch-operations op=replace,path=/deploymentId,value=${aws_api_gateway_deployment.portal.id} --region ${var.region}"
+    command = <<-EOT
+      # Try to update existing stage first; create it if it doesn't exist
+      aws apigateway update-stage \
+        --rest-api-id ${var.rest_api_id} \
+        --stage-name prod \
+        --patch-operations op=replace,path=/deploymentId,value=${aws_api_gateway_deployment.portal.id} \
+        --region ${var.region} 2>/dev/null || \
+      aws apigateway create-stage \
+        --rest-api-id ${var.rest_api_id} \
+        --stage-name prod \
+        --deployment-id ${aws_api_gateway_deployment.portal.id} \
+        --region ${var.region}
+    EOT
   }
 }
 
