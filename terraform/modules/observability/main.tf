@@ -19,10 +19,17 @@ resource "helm_release" "kube_prometheus_stack" {
     alertmanager_sns_role_arn     = var.alert_email != "" ? aws_iam_role.alertmanager_sns[0].arn : ""
   })]
 
-  # Wait for CRDs to be ready before DCGM exporter creates ServiceMonitors
-  # 15 min — EKS API server may be unstable on first apply, CRDs take time
-  wait    = true
-  timeout = 900
+  # Resilience settings for zero-touch deploys:
+  # - atomic: rolls back on failure (no orphaned releases blocking retries)
+  # - cleanup_on_fail: removes resources created during failed install
+  # - replace: if release exists but is in failed state, replace it
+  # - force_update: forces resource update through delete/recreate if needed
+  wait             = true
+  timeout          = 900
+  atomic           = true
+  cleanup_on_fail  = true
+  replace          = true
+  force_update     = true
 }
 
 # ──────────────────────────────────────────────────────────────────────
