@@ -576,19 +576,23 @@ module "cognito" {
   tags               = var.tags
 }
 
-# Ensure open-webui namespace exists before creating the secret.
-# ArgoCD creates it at wave 1, but Terraform may race ahead.
-resource "kubernetes_namespace" "open_webui" {
-  metadata {
-    name = "open-webui"
-    labels = {
-      "istio.io/dataplane-mode" = "ambient"
-    }
+# Wait for open-webui namespace to exist (created by ArgoCD wave 1).
+# Terraform can't create it because ArgoCD may have already created it,
+# and kubernetes_namespace fails with "already exists" on re-apply.
+resource "null_resource" "wait_for_open_webui_ns" {
+  provisioner "local-exec" {
+    command = <<-EOT
+      for i in $(seq 1 60); do
+        kubectl get namespace open-webui >/dev/null 2>&1 && exit 0
+        echo "Waiting for open-webui namespace... ($i/60)"
+        sleep 5
+      done
+      echo "WARNING: open-webui namespace not found after 5 min — creating it"
+      kubectl create namespace open-webui --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
+    EOT
   }
 
-  lifecycle {
-    ignore_changes = [metadata]
-  }
+  depends_on = [module.argocd]
 }
 
 # Kubernetes Secret for Open WebUI OAuth credentials
@@ -628,7 +632,7 @@ resource "kubernetes_secret" "webui_oauth" {
     ])
   }
 
-  depends_on = [kubernetes_namespace.open_webui, module.cognito, module.argocd]
+  depends_on = [null_resource.wait_for_open_webui_ns, module.cognito, module.argocd]
 }
 
 # ==============================================================================
