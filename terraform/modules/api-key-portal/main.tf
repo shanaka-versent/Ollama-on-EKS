@@ -1543,7 +1543,10 @@ resource "aws_api_gateway_integration_response" "gpu_status_options" {
     "method.response.header.Access-Control-Allow-Methods" = "'GET,OPTIONS'"
     "method.response.header.Access-Control-Allow-Origin"  = "'*'"
   }
-  depends_on = [aws_api_gateway_integration.gpu_status_options]
+  depends_on = [
+    aws_api_gateway_integration.gpu_status_options,
+    aws_api_gateway_method_response.gpu_status_options,
+  ]
 }
 
 resource "aws_api_gateway_method" "gpu_start_options" {
@@ -1584,7 +1587,10 @@ resource "aws_api_gateway_integration_response" "gpu_start_options" {
     "method.response.header.Access-Control-Allow-Methods" = "'POST,OPTIONS'"
     "method.response.header.Access-Control-Allow-Origin"  = "'*'"
   }
-  depends_on = [aws_api_gateway_integration.gpu_start_options]
+  depends_on = [
+    aws_api_gateway_integration.gpu_start_options,
+    aws_api_gateway_method_response.gpu_start_options,
+  ]
 }
 
 resource "aws_api_gateway_method" "gpu_stop_options" {
@@ -1625,5 +1631,8 @@ resource "aws_api_gateway_integration_response" "gpu_stop_options" {
     "method.response.header.Access-Control-Allow-Methods" = "'POST,OPTIONS'"
     "method.response.header.Access-Control-Allow-Origin"  = "'*'"
   }
-  depends_on = [aws_api_gateway_integration.gpu_stop_options]
+  depends_on = [
+    aws_api_gateway_integration.gpu_stop_options,
+    aws_api_gateway_method_response.gpu_stop_options,
+  ]
 }
