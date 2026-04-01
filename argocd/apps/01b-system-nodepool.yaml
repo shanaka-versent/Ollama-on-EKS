@@ -1,6 +1,8 @@
-# Wave 1: System + GPU NodePools
-# Deploys custom Karpenter NodePools and NodeClasses for system (t3.xlarge on-demand)
-# and GPU (g5 spot, flex ceiling allows xlarge + 12xlarge) workloads.
+# Wave 1: App + GPU NodePools
+# Built-in EKS Auto Mode "system" pool handles infra (c6g.large Graviton).
+# Custom NodePools deployed here:
+#   app: c6g.xlarge Graviton (user-facing: Open WebUI)
+#   gpu-ollama: g5 spot (flex: 2xlarge + 12xlarge) for Ollama inference
 # Must run early (wave 1) so nodes are available before workloads in wave 2+.
 apiVersion: argoproj.io/v1alpha1
 kind: Application

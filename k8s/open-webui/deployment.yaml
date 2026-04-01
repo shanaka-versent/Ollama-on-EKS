@@ -29,10 +29,13 @@ spec:
       labels:
         app: open-webui
     spec:
-      # Run on system nodes (no GPU needed)
+      # Run on dedicated app NodePool (c6g.xlarge Graviton ARM64)
       nodeSelector:
-        kubernetes.io/arch: amd64
+        workload-type: app
       tolerations:
+        - key: workload-type
+          value: app
+          effect: NoSchedule
         - key: CriticalAddonsOnly
           operator: Exists
       # Security: hardened root — Open WebUI image requires UID 0 for
