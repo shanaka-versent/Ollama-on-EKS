@@ -12,12 +12,12 @@ spec:
   role: role-eks-node-ollama-dev
   # Subnets — private subnets (same as system)
   subnetSelectorTerms:
-    - id: subnet-0eec560521e6bb2b8
-    - id: subnet-00720d00eb3546f68
-    - id: subnet-0d89982ea1055d69f
+    - id: subnet-09688650a8e507fb6
+    - id: subnet-01edf0fcc664ca78b
+    - id: subnet-0202b06f418e97ac1
   # Security group
   securityGroupSelectorTerms:
-    - id: sg-0ab2140351647678c
+    - id: sg-009a5c25e22a455dc
   # Ephemeral storage — 40Gi for WebUI data, logs, temp files
   ephemeralStorage:
     size: 40Gi
