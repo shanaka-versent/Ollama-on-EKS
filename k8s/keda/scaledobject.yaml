@@ -25,6 +25,11 @@ kind: ScaledObject
 metadata:
   name: ollama-autoscaler
   namespace: ollama
+  annotations:
+    # Default unpaused. deploy.sh and scale-up.sh set to "true" at runtime.
+    # ArgoCD ignoreDifferences + RespectIgnoreDifferences prevents selfHeal
+    # from reverting runtime changes to this annotation.
+    autoscaling.keda.sh/paused: "0"
 spec:
   scaleTargetRef:
     name: ollama
