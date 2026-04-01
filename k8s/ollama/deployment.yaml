@@ -143,7 +143,6 @@ spec:
                 resources:
                   requests:
                     storage: 200Gi
-                dataSource:
-                  name: ollama-models-snapshot
-                  kind: VolumeSnapshot
-                  apiGroup: snapshot.storage.k8s.io
+                # dataSource removed — snapshot not available on fresh deploy
+                # To restore fast cold starts, run: ./scripts/create-model-snapshot.sh
+                # Then uncomment: dataSource: {name: ollama-models-snapshot, kind: VolumeSnapshot, apiGroup: snapshot.storage.k8s.io}

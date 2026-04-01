@@ -643,36 +643,46 @@ handle_model_snapshot() {
     fi
 
     warn "Snapshot ${snapshot_id} not found (state: ${snap_state})"
-    warn "Patching Ollama deployment to skip snapshot — model-loader will pull from internet"
+    warn "Removing dataSource from deployment YAML — model-loader will pull from internet"
     warn "To restore fast cold starts, run: ./scripts/create-model-snapshot.sh"
 
-    # Wait for ArgoCD to create the Ollama deployment before patching
-    local max_wait=300
-    local interval=10
-    local waited=0
-    while [[ $waited -lt $max_wait ]]; do
-        if kubectl get deployment ollama -n ollama &>/dev/null; then
-            break
+    # Remove dataSource block from the deployment YAML in git
+    # ArgoCD selfHeal=true reverts kubectl patches, so we must change the source
+    local deploy_file="${REPO_DIR}/k8s/ollama/deployment.yaml"
+    if grep -q 'dataSource:' "$deploy_file" 2>/dev/null; then
+        # Remove the dataSource block (3-4 lines: dataSource:, name:, kind:, apiGroup:)
+        python3 -c "
+import re
+with open('${deploy_file}', 'r') as f:
+    content = f.read()
+# Remove dataSource block (indented under volumeClaimTemplate spec)
+content = re.sub(
+    r'\n\s+dataSource:\n\s+name: ollama-models-snapshot\n\s+kind: VolumeSnapshot\n\s+apiGroup: snapshot\.storage\.k8s\.io',
+    '',
+    content
+)
+with open('${deploy_file}', 'w') as f:
+    f.write(content)
+"
+        log "dataSource removed from ${deploy_file}"
+
+        # Commit and push so ArgoCD picks up the change
+        cd "$REPO_DIR"
+        git add "$deploy_file"
+        if ! git diff --cached --quiet; then
+            git commit -m "fix: remove snapshot dataSource — not available on fresh deploy"
+            git push origin main 2>/dev/null || warn "Could not push — ArgoCD will sync on next push"
         fi
-        echo -e "  ${DIM}[${waited}s] Waiting for Ollama deployment to be created by ArgoCD...${NC}"
-        sleep "$interval"
-        waited=$((waited + interval))
-    done
-
-    if ! kubectl get deployment ollama -n ollama &>/dev/null; then
-        warn "Ollama deployment not found — snapshot patching deferred"
-        return
+        cd "$TERRAFORM_DIR"
+    else
+        log "dataSource already removed from deployment YAML"
     fi
-
-    # Remove dataSource from ephemeral volume (uses blank EBS instead)
-    kubectl patch deployment ollama -n ollama --type=json \
-        -p='[{"op": "remove", "path": "/spec/template/spec/volumes/1/ephemeral/volumeClaimTemplate/spec/dataSource"}]' 2>/dev/null || true
 
     # Also remove the VolumeSnapshot/Content/Class if they reference a missing snapshot
     kubectl delete volumesnapshot ollama-models-snapshot -n ollama 2>/dev/null || true
     kubectl delete volumesnapshotcontent ollama-models-snapshot-content 2>/dev/null || true
 
-    log "Ollama patched — will use blank volume + model-loader pull"
+    log "Snapshot cleanup complete — model-loader will pull from internet"
 }
 
 # ==============================================================================
