@@ -308,13 +308,13 @@ deploy_infrastructure() {
         log "Applying Terraform plan (attempt ${apply_attempt}/${apply_max})..."
 
         if [[ -f tfplan ]]; then
-            if terraform apply -input=false tfplan 2>&1 | tee /tmp/tf-apply.log; then
+            if terraform apply -input=false -parallelism=30 tfplan 2>&1 | tee /tmp/tf-apply.log; then
                 rm -f tfplan
                 break
             fi
         else
             # Retry without saved plan (plan was consumed by first attempt)
-            if terraform apply -auto-approve -input=false 2>&1 | tee /tmp/tf-apply.log; then
+            if terraform apply -auto-approve -input=false -parallelism=30 2>&1 | tee /tmp/tf-apply.log; then
                 break
             fi
         fi

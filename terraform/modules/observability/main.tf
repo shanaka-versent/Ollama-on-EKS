@@ -19,17 +19,15 @@ resource "helm_release" "kube_prometheus_stack" {
     alertmanager_sns_role_arn     = var.alert_email != "" ? aws_iam_role.alertmanager_sns[0].arn : ""
   })]
 
-  # Resilience settings for zero-touch deploys:
-  # - atomic: rolls back on failure (no orphaned releases blocking retries)
-  # - cleanup_on_fail: removes resources created during failed install
-  # - replace: if release exists but is in failed state, replace it
-  # - force_update: forces resource update through delete/recreate if needed
-  wait             = true
-  timeout          = 900
-  atomic           = true
-  cleanup_on_fail  = true
+  # Don't wait for pods — saves ~10 min on fresh clusters.
+  # Prometheus/Alertmanager pods start in background; they'll be ready
+  # by the time ArgoCD finishes deploying Ollama + Gateway.
+  # deploy.sh self-healing handles orphaned releases on retry.
+  wait             = false
+  timeout          = 300
   replace          = true
   force_update     = true
+  cleanup_on_fail  = true
 }
 
 # ──────────────────────────────────────────────────────────────────────
