@@ -1031,6 +1031,16 @@ cleanup_orphaned_grafana_workspaces() {
 
     for ws_id in $workspace_ids; do
         if [ -n "$ws_id" ]; then
+            # Skip shared-infra managed workspaces (tagged ManagedBy=terraform-shared-infra)
+            local managed_by
+            managed_by=$(aws grafana list-tags-for-resource \
+                --resource-arn "arn:aws:grafana:${REGION}:${ACCOUNT_ID}:/workspaces/${ws_id}" \
+                --region "$REGION" \
+                --query "tags.ManagedBy" --output text 2>/dev/null || echo "")
+            if [ "$managed_by" = "terraform-shared-infra" ]; then
+                log "  Skipping shared workspace: ${ws_id} (managed by shared-infra)"
+                continue
+            fi
             log "  Deleting Grafana workspace: ${ws_id}"
             aws grafana delete-workspace --workspace-id "$ws_id" --region "$REGION" >> "$LOG_FILE" 2>&1 || true
         fi
