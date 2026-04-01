@@ -3,7 +3,7 @@
 
 output "api_endpoint" {
   description = "API Gateway invoke URL (stage endpoint)"
-  value       = aws_api_gateway_stage.prod.invoke_url
+  value       = "https://${aws_api_gateway_rest_api.ollama.id}.execute-api.${data.aws_region.current.name}.amazonaws.com/prod"
 }
 
 output "api_id" {
@@ -36,7 +36,7 @@ output "api_key_value" {
 
 output "usage_plan_id" {
   description = "Usage plan ID (for adding keys via Console)"
-  value       = var.api_key_required ? aws_api_gateway_usage_plan.standard[0].id : null
+  value       = var.api_key_required && local.nlb_available ? aws_api_gateway_usage_plan.standard[0].id : null
 }
 
 output "root_resource_id" {
