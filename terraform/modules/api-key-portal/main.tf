@@ -277,13 +277,20 @@ resource "aws_iam_role_policy" "key_manager" {
           "apigateway:PATCH",
           "apigateway:PUT",
         ]
-        Resource = [
-          "arn:aws:apigateway:${var.region}::/apikeys",
-          "arn:aws:apigateway:${var.region}::/apikeys/*",
-          "arn:aws:apigateway:${var.region}::/usageplans/${var.usage_plan_id}/keys",
-          "arn:aws:apigateway:${var.region}::/usageplans/${var.usage_plan_id}/keys/*",
-          "arn:aws:apigateway:${var.region}::/tags/*",
-        ]
+        Resource = concat(
+          [
+            "arn:aws:apigateway:${var.region}::/apikeys",
+            "arn:aws:apigateway:${var.region}::/apikeys/*",
+            "arn:aws:apigateway:${var.region}::/tags/*",
+          ],
+          var.usage_plan_id != null && var.usage_plan_id != "" ? [
+            "arn:aws:apigateway:${var.region}::/usageplans/${var.usage_plan_id}/keys",
+            "arn:aws:apigateway:${var.region}::/usageplans/${var.usage_plan_id}/keys/*",
+            ] : [
+            "arn:aws:apigateway:${var.region}::/usageplans/*/keys",
+            "arn:aws:apigateway:${var.region}::/usageplans/*/keys/*",
+          ]
+        )
       },
       {
         Effect = "Allow"
