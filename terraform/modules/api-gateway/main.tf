@@ -9,6 +9,8 @@
 # after the first terraform apply. Run terraform apply again after the NLB is up
 # to wire up the API Gateway routes.
 
+data "aws_region" "current" {}
+
 locals {
   nlb_available           = var.nlb_arn != ""
   origin_lockdown_enabled = var.enable_origin_lockdown
@@ -234,6 +236,10 @@ resource "aws_api_gateway_integration_response" "api_tags_503" {
 # ==============================================================================
 
 resource "aws_api_gateway_deployment" "ollama" {
+  # Skip deployment on first apply (NLB not yet available).
+  # The portal module has its own deployment that creates the stage.
+  # When NLB is wired in Phase 3b, terraform re-creates this with real integrations.
+  count       = local.nlb_available ? 1 : 0
   rest_api_id = aws_api_gateway_rest_api.ollama.id
 
   # Redeploy when routes or integrations change
@@ -252,49 +258,26 @@ resource "aws_api_gateway_deployment" "ollama" {
 
   depends_on = [
     aws_api_gateway_integration.chat_completions,
-    aws_api_gateway_integration.chat_completions_mock,
-    aws_api_gateway_integration_response.chat_completions_503,
     aws_api_gateway_integration.api_tags,
-    aws_api_gateway_integration.api_tags_mock,
-    aws_api_gateway_integration_response.api_tags_503,
   ]
 }
 
+# Stage is managed by the api-key-portal module (it creates the deployment + stage).
+# This resource exists only so outputs can reference it. count=0 prevents creation.
 resource "aws_api_gateway_stage" "prod" {
+  count         = 0
   rest_api_id   = aws_api_gateway_rest_api.ollama.id
-  deployment_id = aws_api_gateway_deployment.ollama.id
+  deployment_id = aws_api_gateway_deployment.ollama[0].id
   stage_name    = "prod"
-
-  access_log_settings {
-    destination_arn = aws_cloudwatch_log_group.api_gateway.arn
-    format = jsonencode({
-      requestId          = "$context.requestId"
-      ip                 = "$context.identity.sourceIp"
-      caller             = "$context.identity.caller"
-      apiKey             = "$context.identity.apiKeyId"
-      requestTime        = "$context.requestTime"
-      httpMethod         = "$context.httpMethod"
-      resourcePath       = "$context.resourcePath"
-      status             = "$context.status"
-      protocol           = "$context.protocol"
-      responseLength     = "$context.responseLength"
-      integrationLatency = "$context.integrationLatency"
-    })
-  }
-
-  # Portal module manages the stage deployment_id via null_resource provisioner.
-  # Prevent Terraform from reverting the portal's stage update on every apply.
-  lifecycle {
-    ignore_changes = [deployment_id]
-  }
 
   tags = var.tags
 }
 
-# --- Method throttling ---
+# --- Method throttling (applied when NLB is wired and deployment exists) ---
 resource "aws_api_gateway_method_settings" "all" {
+  count       = local.nlb_available ? 1 : 0
   rest_api_id = aws_api_gateway_rest_api.ollama.id
-  stage_name  = aws_api_gateway_stage.prod.stage_name
+  stage_name  = "prod"
   method_path = "*/*"
 
   settings {
@@ -310,14 +293,14 @@ resource "aws_api_gateway_method_settings" "all" {
 # ==============================================================================
 
 resource "aws_api_gateway_usage_plan" "standard" {
-  count = var.api_key_required ? 1 : 0
+  count = var.api_key_required && local.nlb_available ? 1 : 0
 
   name        = "${var.project_name}-standard"
   description = "Standard usage plan for Ollama LLM API access"
 
   api_stages {
     api_id = aws_api_gateway_rest_api.ollama.id
-    stage  = aws_api_gateway_stage.prod.stage_name
+    stage  = "prod"
   }
 
   throttle_settings {
@@ -339,9 +322,9 @@ resource "aws_api_gateway_api_key" "initial" {
   tags = var.tags
 }
 
-# Associate key with usage plan
+# Associate key with usage plan (only when stage + usage plan exist)
 resource "aws_api_gateway_usage_plan_key" "initial" {
-  count = var.api_key_required ? 1 : 0
+  count = var.api_key_required && local.nlb_available ? 1 : 0
 
   key_id        = aws_api_gateway_api_key.initial[0].id
   key_type      = "API_KEY"
