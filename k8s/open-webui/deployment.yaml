@@ -32,6 +32,9 @@ spec:
       # Run on system nodes (no GPU needed)
       nodeSelector:
         kubernetes.io/arch: amd64
+      tolerations:
+        - key: CriticalAddonsOnly
+          operator: Exists
       # Security: hardened root — Open WebUI image requires UID 0 for
       # internal writes to /app/backend/ (outside PVC mount). Hardened
       # by dropping ALL capabilities and blocking privilege escalation.
