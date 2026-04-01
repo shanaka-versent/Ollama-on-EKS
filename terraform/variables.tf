@@ -252,6 +252,12 @@ variable "enable_managed_grafana" {
   default     = false
 }
 
+variable "amp_remote_write_endpoint" {
+  description = "Shared AMP remote-write endpoint. If set, Prometheus writes to this AMP (from shared-infra). If empty, metrics stay in-cluster only."
+  type        = string
+  default     = ""
+}
+
 variable "grafana_admin_user_ids" {
   description = "IAM Identity Center user IDs to grant Grafana ADMIN role"
   type        = list(string)

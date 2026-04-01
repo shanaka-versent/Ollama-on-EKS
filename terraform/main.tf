@@ -38,6 +38,9 @@
 locals {
   name_prefix  = "${var.project_name}-${var.environment}"
   cluster_name = "eks-${local.name_prefix}"
+
+  # AMP remote-write role: shared AMP creates its own IRSA role, per-stack AMG has its own, or none
+  amp_remote_write_role_arn = var.amp_remote_write_endpoint != "" ? aws_iam_role.shared_amp_write[0].arn : (var.enable_managed_grafana ? module.managed_grafana[0].prometheus_remote_write_role_arn : "")
 }
 
 # ==============================================================================
@@ -133,8 +136,8 @@ resource "aws_iam_policy" "lb_controller" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect = "Allow"
-        Action = ["iam:CreateServiceLinkedRole"]
+        Effect   = "Allow"
+        Action   = ["iam:CreateServiceLinkedRole"]
         Resource = "*"
         Condition = {
           StringEquals = {
@@ -421,21 +424,21 @@ module "cdn_waf" {
     aws.us_east_1 = aws.us_east_1
   }
 
-  project_name           = var.project_name
-  api_gateway_endpoint   = module.api_gateway.api_endpoint
-  nlb_dns_name           = var.nlb_dns_name
-  nlb_arn                = var.nlb_arn
-  allowed_ips            = var.waf_allowed_ips
-  rate_limit             = var.waf_rate_limit
-  geo_countries          = var.waf_geo_countries
-  enable_bot_control     = var.waf_enable_bot_control
-  enable_origin_lockdown               = var.enable_origin_lockdown
-  origin_verify_secret                 = var.enable_origin_lockdown ? random_password.origin_verify_secret[0].result : ""
-  portal_s3_bucket_regional_domain     = var.cloudfront_domain != "" ? module.api_key_portal.s3_bucket_regional_domain : ""
-  portal_oac_id                        = var.cloudfront_domain != "" ? module.api_key_portal.oac_id : ""
-  login_s3_bucket_regional_domain      = var.cloudfront_domain != "" ? module.api_key_portal.login_s3_bucket_regional_domain : ""
-  login_oac_id                         = var.cloudfront_domain != "" ? module.api_key_portal.login_oac_id : ""
-  tags                                 = var.tags
+  project_name                     = var.project_name
+  api_gateway_endpoint             = module.api_gateway.api_endpoint
+  nlb_dns_name                     = var.nlb_dns_name
+  nlb_arn                          = var.nlb_arn
+  allowed_ips                      = var.waf_allowed_ips
+  rate_limit                       = var.waf_rate_limit
+  geo_countries                    = var.waf_geo_countries
+  enable_bot_control               = var.waf_enable_bot_control
+  enable_origin_lockdown           = var.enable_origin_lockdown
+  origin_verify_secret             = var.enable_origin_lockdown ? random_password.origin_verify_secret[0].result : ""
+  portal_s3_bucket_regional_domain = var.cloudfront_domain != "" ? module.api_key_portal.s3_bucket_regional_domain : ""
+  portal_oac_id                    = var.cloudfront_domain != "" ? module.api_key_portal.oac_id : ""
+  login_s3_bucket_regional_domain  = var.cloudfront_domain != "" ? module.api_key_portal.login_s3_bucket_regional_domain : ""
+  login_oac_id                     = var.cloudfront_domain != "" ? module.api_key_portal.login_oac_id : ""
+  tags                             = var.tags
 }
 
 # ==============================================================================
@@ -463,15 +466,16 @@ module "cert_manager" {
 module "observability" {
   source = "./modules/observability"
 
-  eks_cluster_name         = module.eks.cluster_name
+  eks_cluster_name          = module.eks.cluster_name
   prometheus_retention_days = var.prometheus_retention_days
   prometheus_storage_size   = var.prometheus_storage_size
-  eks_oidc_provider_arn    = module.eks.oidc_provider_arn
-  eks_oidc_issuer_url      = module.eks.oidc_issuer_url
+  eks_oidc_provider_arn     = module.eks.oidc_provider_arn
+  eks_oidc_issuer_url       = module.eks.oidc_issuer_url
 
-  # AMP integration: Prometheus remote-writes all metrics to AMP for AMG to read
-  amp_remote_write_endpoint = var.enable_managed_grafana ? module.managed_grafana[0].amp_remote_write_endpoint : ""
-  amp_remote_write_role_arn = var.enable_managed_grafana ? module.managed_grafana[0].prometheus_remote_write_role_arn : ""
+  # AMP integration: Prometheus remote-writes metrics to AMP
+  # Priority: 1) shared AMP endpoint (from shared-infra), 2) per-stack AMG, 3) none (in-cluster only)
+  amp_remote_write_endpoint = var.amp_remote_write_endpoint != "" ? var.amp_remote_write_endpoint : (var.enable_managed_grafana ? module.managed_grafana[0].amp_remote_write_endpoint : "")
+  amp_remote_write_role_arn = local.amp_remote_write_role_arn
 
   # Alert notifications: Alertmanager → SNS → email
   alert_email = var.alert_email
@@ -483,6 +487,56 @@ module "observability" {
     aws_eks_addon.ebs_csi,
     module.argocd,
   ]
+}
+
+# ==============================================================================
+# SHARED AMP — IRSA role for Prometheus remote-write (when using shared-infra AMP)
+# ==============================================================================
+# When amp_remote_write_endpoint is set (from shared-infra), this stack needs
+# its own IRSA role because the role trust policy references the stack's OIDC provider.
+
+resource "aws_iam_role" "shared_amp_write" {
+  count = var.amp_remote_write_endpoint != "" ? 1 : 0
+  name  = "${var.project_name}-${var.environment}-amp-write"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Federated = module.eks.oidc_provider_arn
+      }
+      Action = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "${replace(module.eks.oidc_issuer_url, "https://", "")}:sub" = "system:serviceaccount:monitoring:kube-prometheus-stack-prometheus"
+          "${replace(module.eks.oidc_issuer_url, "https://", "")}:aud" = "sts.amazonaws.com"
+        }
+      }
+    }]
+  })
+
+  tags = var.tags
+}
+
+resource "aws_iam_role_policy" "shared_amp_write" {
+  count = var.amp_remote_write_endpoint != "" ? 1 : 0
+  name  = "amp-remote-write"
+  role  = aws_iam_role.shared_amp_write[0].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "aps:RemoteWrite",
+        "aps:GetSeries",
+        "aps:GetLabels",
+        "aps:GetMetricMetadata"
+      ]
+      Resource = "*"
+    }]
+  })
 }
 
 # ==============================================================================
@@ -530,13 +584,13 @@ resource "kubernetes_secret" "webui_oauth" {
   }
 
   data = {
-    OAUTH_CLIENT_ID       = module.cognito.client_id
-    OAUTH_CLIENT_SECRET   = module.cognito.client_secret
-    OPENID_PROVIDER_URL   = module.cognito.openid_config_url
-    OAUTH_LOGOUT_URL      = module.cognito.logout_url
+    OAUTH_CLIENT_ID     = module.cognito.client_id
+    OAUTH_CLIENT_SECRET = module.cognito.client_secret
+    OPENID_PROVIDER_URL = module.cognito.openid_config_url
+    OAUTH_LOGOUT_URL    = module.cognito.logout_url
     # CloudFront domain — injected so Open WebUI uses the correct external URL
     # for OAuth redirect_uri without hardcoding in K8s manifests
-    CLOUDFRONT_DOMAIN     = module.cdn_waf.cloudfront_domain
+    CLOUDFRONT_DOMAIN = module.cdn_waf.cloudfront_domain
     # Banner timestamp must be Unix epoch (number), not a date string
     # HTML content with styled button links for better visibility
     WEBUI_BANNERS = jsonencode([
@@ -626,12 +680,12 @@ module "bedrock_integration" {
   count  = var.enable_bedrock ? 1 : 0
   source = "./modules/bedrock-integration"
 
-  project_name         = var.project_name
-  vpc_id               = module.vpc.vpc_id
-  private_subnet_ids   = module.vpc.private_subnet_ids
-  private_subnet_cidrs = module.vpc.private_subnet_cidrs
+  project_name          = var.project_name
+  vpc_id                = module.vpc.vpc_id
+  private_subnet_ids    = module.vpc.private_subnet_ids
+  private_subnet_cidrs  = module.vpc.private_subnet_cidrs
   eks_oidc_provider_arn = module.eks.oidc_provider_arn
-  tags                 = var.tags
+  tags                  = var.tags
 }
 
 data "aws_caller_identity" "current" {}
