@@ -20,8 +20,9 @@ resource "helm_release" "kube_prometheus_stack" {
   })]
 
   # Wait for CRDs to be ready before DCGM exporter creates ServiceMonitors
+  # 15 min — EKS API server may be unstable on first apply, CRDs take time
   wait    = true
-  timeout = 600 # 10 minutes — large chart with many CRDs
+  timeout = 900
 }
 
 # ──────────────────────────────────────────────────────────────────────
