@@ -322,7 +322,24 @@ deploy_infrastructure() {
         rm -f tfplan
         if [[ $apply_attempt -lt $apply_max ]]; then
             warn "Terraform apply failed (attempt ${apply_attempt}/${apply_max})"
-            warn "Common cause: EKS API server not yet stable — retrying in 60s..."
+
+            # Self-healing: clean up orphaned Helm releases that block retries.
+            # When Terraform fails mid-apply, Helm releases may exist in the cluster
+            # but not in Terraform state. The next "helm install" fails with
+            # "cannot re-use a name that is still in use".
+            log "Cleaning up orphaned Helm releases before retry..."
+            if kubectl cluster-info &>/dev/null; then
+                for release in kube-prometheus-stack dcgm-exporter; do
+                    if helm status "$release" -n monitoring &>/dev/null; then
+                        if ! terraform state list 2>/dev/null | grep -q "helm_release.*${release//-/_}"; then
+                            warn "  Removing orphaned Helm release: ${release}"
+                            helm uninstall "$release" -n monitoring --wait --timeout 120s 2>/dev/null || true
+                        fi
+                    fi
+                done
+            fi
+
+            log "Retrying in 60s..."
             sleep 60
         else
             error "Terraform apply failed after ${apply_max} attempts"
