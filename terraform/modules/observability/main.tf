@@ -103,26 +103,5 @@ resource "aws_iam_role_policy" "alertmanager_sns" {
   })
 }
 
-# ──────────────────────────────────────────────────────────────────────
-# 4. Grafana Dashboard ConfigMaps (auto-discovered by sidecar)
-# ──────────────────────────────────────────────────────────────────────
-# The Grafana sidecar watches for ConfigMaps with label grafana_dashboard=1
-# in the monitoring namespace and auto-imports them as dashboards.
-
-resource "kubernetes_config_map" "grafana_dashboards" {
-  for_each = fileset("${path.module}/dashboards", "*.json")
-
-  metadata {
-    name      = "grafana-dashboard-${replace(each.key, ".json", "")}"
-    namespace = "monitoring"
-    labels = {
-      grafana_dashboard = "1"
-    }
-  }
-
-  data = {
-    (each.key) = file("${path.module}/dashboards/${each.key}")
-  }
-
-  depends_on = [helm_release.kube_prometheus_stack]
-}
+# Dashboards are imported into shared AMG via setup-amg.sh (not in-cluster ConfigMaps).
+# Dashboard JSON files in dashboards/ directory are used by setup-amg.sh.
