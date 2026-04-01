@@ -63,8 +63,8 @@ spec:
       expireAfter: 336h
   # Resource limits — enough for up to 4x t3.large nodes
   limits:
-    cpu: "16"
-    memory: 64Gi
+    cpu: "32"
+    memory: 128Gi
   # Disruption — consolidate underutilized nodes after 5 min
   # WhenUnderutilized (not WhenEmpty) because system pods always run
   disruption:
