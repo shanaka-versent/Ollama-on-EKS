@@ -21,12 +21,12 @@ spec:
   role: role-eks-node-ollama-dev
   # Subnets — private subnets across 3 AZs for GPU spot availability
   subnetSelectorTerms:
-    - id: subnet-0dd32354ab85b57cd  # ap-southeast-2a
-    - id: subnet-066f317903382d947  # ap-southeast-2b
-    - id: subnet-0187462fa039a14c6  # ap-southeast-2c
+    - id: subnet-091332f0298145cfb
+    - id: subnet-0bf44aeca4d559d4c
+    - id: subnet-09a47c9b02ee87e96
   # Security group — same as default NodeClass
   securityGroupSelectorTerms:
-    - id: sg-0fb86f09fddc0fd08
+    - id: sg-02d018807b6d2f963
   # Ephemeral storage for the node (root volume)
   ephemeralStorage:
     size: 80Gi

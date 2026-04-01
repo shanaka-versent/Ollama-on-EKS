@@ -13,11 +13,12 @@ spec:
   role: role-eks-node-ollama-dev
   # Subnets — same as GPU NodeClass
   subnetSelectorTerms:
-    - id: subnet-0dd32354ab85b57cd
-    - id: subnet-066f317903382d947
+    - id: subnet-091332f0298145cfb
+    - id: subnet-0bf44aeca4d559d4c
+    - id: subnet-09a47c9b02ee87e96
   # Security group — same as GPU NodeClass
   securityGroupSelectorTerms:
-    - id: sg-0fb86f09fddc0fd08
+    - id: sg-02d018807b6d2f963
   # Ephemeral storage — 30Gi is enough for system workloads (no model weights)
   ephemeralStorage:
     size: 30Gi
