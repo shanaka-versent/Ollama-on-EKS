@@ -6,12 +6,17 @@
 # ============================================================
 
 usage() {
-  echo "Usage: source claude-switch.sh [remote|local|ollama|status]"
+  echo "Usage: source claude-switch.sh [remote|local|cloudfront|ollama|status]"
   echo ""
-  echo "  remote   - Use Anthropic's Claude API (default)"
-  echo "  local    - Use private Ollama on EKS (requires port-forward)"
-  echo "  ollama   - Use Ollama via Kong Cloud AI Gateway (no kubectl needed)"
-  echo "  status   - Show current mode"
+  echo "  remote     - Use Anthropic's Claude API (default)"
+  echo "  local      - Use private Ollama on EKS (requires port-forward)"
+  echo "  cloudfront - Use Ollama via CloudFront + API key (no kubectl needed)"
+  echo "  ollama     - Use Ollama via Kong Cloud AI Gateway"
+  echo "  status     - Show current mode"
+  echo ""
+  echo "Options for 'cloudfront' mode:"
+  echo "  --endpoint <URL>   CloudFront domain (e.g. https://xxx.cloudfront.net)"
+  echo "  --apikey <KEY>     API Gateway API key"
   echo ""
   echo "Options for 'ollama' mode:"
   echo "  --endpoint <URL>   Kong proxy URL (from Konnect UI)"
@@ -20,6 +25,7 @@ usage() {
   echo "Examples:"
   echo "  source claude-switch.sh remote"
   echo "  source claude-switch.sh local"
+  echo "  source claude-switch.sh cloudfront --endpoint https://xxx.cloudfront.net --apikey mykey"
   echo "  source claude-switch.sh ollama --endpoint https://xxx.kong-cloud.com --apikey mykey"
   echo ""
   echo "IMPORTANT: Run with 'source' so env vars persist in your shell."
@@ -38,6 +44,18 @@ status() {
     fi
     echo ""
     echo "Run:   claude --model qwen3.5:122b"
+  elif [[ "${ANTHROPIC_BASE_URL:-}" == *"cloudfront.net"* ]]; then
+    echo "Mode:     CLOUDFRONT (Ollama via CloudFront VPC Origin)"
+    echo "Endpoint: $ANTHROPIC_BASE_URL"
+    echo "API Key:  ${ANTHROPIC_API_KEY:0:8}..."
+    local cf_base="${ANTHROPIC_BASE_URL%/v1}"
+    if curl -s --connect-timeout 5 "${cf_base}/health" > /dev/null 2>&1; then
+      echo "Status:   CONNECTED"
+    else
+      echo "Status:   NOT REACHABLE"
+    fi
+    echo ""
+    echo "Run:   claude --model qwen3.5:27b"
   elif [ "$ANTHROPIC_BASE_URL" = "http://localhost:11434" ]; then
     echo "Mode:   LOCAL (Ollama on EKS via port-forward)"
     echo "URL:    $ANTHROPIC_BASE_URL"
@@ -79,6 +97,66 @@ set_remote() {
   echo "Switched to REMOTE (Anthropic API)"
   echo ""
   echo "Run:   claude"
+}
+
+set_cloudfront() {
+  local endpoint=""
+  local apikey=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --endpoint) endpoint="$2"; shift 2 ;;
+      --apikey)   apikey="$2"; shift 2 ;;
+      *)          shift ;;
+    esac
+  done
+
+  if [[ -z "$endpoint" ]]; then
+    echo "ERROR: --endpoint is required"
+    echo ""
+    echo "Usage: source claude-switch.sh cloudfront --endpoint https://<CF_DOMAIN> --apikey <KEY>"
+    return 1
+  fi
+
+  if [[ -z "$apikey" ]]; then
+    echo "ERROR: --apikey is required"
+    return 1
+  fi
+
+  # Strip trailing slash
+  endpoint="${endpoint%/}"
+
+  # Kill any port-forward tunnel
+  if pgrep -f "kubectl port-forward -n ollama" > /dev/null 2>&1; then
+    pkill -f "kubectl port-forward -n ollama"
+    echo "Tunnel: stopped (not needed with CloudFront)"
+  fi
+
+  unset KONG_PROXY_URL
+
+  # /v1/messages path goes directly to NLB via VPC Origin (no API GW 29s timeout)
+  # CloudFront Function validates the API key
+  export ANTHROPIC_BASE_URL="${endpoint}/v1"
+  export ANTHROPIC_AUTH_TOKEN="${apikey}"
+  export ANTHROPIC_API_KEY="${apikey}"
+  export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+
+  echo ""
+  echo "Switched to CLOUDFRONT (Ollama via CloudFront VPC Origin)"
+  echo ""
+  echo "  Endpoint: ${endpoint}/v1"
+  echo "  API Key:  ${apikey:0:8}..."
+  echo ""
+
+  # Quick connectivity check
+  if curl -s --connect-timeout 5 "${endpoint}/health" > /dev/null 2>&1; then
+    echo "  Status: CONNECTED"
+  else
+    echo "  Status: Could not reach endpoint"
+  fi
+
+  echo ""
+  echo "Run:   claude --model qwen3.5:27b"
 }
 
 set_local() {
@@ -191,9 +269,10 @@ set_ollama() {
 }
 
 case "${1:-}" in
-  remote) set_remote ;;
-  local)  set_local ;;
-  ollama) shift; set_ollama "$@" ;;
-  status) status ;;
-  *)      usage ;;
+  remote)     set_remote ;;
+  local)      set_local ;;
+  cloudfront) shift; set_cloudfront "$@" ;;
+  ollama)     shift; set_ollama "$@" ;;
+  status)     status ;;
+  *)          usage ;;
 esac
