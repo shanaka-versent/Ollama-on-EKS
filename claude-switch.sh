@@ -3,11 +3,27 @@
 # Claude Code Mode Switcher
 # Swap Claude Code between Anthropic API and private Ollama on EKS
 #
+# Ollama v0.14.0+ supports the Anthropic Messages API natively.
+# Claude Code connects to Ollama using ANTHROPIC_BASE_URL (no /v1 suffix)
+# and ANTHROPIC_AUTH_TOKEN for authentication.
+#
 # Modes:
 #   remote     — Anthropic Claude API (default, billed to your account)
 #   local      — Ollama on EKS via port-forward (recommended, no timeout)
 #   cloudfront — Ollama via CloudFront + API key (no kubectl needed, 60s timeout)
+#
+# Requires: Ollama v0.14.0+ (Anthropic Messages API support)
+# Current:  Ollama v0.18.2 on EKS
 # ============================================================
+
+_clean_env() {
+  # Clean up ALL provider env vars to prevent conflicts
+  unset ANTHROPIC_BASE_URL
+  unset ANTHROPIC_AUTH_TOKEN
+  unset OPENAI_BASE_URL
+  unset OPENAI_API_KEY
+  unset CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
+}
 
 usage() {
   echo "Usage: source claude-switch.sh [remote|local|cloudfront|status]"
@@ -34,8 +50,10 @@ status() {
     echo "Mode:     CLOUDFRONT (Ollama via CloudFront VPC Origin)"
     echo "Endpoint: $ANTHROPIC_BASE_URL"
     echo "API Key:  ${ANTHROPIC_API_KEY:0:8}..."
-    local cf_base="${ANTHROPIC_BASE_URL%/v1}"
-    if curl -s --connect-timeout 5 "${cf_base}/health" > /dev/null 2>&1; then
+    # Health check — CloudFront routes /v1/models to Ollama
+    if curl -s --connect-timeout 5 "${ANTHROPIC_BASE_URL}/v1/models" \
+         -H "x-api-key: ${ANTHROPIC_API_KEY}" 2>/dev/null | \
+         python3 -c "import sys,json; d=json.load(sys.stdin); print(f'Models:  {\", \".join(m[\"id\"] for m in d.get(\"data\",[]))}')" 2>/dev/null; then
       echo "Status:   CONNECTED"
     else
       echo "Status:   NOT REACHABLE"
@@ -78,9 +96,7 @@ set_remote() {
     echo "Tunnel: stopped"
   fi
 
-  unset ANTHROPIC_BASE_URL
-  unset ANTHROPIC_AUTH_TOKEN
-  unset CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
+  _clean_env
 
   echo "Switched to REMOTE (Anthropic Claude API)"
   echo "Run:   claude"
@@ -109,6 +125,10 @@ set_local() {
     fi
   fi
 
+  _clean_env
+
+  # Ollama Anthropic Messages API — no /v1 suffix needed
+  # Claude Code sends requests to $ANTHROPIC_BASE_URL/v1/messages
   export ANTHROPIC_BASE_URL="http://localhost:11434"
   export ANTHROPIC_AUTH_TOKEN="ollama"
   export ANTHROPIC_API_KEY=""
@@ -116,6 +136,9 @@ set_local() {
 
   echo ""
   echo "Switched to LOCAL (Ollama on EKS via port-forward)"
+  echo "  URL:    http://localhost:11434"
+  echo "  Auth:   ANTHROPIC_AUTH_TOKEN=ollama"
+  echo ""
   echo "Run:   claude --model qwen3.5:27b"
 }
 
@@ -144,20 +167,36 @@ set_cloudfront() {
     echo "Tunnel: stopped"
   fi
 
-  export ANTHROPIC_BASE_URL="${endpoint}/v1"
-  unset ANTHROPIC_AUTH_TOKEN
+  _clean_env
+
+  # CloudFront routes /v1/messages directly to NLB VPC Origin (bypasses API Gateway).
+  # CloudFront Function validates x-api-key header (same key as API Gateway).
+  # No /v1 suffix — Claude Code appends /v1/messages automatically.
+  export ANTHROPIC_BASE_URL="${endpoint}"
+  export ANTHROPIC_AUTH_TOKEN="${apikey}"
   export ANTHROPIC_API_KEY="${apikey}"
   export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 
   echo ""
   echo "Switched to CLOUDFRONT (Ollama via CloudFront VPC Origin)"
-  echo "  Endpoint: ${endpoint}/v1"
+  echo "  Endpoint: ${endpoint}"
   echo "  API Key:  ${apikey:0:8}..."
 
-  if curl -s --connect-timeout 5 "${endpoint}/health" > /dev/null 2>&1; then
+  # Verify connectivity via /v1/models (OpenAI-compat endpoint, always available)
+  local model_check
+  model_check=$(curl -s --connect-timeout 5 "${endpoint}/v1/models" \
+    -H "x-api-key: ${apikey}" 2>/dev/null)
+  if echo "$model_check" | python3 -c "import sys,json; json.load(sys.stdin)" > /dev/null 2>&1; then
     echo "  Status:   CONNECTED"
+    echo "$model_check" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+models=[m['id'] for m in d.get('data',[])]
+if models: print(f'  Models:   {\", \".join(models)}')
+" 2>/dev/null
   else
-    echo "  Status:   Could not reach endpoint"
+    echo "  Status:   NOT REACHABLE"
+    echo "  Check:    Is Ollama running? (kubectl get pods -n ollama)"
   fi
 
   echo ""

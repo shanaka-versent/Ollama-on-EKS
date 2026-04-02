@@ -33,6 +33,13 @@ certs/
 deck/kong.yaml
 deck/kong-consumers.yaml
 
+# Terraform deploy/delete logs
+terraform/deploy-*.log
+terraform/delete-stack-*.log
+
+# Playwright MCP config
+.playwright-mcp/
+
 # Generated HTML reports (keep local for learning, auto-generated from markdown)
 README.html
 Ollama-EKS-Report.html
