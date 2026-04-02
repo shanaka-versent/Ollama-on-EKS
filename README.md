@@ -457,6 +457,39 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 
 ## Day-to-Day Usage
 
+### Using Claude Code with Private LLM
+
+Claude Code can use the private Ollama models instead of Anthropic's hosted Claude. All prompts and code stay within the AWS account — nothing leaves your network.
+
+**Connect to the private LLM:**
+
+```bash
+# Configure Claude Code to use the private Ollama endpoint
+source claude-switch.sh cloudfront \
+  --endpoint https://<CLOUDFRONT_DOMAIN> \
+  --apikey <YOUR_API_KEY>
+
+# Verify connection
+source claude-switch.sh status
+
+# Launch Claude Code (uses your private Qwen model)
+claude --model qwen3.5:27b
+
+# Inside Claude Code, ask questions as usual:
+#   > What is the capital of Sri Lanka?
+#
+# Type /exit to leave
+```
+
+**Switch back to Anthropic hosted Claude:**
+
+```bash
+source claude-switch.sh remote
+claude
+```
+
+> **Note:** Get your CloudFront domain from `terraform output cloudfront_domain` and your API key from the API Key Portal at `https://<CLOUDFRONT_DOMAIN>/portal/` or from the admin.
+
 ### Model Tier Switching (Flex Mode)
 
 All three tiers are available on the same stack. The script patches deployment resources and Karpenter auto-provisions the right instance:
