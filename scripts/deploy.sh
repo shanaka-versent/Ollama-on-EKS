@@ -931,12 +931,36 @@ wire_nlb_to_terraform() {
             warn "VPC Origin may still be cold after ${warmup_max} attempts"
         fi
 
-        # Phase 3: Pre-warm key pages (login, static assets)
+        # Phase 3: Pre-warm key pages
         log "Pre-warming key pages..."
         for path in "/auth/login.html" "/" "/api/config" "/manifest.json"; do
             curl -s -o /dev/null --max-time 10 "https://${cf_domain}${path}" 2>/dev/null &
         done
         wait
+
+        # Phase 4: Pre-warm static assets (JS/CSS) at CloudFront edge
+        # Open WebUI loads ~50 /_app/* and /static/* files on first page load.
+        # Without edge caching, each file traverses CF → VPC Origin → NLB → Pod.
+        # Warming them here means the first user login loads instantly.
+        log "Pre-warming static assets at CloudFront edge..."
+        local asset_urls
+        asset_urls=$(curl -s --max-time 10 "https://${cf_domain}/" \
+            -H "Cookie: token=warmup" 2>/dev/null | \
+            grep -oE '(/_app/[^"'"'"' >]+|/static/[^"'"'"' >]+)' | sort -u)
+
+        if [[ -n "$asset_urls" ]]; then
+            local asset_count
+            asset_count=$(echo "$asset_urls" | wc -l | tr -d ' ')
+            log "  Warming ${asset_count} static assets..."
+            echo "$asset_urls" | while read -r asset; do
+                curl -s -o /dev/null --max-time 10 "https://${cf_domain}${asset}" 2>/dev/null &
+            done
+            wait
+            log "  Static assets cached at edge"
+        else
+            log "  No static assets found to warm (page may require auth)"
+        fi
+
         log "Platform ready at: https://${cf_domain}"
     fi
 
