@@ -145,7 +145,7 @@ set_cloudfront() {
   fi
 
   export ANTHROPIC_BASE_URL="${endpoint}/v1"
-  export ANTHROPIC_AUTH_TOKEN="${apikey}"
+  unset ANTHROPIC_AUTH_TOKEN
   export ANTHROPIC_API_KEY="${apikey}"
   export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 
