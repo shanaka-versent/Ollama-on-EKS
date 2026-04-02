@@ -670,6 +670,12 @@ with open('${deploy_file}', 'w') as f:
     kubectl delete volumesnapshot ollama-models-snapshot -n ollama 2>/dev/null || true
     kubectl delete volumesnapshotcontent ollama-models-snapshot-content 2>/dev/null || true
 
+    # Delete the completed model-loader job so ArgoCD recreates it.
+    # Without this, the old completed job won't re-run and the new blank
+    # volume (no snapshot) will have no model — Ollama starts empty.
+    log "Deleting completed model-loader job (ArgoCD will recreate it to pull model)..."
+    kubectl delete job -n ollama -l app=model-loader --ignore-not-found=true 2>/dev/null || true
+
     log "Snapshot cleanup complete — model-loader will pull from internet"
 }
 
