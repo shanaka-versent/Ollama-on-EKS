@@ -17,8 +17,8 @@ locals {
   ip_allowlist_enabled    = !contains(var.allowed_ips, "0.0.0.0/0")
   origin_lockdown_enabled = var.enable_origin_lockdown
   webui_enabled           = var.nlb_dns_name != "" && var.nlb_arn != ""
-  portal_enabled          = var.portal_s3_bucket_regional_domain != ""
-  login_enabled           = var.login_s3_bucket_regional_domain != ""
+  portal_enabled          = var.enable_portal
+  login_enabled           = var.enable_login
 }
 
 # --- CloudFront Function: Auth Redirect ---
