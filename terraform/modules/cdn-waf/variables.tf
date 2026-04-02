@@ -67,6 +67,12 @@ variable "api_key_value" {
   default     = ""
 }
 
+variable "enable_portal" {
+  description = "Enable API Key Portal origin in CloudFront (must be known at plan time — use static var, not resource output)"
+  type        = bool
+  default     = false
+}
+
 variable "portal_s3_bucket_regional_domain" {
   description = "S3 bucket regional domain for the API Key Portal (OAC origin)"
   type        = string
@@ -77,6 +83,12 @@ variable "portal_oac_id" {
   description = "CloudFront Origin Access Control ID for the Portal S3 bucket"
   type        = string
   default     = ""
+}
+
+variable "enable_login" {
+  description = "Enable Login SPA origin in CloudFront (must be known at plan time — use static var, not resource output)"
+  type        = bool
+  default     = false
 }
 
 variable "login_s3_bucket_regional_domain" {
