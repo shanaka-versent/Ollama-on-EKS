@@ -94,6 +94,51 @@ resource "aws_cloudfront_function" "auth_redirect" {
   JS
 }
 
+# --- CloudFront Function: API Key Auth ---
+# Validates x-api-key header on /v1/messages path (Claude Code / Anthropic API clients).
+# This path bypasses API Gateway (29s timeout) and goes directly to NLB VPC Origin.
+# API key is injected from Terraform (same key as API Gateway).
+resource "aws_cloudfront_function" "api_key_auth" {
+  count = local.webui_enabled ? 1 : 0
+
+  name    = "${var.project_name}-api-key-auth"
+  runtime = "cloudfront-js-2.0"
+  publish = true
+
+  code = <<-JS
+    var VALID_KEY = '${var.api_key_value}';
+
+    function handler(event) {
+      var request = event.request;
+      var headers = request.headers || {};
+
+      // Check x-api-key header
+      var apiKey = (headers['x-api-key'] && headers['x-api-key'].value) || '';
+
+      // Also check Authorization: Bearer <key> (Claude Code sends this)
+      if (!apiKey && headers['authorization']) {
+        var auth = headers['authorization'].value || '';
+        if (auth.startsWith('Bearer ')) {
+          apiKey = auth.substring(7);
+        }
+      }
+
+      if (!VALID_KEY || !apiKey || apiKey !== VALID_KEY) {
+        return {
+          statusCode: 403,
+          statusDescription: 'Forbidden',
+          headers: {
+            'content-type': { value: 'application/json' }
+          },
+          body: '{"error":{"type":"authentication_error","message":"Invalid API key"}}'
+        };
+      }
+
+      return request;
+    }
+  JS
+}
+
 # --- CloudFront Function: S3 Index Rewrite ---
 # Appends index.html to directory paths (S3 OAC doesn't auto-resolve default documents).
 # Auth is handled by the portal JS (reads token from localStorage, sends Authorization
@@ -512,8 +557,33 @@ resource "aws_cloudfront_distribution" "ollama" {
   }
 
   # API paths → API Gateway (with API key auth)
+  # /v1/messages → NLB VPC Origin (bypasses API Gateway 29s timeout)
+  # Used by Claude Code and other Anthropic API clients.
+  # API key validated by CloudFront Function (not API Gateway).
   dynamic "ordered_cache_behavior" {
-    for_each = local.webui_enabled ? ["/v1/*", "/api/tags"] : []
+    for_each = local.webui_enabled ? [1] : []
+    content {
+      path_pattern     = "/v1/messages"
+      allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+      cached_methods   = ["GET", "HEAD"]
+      target_origin_id = "nlb-webui"
+
+      cache_policy_id          = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # CachingDisabled
+      origin_request_policy_id = "b689b0a8-53d0-40ab-baf2-68738e2966ac" # AllViewerExceptHostHeader
+
+      viewer_protocol_policy = "https-only"
+      compress               = false
+
+      function_association {
+        event_type   = "viewer-request"
+        function_arn = aws_cloudfront_function.api_key_auth[0].arn
+      }
+    }
+  }
+
+  # /v1/chat/completions, /api/tags → API Gateway (short requests, API key via API GW)
+  dynamic "ordered_cache_behavior" {
+    for_each = local.webui_enabled ? ["/v1/chat/completions", "/api/tags"] : []
     content {
       path_pattern     = ordered_cache_behavior.value
       allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]

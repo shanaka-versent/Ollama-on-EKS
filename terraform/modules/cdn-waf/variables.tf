@@ -60,6 +60,13 @@ variable "origin_verify_secret" {
   default     = ""
 }
 
+variable "api_key_value" {
+  description = "API Gateway API key value — used by CloudFront Function to validate x-api-key on /v1/messages (bypasses API GW 29s timeout)"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 variable "portal_s3_bucket_regional_domain" {
   description = "S3 bucket regional domain for the API Key Portal (OAC origin)"
   type        = string

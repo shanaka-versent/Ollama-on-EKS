@@ -434,6 +434,7 @@ module "cdn_waf" {
   enable_bot_control               = var.waf_enable_bot_control
   enable_origin_lockdown           = var.enable_origin_lockdown
   origin_verify_secret             = var.enable_origin_lockdown ? random_password.origin_verify_secret[0].result : ""
+  api_key_value                    = module.api_gateway.api_key_value
   portal_s3_bucket_regional_domain = var.cloudfront_domain != "" ? module.api_key_portal.s3_bucket_regional_domain : ""
   portal_oac_id                    = var.cloudfront_domain != "" ? module.api_key_portal.oac_id : ""
   login_s3_bucket_regional_domain  = var.cloudfront_domain != "" ? module.api_key_portal.login_s3_bucket_regional_domain : ""
