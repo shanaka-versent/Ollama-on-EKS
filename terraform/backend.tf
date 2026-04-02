@@ -4,18 +4,18 @@
 # Prerequisites:
 #   1. Create S3 bucket:
 #      aws s3api create-bucket \
-#        --bucket ollama-eks-tfstate-<ACCOUNT_ID> \
+#        --bucket ollama-eks-tfstate-183758910727 \
 #        --region ap-southeast-2 \
 #        --create-bucket-configuration LocationConstraint=ap-southeast-2
 #      aws s3api put-bucket-versioning \
-#        --bucket ollama-eks-tfstate-<ACCOUNT_ID> \
+#        --bucket ollama-eks-tfstate-183758910727 \
 #        --versioning-configuration Status=Enabled
 #      aws s3api put-bucket-encryption \
-#        --bucket ollama-eks-tfstate-<ACCOUNT_ID> \
+#        --bucket ollama-eks-tfstate-183758910727 \
 #        --server-side-encryption-configuration \
 #          '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"aws:kms"}}]}'
 #      aws s3api put-public-access-block \
-#        --bucket ollama-eks-tfstate-<ACCOUNT_ID> \
+#        --bucket ollama-eks-tfstate-183758910727 \
 #        --public-access-block-configuration \
 #          BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
 #

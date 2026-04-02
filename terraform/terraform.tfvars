@@ -52,8 +52,8 @@ auto_pull_model          = true
 enable_bedrock = false
 
 # NLB (created by Istio Gateway via ArgoCD — set after first deploy)
-nlb_arn      = ""
-nlb_dns_name = ""
+nlb_arn      = "arn:aws:elasticloadbalancing:ap-southeast-2:183758910727:loadbalancer/net/k8s-istioing-ollamaga-b45d30c3e2/e7ffe8fa360a61cc"
+nlb_dns_name = "k8s-istioing-ollamaga-b45d30c3e2-e7ffe8fa360a61cc.elb.ap-southeast-2.amazonaws.com"
 
 # CloudFront + WAF + API Gateway
 # Client → CloudFront (WAF) → API Gateway → VPC Link → NLB → Istio → Ollama
@@ -65,7 +65,7 @@ waf_geo_countries     = ["AU", "US"]
 waf_enable_bot_control = false
 
 # CloudFront domain (set after first apply — used by Cognito callback URLs)
-cloudfront_domain = ""
+cloudfront_domain = "dys5j7bjeg83k.cloudfront.net"
 
 # Cognito Authentication (Open WebUI)
 # Cognito handles all user management: signup, login, MFA, role assignment.
@@ -81,6 +81,9 @@ alert_email = "shanaka.jayasundera@versent.com.au"
 # ArgoCD watches argocd/apps/ in the Git repo and deploys everything automatically.
 git_repo_url         = "https://github.com/shanaka-versent/Ollama-on-EKS"
 argocd_chart_version = "7.7.16"
+
+# Shared AMG — Prometheus remote-writes to shared AMP (from shared-infra repo)
+amp_remote_write_endpoint = "https://aps-workspaces.ap-southeast-2.amazonaws.com/workspaces/ws-185315e5-169b-44fe-98be-d54fdfe10f23/api/v1/remote_write"
 
 # Tags
 tags = {

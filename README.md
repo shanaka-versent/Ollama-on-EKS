@@ -459,26 +459,39 @@ kubectl port-forward -n ollama svc/ollama 11434:11434
 
 ### Using Claude Code with Private LLM
 
-Claude Code can use the private Ollama models instead of Anthropic's hosted Claude. All prompts and code stay within the AWS account — nothing leaves your network.
+Claude Code can use the private Ollama models instead of Anthropic's hosted Claude. All prompts and code stay within the AWS account — nothing leaves your network. Ollama v0.14.0+ supports the Anthropic Messages API natively, so Claude Code connects directly without any adapter.
 
-**Connect to the private LLM:**
+Three connection modes are available:
+
+| Mode | Command | Best For |
+|------|---------|----------|
+| `cloudfront` | `source claude-switch.sh cloudfront --endpoint ... --apikey ...` | Remote access, no kubectl needed (60s timeout) |
+| `local` | `source claude-switch.sh local` | Local development via port-forward (no timeout, recommended) |
+| `remote` | `source claude-switch.sh remote` | Switch back to Anthropic hosted Claude |
+
+**Connect via CloudFront (remote access):**
 
 ```bash
-# Configure Claude Code to use the private Ollama endpoint
+# Configure Claude Code to use the private Ollama endpoint via CloudFront
 source claude-switch.sh cloudfront \
   --endpoint https://<CLOUDFRONT_DOMAIN> \
   --apikey <YOUR_API_KEY>
 
-# Verify connection
+# Verify connection (shows available models)
 source claude-switch.sh status
 
 # Launch Claude Code (uses your private Qwen model)
 claude --model qwen3.5:27b
+```
 
-# Inside Claude Code, ask questions as usual:
-#   > What is the capital of Sri Lanka?
-#
-# Type /exit to leave
+**Connect via port-forward (recommended for development):**
+
+```bash
+# Start port-forward and configure Claude Code
+source claude-switch.sh local
+
+# Launch Claude Code
+claude --model qwen3.5:27b
 ```
 
 **Switch back to Anthropic hosted Claude:**
@@ -488,7 +501,7 @@ source claude-switch.sh remote
 claude
 ```
 
-> **Note:** Get your CloudFront domain from `terraform output cloudfront_domain` and your API key from the API Key Portal at `https://<CLOUDFRONT_DOMAIN>/portal/` or from the admin.
+> **Note:** Get your CloudFront domain from `terraform output cloudfront_domain` and your API key from the API Key Portal at `https://<CLOUDFRONT_DOMAIN>/portal/` or from the admin. The `local` mode requires `kubectl` access to the EKS cluster and starts a port-forward automatically.
 
 ### Model Tier Switching (Flex Mode)
 
