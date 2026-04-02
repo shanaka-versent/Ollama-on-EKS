@@ -1320,7 +1320,8 @@ for arn in arns:
                 *:natgateway/*)  local ngw_state; ngw_state=$(aws ec2 describe-nat-gateways --nat-gateway-ids "${arn##*/}" --region "$REGION" --query 'NatGateways[0].State' --output text 2>/dev/null || echo "deleted"); [ "$ngw_state" != "deleted" ] && exists="true" ;;
                 *:vpc-endpoint/*) aws ec2 describe-vpc-endpoints --vpc-endpoint-ids "${arn##*/}" --region "$REGION" >/dev/null 2>&1 && exists="true" ;;
                 *:userpool/*)    aws cognito-idp describe-user-pool --user-pool-id "${arn##*userpool/}" --region "$REGION" >/dev/null 2>&1 && exists="true" ;;
-                *:snapshot/*)    aws ec2 describe-snapshots --snapshot-ids "${arn##*/}" --region "$REGION" >/dev/null 2>&1 && exists="true" ;;
+                *:snapshot/*)    # PRESERVED: model snapshots survive stack destroy for fast cold starts
+                                 log "  Preserving snapshot ${arn##*/} (model cache — reused on next deploy)" ;;
                 *:workspace/*)   aws amp describe-workspace --workspace-id "${arn##*/}" --region "$REGION" >/dev/null 2>&1 && exists="true" ;;
                 *)               exists="true" ;;  # Unknown type — assume exists
             esac

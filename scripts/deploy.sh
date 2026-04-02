@@ -605,45 +605,98 @@ setup_argocd_repo_credentials() {
 # exist (first deploy or snapshot was deleted), we patch the deployment to use
 # a blank volume and let the model-loader job pull the model at runtime.
 handle_model_snapshot() {
-    step "Phase 2d: Validating model EBS snapshot"
+    step "Phase 2d: Model loading strategy (snapshot → S3 → internet)"
 
-    # Read snapshot ID from the volume-snapshot manifest
+    # --- Discover or bootstrap S3 model cache bucket ---
+    # SSM Parameter Store is the cross-stack registry: both Hybrid-LLM and
+    # local LLM repos read /ollama/model-cache/bucket-name to find the bucket.
+    # Whichever stack deploys first creates the bucket and writes the SSM param.
+    local ssm_param="/ollama/model-cache/bucket-name"
+    local model_bucket=""
+
+    # Try SSM first (another stack may have already created the bucket)
+    model_bucket=$(aws ssm get-parameter --name "$ssm_param" --region "$REGION" \
+        --query 'Parameter.Value' --output text 2>/dev/null || echo "")
+
+    if [[ -n "$model_bucket" ]] && aws s3api head-bucket --bucket "$model_bucket" 2>/dev/null; then
+        log "S3 model cache discovered via SSM: ${model_bucket}"
+    else
+        # Bootstrap: create bucket and register in SSM
+        model_bucket="ollama-model-cache-${ACCOUNT_ID}"
+        if aws s3api head-bucket --bucket "$model_bucket" 2>/dev/null; then
+            log "S3 model cache bucket exists: ${model_bucket}"
+        else
+            log "Creating S3 model cache bucket: ${model_bucket}..."
+            if [[ "$REGION" == "us-east-1" ]]; then
+                aws s3api create-bucket --bucket "$model_bucket" --region "$REGION"
+            else
+                aws s3api create-bucket --bucket "$model_bucket" --region "$REGION" \
+                    --create-bucket-configuration LocationConstraint="$REGION"
+            fi
+            aws s3api put-bucket-encryption --bucket "$model_bucket" \
+                --server-side-encryption-configuration \
+                '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"aws:kms"}}]}'
+            aws s3api put-public-access-block --bucket "$model_bucket" \
+                --public-access-block-configuration \
+                BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+            log "S3 model cache bucket created"
+        fi
+
+        # Write SSM parameter so the other repo can discover this bucket
+        aws ssm put-parameter --name "$ssm_param" --value "$model_bucket" \
+            --type String --overwrite --region "$REGION" >/dev/null 2>&1 \
+            && log "SSM parameter registered: ${ssm_param} → ${model_bucket}" \
+            || warn "Could not write SSM parameter (non-blocking)"
+    fi
+
+    # Export for use in post-load upload
+    export MODEL_CACHE_BUCKET="$model_bucket"
+
+    # --- Tier 1: Check EBS snapshot ---
     local snapshot_file="${REPO_DIR}/k8s/ollama/volume-snapshot.yaml"
     local snapshot_id=""
     if [[ -f "$snapshot_file" ]]; then
         snapshot_id=$(grep 'snapshotHandle:' "$snapshot_file" | awk '{print $2}' | head -1)
     fi
 
-    if [[ -z "$snapshot_id" ]]; then
-        warn "No snapshot ID found in volume-snapshot.yaml"
-        warn "Model-loader will pull the model from internet (~15-25 min on first start)"
-        return
+    if [[ -n "$snapshot_id" ]]; then
+        log "Checking EBS snapshot: ${snapshot_id}"
+        local snap_state
+        snap_state=$(aws ec2 describe-snapshots --snapshot-ids "$snapshot_id" \
+            --region "$REGION" --query 'Snapshots[0].State' --output text 2>/dev/null || echo "not-found")
+
+        if [[ "$snap_state" == "completed" ]]; then
+            log "Tier 1: EBS snapshot ready — fast cold start enabled (~3 min)"
+            return
+        fi
+        warn "Snapshot ${snapshot_id} not found (state: ${snap_state})"
+    else
+        warn "No snapshot ID in volume-snapshot.yaml"
     fi
 
-    log "Checking EBS snapshot: ${snapshot_id}"
-    local snap_state
-    snap_state=$(aws ec2 describe-snapshots --snapshot-ids "$snapshot_id" \
-        --region "$REGION" --query 'Snapshots[0].State' --output text 2>/dev/null || echo "not-found")
+    # --- Tier 2: Check S3 model cache ---
+    local model_name
+    model_name=$(grep '^ollama_model' "$TERRAFORM_DIR/terraform.tfvars" | sed 's/.*= *"//;s/".*//')
+    local s3_key="models/${model_name//[:\/]/_}.tar.gz"
 
-    if [[ "$snap_state" == "completed" ]]; then
-        log "Snapshot ${snapshot_id} exists and is ready — fast cold start enabled"
-        return
+    if aws s3api head-object --bucket "$model_bucket" --key "$s3_key" --region "$REGION" >/dev/null 2>&1; then
+        log "Tier 2: Model found in S3 cache — s3://${model_bucket}/${s3_key}"
+        log "Model will be restored from S3 after Ollama pod starts (~3-5 min)"
+        export MODEL_S3_KEY="$s3_key"
+    else
+        log "Tier 3: Model not in S3 cache — model-loader will pull from internet (~15-25 min)"
     fi
 
-    warn "Snapshot ${snapshot_id} not found (state: ${snap_state})"
-    warn "Removing dataSource from deployment YAML — model-loader will pull from internet"
-    warn "To restore fast cold starts, run: ./scripts/create-model-snapshot.sh"
+    # --- Clean up stale snapshot references ---
+    warn "Removing dataSource from deployment YAML (no valid snapshot)"
+    warn "To create a snapshot for instant cold starts: ./scripts/create-model-snapshot.sh"
 
-    # Remove dataSource block from the deployment YAML in git
-    # ArgoCD selfHeal=true reverts kubectl patches, so we must change the source
     local deploy_file="${REPO_DIR}/k8s/ollama/deployment.yaml"
     if grep -q 'dataSource:' "$deploy_file" 2>/dev/null; then
-        # Remove the dataSource block (3-4 lines: dataSource:, name:, kind:, apiGroup:)
         python3 -c "
 import re
 with open('${deploy_file}', 'r') as f:
     content = f.read()
-# Remove dataSource block (indented under volumeClaimTemplate spec)
 content = re.sub(
     r'\n\s+dataSource:\n\s+name: ollama-models-snapshot\n\s+kind: VolumeSnapshot\n\s+apiGroup: snapshot\.storage\.k8s\.io',
     '',
@@ -654,29 +707,83 @@ with open('${deploy_file}', 'w') as f:
 "
         log "dataSource removed from ${deploy_file}"
 
-        # Commit and push so ArgoCD picks up the change
         cd "$REPO_DIR"
         git add "$deploy_file"
         if ! git diff --cached --quiet; then
-            git commit -m "fix: remove snapshot dataSource — not available on fresh deploy"
-            git push origin main 2>/dev/null || warn "Could not push — ArgoCD will sync on next push"
+            git -c user.name="shanaka-versent" -c user.email="shanaka-versent@users.noreply.github.com" \
+                commit -m "fix: remove snapshot dataSource — not available on fresh deploy"
+            git push origin HEAD 2>/dev/null || warn "Could not push — ArgoCD will sync on next push"
         fi
         cd "$TERRAFORM_DIR"
     else
         log "dataSource already removed from deployment YAML"
     fi
 
-    # Also remove the VolumeSnapshot/Content/Class if they reference a missing snapshot
     kubectl delete volumesnapshot ollama-models-snapshot -n ollama 2>/dev/null || true
     kubectl delete volumesnapshotcontent ollama-models-snapshot-content 2>/dev/null || true
 
-    # Delete the completed model-loader job so ArgoCD recreates it.
-    # Without this, the old completed job won't re-run and the new blank
-    # volume (no snapshot) will have no model — Ollama starts empty.
-    log "Deleting completed model-loader job (ArgoCD will recreate it to pull model)..."
+    log "Deleting completed model-loader job (ArgoCD will recreate it)..."
     kubectl delete job -n ollama -l app=model-loader --ignore-not-found=true 2>/dev/null || true
 
-    log "Snapshot cleanup complete — model-loader will pull from internet"
+    log "Snapshot cleanup complete"
+}
+
+# ==============================================================================
+# S3 Model Cache — restore from S3 and upload after successful load
+# ==============================================================================
+sync_model_to_s3() {
+    local bucket="${MODEL_CACHE_BUCKET:-}"
+    [[ -z "$bucket" ]] && return
+
+    local model_name
+    model_name=$(grep '^ollama_model' "$TERRAFORM_DIR/terraform.tfvars" | sed 's/.*= *"//;s/".*//')
+    local s3_key="models/${model_name//[:\/]/_}.tar.gz"
+
+    if aws s3api head-object --bucket "$bucket" --key "$s3_key" --region "$REGION" >/dev/null 2>&1; then
+        log "S3 model cache already has ${model_name} — skipping upload"
+        return
+    fi
+
+    log "Uploading model to S3 cache for next stack creation..."
+    log "  This runs in background — deploy continues immediately"
+
+    local ollama_pod
+    ollama_pod=$(kubectl get pod -n ollama -l app=ollama -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+    if [[ -z "$ollama_pod" ]]; then
+        warn "No Ollama pod found — skipping S3 upload"
+        return
+    fi
+
+    (
+        kubectl exec -n ollama "$ollama_pod" -c ollama -- \
+            tar czf - -C /root/.ollama/models . 2>/dev/null \
+        | aws s3 cp - "s3://${bucket}/${s3_key}" --region "$REGION" 2>/dev/null \
+        && log "S3 model cache updated: s3://${bucket}/${s3_key}" \
+        || warn "S3 model upload failed (non-blocking)"
+    ) &
+}
+
+restore_model_from_s3() {
+    local bucket="${MODEL_CACHE_BUCKET:-}"
+    local s3_key="${MODEL_S3_KEY:-}"
+    [[ -z "$bucket" || -z "$s3_key" ]] && return
+
+    log "Restoring model from S3 cache: s3://${bucket}/${s3_key}"
+
+    local ollama_pod
+    ollama_pod=$(kubectl get pod -n ollama -l app=ollama -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+    if [[ -z "$ollama_pod" ]]; then
+        warn "No Ollama pod found — falling back to model-loader internet pull"
+        return
+    fi
+
+    if aws s3 cp "s3://${bucket}/${s3_key}" - --region "$REGION" 2>/dev/null \
+        | kubectl exec -i -n ollama "$ollama_pod" -c ollama -- \
+            tar xzf - -C /root/.ollama/models 2>/dev/null; then
+        log "Model restored from S3 cache successfully"
+    else
+        warn "S3 restore failed — model-loader will pull from internet"
+    fi
 }
 
 # ==============================================================================
@@ -783,10 +890,16 @@ wait_for_ollama_ready() {
     done
 
     if [[ "$ollama_ready" -ge 1 ]]; then
+        # If S3 cache has the model, restore it now (before model-loader runs)
+        restore_model_from_s3
+
         # Verify model is accessible
         log "Verifying model availability..."
         kubectl exec -n ollama deploy/ollama -- \
             curl -sf --max-time 30 "http://localhost:11434/api/tags" 2>/dev/null | head -1 || true
+
+        # Upload model to S3 cache for next stack creation (background, non-blocking)
+        sync_model_to_s3
 
         # Unpause KEDA — 45-min idle window starts now
         kubectl annotate scaledobject ollama-autoscaler -n ollama \
