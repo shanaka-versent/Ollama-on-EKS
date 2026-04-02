@@ -1,50 +1,36 @@
 #!/bin/bash
 # ============================================================
-# Claude Mode Switcher
-# Swap between Anthropic API, private EKS Ollama (port-forward),
-# and Kong Cloud AI Gateway
+# Claude Code Mode Switcher
+# Swap Claude Code between Anthropic API and private Ollama on EKS
+#
+# Modes:
+#   remote     — Anthropic Claude API (default, billed to your account)
+#   local      — Ollama on EKS via port-forward (recommended, no timeout)
+#   cloudfront — Ollama via CloudFront + API key (no kubectl needed, 60s timeout)
 # ============================================================
 
 usage() {
-  echo "Usage: source claude-switch.sh [remote|local|cloudfront|ollama|status]"
+  echo "Usage: source claude-switch.sh [remote|local|cloudfront|status]"
   echo ""
   echo "  remote     - Use Anthropic's Claude API (default)"
-  echo "  local      - Use private Ollama on EKS (requires port-forward)"
+  echo "  local      - Use private Ollama on EKS via port-forward (recommended)"
   echo "  cloudfront - Use Ollama via CloudFront + API key (no kubectl needed)"
-  echo "  ollama     - Use Ollama via Kong Cloud AI Gateway"
   echo "  status     - Show current mode"
   echo ""
   echo "Options for 'cloudfront' mode:"
   echo "  --endpoint <URL>   CloudFront domain (e.g. https://xxx.cloudfront.net)"
   echo "  --apikey <KEY>     API Gateway API key"
   echo ""
-  echo "Options for 'ollama' mode:"
-  echo "  --endpoint <URL>   Kong proxy URL (from Konnect UI)"
-  echo "  --apikey <KEY>     API key for Kong authentication"
-  echo ""
   echo "Examples:"
-  echo "  source claude-switch.sh remote"
   echo "  source claude-switch.sh local"
   echo "  source claude-switch.sh cloudfront --endpoint https://xxx.cloudfront.net --apikey mykey"
-  echo "  source claude-switch.sh ollama --endpoint https://xxx.kong-cloud.com --apikey mykey"
+  echo "  source claude-switch.sh remote"
   echo ""
-  echo "IMPORTANT: Run with 'source' so env vars persist in your shell."
+  echo "IMPORTANT: Must run with 'source' so env vars persist in your shell."
 }
 
 status() {
-  if [[ -n "${KONG_PROXY_URL:-}" ]]; then
-    echo "Mode:     OLLAMA via Kong Cloud AI Gateway"
-    echo "Endpoint: $ANTHROPIC_BASE_URL"
-    echo "API Key:  ${ANTHROPIC_API_KEY:0:8}..."
-    echo ""
-    if curl -s --connect-timeout 5 "${KONG_PROXY_URL}/api/tags" -H "apikey: ${ANTHROPIC_API_KEY}" > /dev/null 2>&1; then
-      echo "Status: CONNECTED"
-    else
-      echo "Status: NOT REACHABLE — check Kong proxy URL and API key"
-    fi
-    echo ""
-    echo "Run:   claude --model qwen3.5:122b"
-  elif [[ "${ANTHROPIC_BASE_URL:-}" == *"cloudfront.net"* ]]; then
+  if [[ "${ANTHROPIC_BASE_URL:-}" == *"cloudfront.net"* ]]; then
     echo "Mode:     CLOUDFRONT (Ollama via CloudFront VPC Origin)"
     echo "Endpoint: $ANTHROPIC_BASE_URL"
     echo "API Key:  ${ANTHROPIC_API_KEY:0:8}..."
@@ -56,25 +42,29 @@ status() {
     fi
     echo ""
     echo "Run:   claude --model qwen3.5:27b"
-  elif [ "$ANTHROPIC_BASE_URL" = "http://localhost:11434" ]; then
+  elif [[ "${ANTHROPIC_BASE_URL:-}" == "http://localhost:11434" ]]; then
     echo "Mode:   LOCAL (Ollama on EKS via port-forward)"
     echo "URL:    $ANTHROPIC_BASE_URL"
     if curl -s --connect-timeout 2 http://localhost:11434/api/tags > /dev/null 2>&1; then
       echo "Tunnel: CONNECTED"
+      local models
+      models=$(curl -s --connect-timeout 2 http://localhost:11434/api/tags 2>/dev/null | \
+        python3 -c "import sys,json; [print(f'  - {m[\"name\"]}') for m in json.load(sys.stdin).get('models',[])]" 2>/dev/null)
+      if [[ -n "$models" ]]; then
+        echo "Models:"
+        echo "$models"
+      fi
     else
-      echo "Tunnel: NOT CONNECTED — run: kubectl port-forward -n ollama svc/ollama 11434:11434"
+      echo "Tunnel: NOT CONNECTED"
+      echo "  Run: kubectl port-forward -n ollama svc/ollama 11434:11434"
     fi
     echo ""
-    echo "Run:   claude --model qwen3.5:122b"
+    echo "Run:   claude --model qwen3.5:27b"
   else
-    if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-      echo "Mode:  REMOTE (Anthropic API)"
-      echo "Key:   set (env var)"
-    elif grep -qs "ANTHROPIC_API_KEY" ~/.zshrc 2>/dev/null; then
-      echo "Mode:  REMOTE (Anthropic API)"
-      echo "Key:   set (in ~/.zshrc — open a new terminal or run: source ~/.zshrc)"
+    echo "Mode:  REMOTE (Anthropic Claude API)"
+    if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+      echo "Key:   set"
     else
-      echo "Mode:  REMOTE (Anthropic API)"
       echo "Key:   NOT SET — run: export ANTHROPIC_API_KEY=\"sk-ant-...\""
     fi
     echo ""
@@ -83,7 +73,6 @@ status() {
 }
 
 set_remote() {
-  # Kill any port-forward tunnel we started
   if pgrep -f "kubectl port-forward -n ollama" > /dev/null 2>&1; then
     pkill -f "kubectl port-forward -n ollama"
     echo "Tunnel: stopped"
@@ -92,11 +81,42 @@ set_remote() {
   unset ANTHROPIC_BASE_URL
   unset ANTHROPIC_AUTH_TOKEN
   unset CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
-  unset KONG_PROXY_URL
 
-  echo "Switched to REMOTE (Anthropic API)"
-  echo ""
+  echo "Switched to REMOTE (Anthropic Claude API)"
   echo "Run:   claude"
+}
+
+set_local() {
+  # Start port-forward if not already running
+  if curl -s --connect-timeout 2 http://localhost:11434/api/tags > /dev/null 2>&1; then
+    echo "Tunnel: already connected"
+  else
+    echo "Starting port-forward tunnel..."
+    kubectl port-forward -n ollama svc/ollama 11434:11434 > /dev/null 2>&1 &
+    local pf_pid=$!
+
+    for i in 1 2 3 4 5 6 7 8; do
+      if curl -s --connect-timeout 2 http://localhost:11434/api/tags > /dev/null 2>&1; then
+        echo "Tunnel: CONNECTED (pid $pf_pid)"
+        break
+      fi
+      sleep 2
+    done
+
+    if ! curl -s --connect-timeout 2 http://localhost:11434/api/tags > /dev/null 2>&1; then
+      echo "WARNING: Tunnel started but Ollama not responding"
+      echo "  Check: kubectl get pods -n ollama"
+    fi
+  fi
+
+  export ANTHROPIC_BASE_URL="http://localhost:11434"
+  export ANTHROPIC_AUTH_TOKEN="ollama"
+  export ANTHROPIC_API_KEY=""
+  export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+
+  echo ""
+  echo "Switched to LOCAL (Ollama on EKS via port-forward)"
+  echo "Run:   claude --model qwen3.5:27b"
 }
 
 set_cloudfront() {
@@ -111,31 +131,19 @@ set_cloudfront() {
     esac
   done
 
-  if [[ -z "$endpoint" ]]; then
-    echo "ERROR: --endpoint is required"
-    echo ""
+  if [[ -z "$endpoint" || -z "$apikey" ]]; then
+    echo "ERROR: both --endpoint and --apikey are required"
     echo "Usage: source claude-switch.sh cloudfront --endpoint https://<CF_DOMAIN> --apikey <KEY>"
     return 1
   fi
 
-  if [[ -z "$apikey" ]]; then
-    echo "ERROR: --apikey is required"
-    return 1
-  fi
-
-  # Strip trailing slash
   endpoint="${endpoint%/}"
 
-  # Kill any port-forward tunnel
   if pgrep -f "kubectl port-forward -n ollama" > /dev/null 2>&1; then
     pkill -f "kubectl port-forward -n ollama"
-    echo "Tunnel: stopped (not needed with CloudFront)"
+    echo "Tunnel: stopped"
   fi
 
-  unset KONG_PROXY_URL
-
-  # /v1/messages path goes directly to NLB via VPC Origin (no API GW 29s timeout)
-  # CloudFront Function validates the API key
   export ANTHROPIC_BASE_URL="${endpoint}/v1"
   export ANTHROPIC_AUTH_TOKEN="${apikey}"
   export ANTHROPIC_API_KEY="${apikey}"
@@ -143,136 +151,24 @@ set_cloudfront() {
 
   echo ""
   echo "Switched to CLOUDFRONT (Ollama via CloudFront VPC Origin)"
-  echo ""
   echo "  Endpoint: ${endpoint}/v1"
   echo "  API Key:  ${apikey:0:8}..."
-  echo ""
 
-  # Quick connectivity check
   if curl -s --connect-timeout 5 "${endpoint}/health" > /dev/null 2>&1; then
-    echo "  Status: CONNECTED"
+    echo "  Status:   CONNECTED"
   else
-    echo "  Status: Could not reach endpoint"
+    echo "  Status:   Could not reach endpoint"
   fi
 
   echo ""
+  echo "NOTE: CloudFront has a 60s origin timeout. For long responses, use 'local' mode."
   echo "Run:   claude --model qwen3.5:27b"
-}
-
-set_local() {
-  # Clear Kong vars if set
-  unset KONG_PROXY_URL
-
-  # Start port-forward in background if not already running
-  if curl -s --connect-timeout 2 http://localhost:11434/api/tags > /dev/null 2>&1; then
-    echo "Tunnel: already connected"
-  else
-    echo "Starting port-forward tunnel..."
-    kubectl port-forward -n ollama svc/ollama 11434:11434 > /dev/null 2>&1 &
-    CLAUDE_PF_PID=$!
-
-    # Wait for tunnel to be ready
-    for i in 1 2 3 4 5; do
-      if curl -s --connect-timeout 2 http://localhost:11434/api/tags > /dev/null 2>&1; then
-        echo "Tunnel: CONNECTED (pid $CLAUDE_PF_PID)"
-        break
-      fi
-      sleep 1
-    done
-
-    if ! curl -s --connect-timeout 2 http://localhost:11434/api/tags > /dev/null 2>&1; then
-      echo "WARNING: Tunnel started but Ollama not responding yet"
-      echo "  Check pod status: kubectl get pods -n ollama"
-      echo "  Tunnel pid: $CLAUDE_PF_PID"
-    fi
-  fi
-
-  export ANTHROPIC_BASE_URL="http://localhost:11434"
-  export ANTHROPIC_AUTH_TOKEN="ollama"
-  export ANTHROPIC_API_KEY=""
-  export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
-
-  echo ""
-  echo "Switched to LOCAL (Ollama on EKS via port-forward)"
-  echo ""
-  echo "Run:   claude --model qwen3.5:122b"
-}
-
-set_ollama() {
-  local endpoint=""
-  local apikey=""
-
-  # Parse --endpoint and --apikey flags
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --endpoint)
-        endpoint="$2"
-        shift 2
-        ;;
-      --apikey)
-        apikey="$2"
-        shift 2
-        ;;
-      *)
-        shift
-        ;;
-    esac
-  done
-
-  if [[ -z "$endpoint" ]]; then
-    echo "ERROR: --endpoint is required"
-    echo ""
-    echo "Usage: source claude-switch.sh ollama --endpoint https://<KONG_PROXY_URL> --apikey <KEY>"
-    echo ""
-    echo "Get your Kong proxy URL from Konnect UI:"
-    echo "  https://cloud.konghq.com → Gateway Manager → Data Plane Nodes"
-    return 1
-  fi
-
-  # Strip trailing slash
-  endpoint="${endpoint%/}"
-
-  if [[ -z "$apikey" ]]; then
-    echo "WARNING: No --apikey provided. Requests will fail if key-auth is enabled."
-    echo "  Add: --apikey <your-key>"
-    apikey="no-key"
-  fi
-
-  # Kill any port-forward tunnel
-  if pgrep -f "kubectl port-forward -n ollama" > /dev/null 2>&1; then
-    pkill -f "kubectl port-forward -n ollama"
-    echo "Tunnel: stopped (no longer needed with Kong)"
-  fi
-
-  export KONG_PROXY_URL="$endpoint"
-  export ANTHROPIC_BASE_URL="$endpoint"
-  export ANTHROPIC_AUTH_TOKEN="$apikey"  # Sent as: Authorization: Bearer <apikey>
-  export ANTHROPIC_API_KEY="$apikey"     # Fallback: x-api-key header
-  export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
-
-  echo ""
-  echo "Switched to OLLAMA via Kong Cloud AI Gateway"
-  echo ""
-  echo "  Endpoint: $endpoint"
-  echo "  API Key:  ${apikey:0:8}..."
-  echo ""
-
-  # Quick connectivity check
-  if curl -s --connect-timeout 5 "${endpoint}/api/tags" -H "apikey: ${apikey}" > /dev/null 2>&1; then
-    echo "  Status: CONNECTED"
-  else
-    echo "  Status: Could not reach endpoint (may still be provisioning)"
-  fi
-
-  echo ""
-  echo "Run:   claude --model qwen3.5:122b"
 }
 
 case "${1:-}" in
   remote)     set_remote ;;
   local)      set_local ;;
   cloudfront) shift; set_cloudfront "$@" ;;
-  ollama)     shift; set_ollama "$@" ;;
   status)     status ;;
   *)          usage ;;
 esac
